@@ -1,0 +1,14 @@
+{
+  "published_at": "2026-05-30",
+  "changes": [
+    "Multiview piloté depuis le shell générique Traitements (onglets + sidebar d'instances + mini-aperçu), comme les autres traitements.",
+    "Géométrie des fenêtres modifiable à chaud (endpoint :8082/window) : déplacement / redimensionnement via Ember+ sans redéploiement.",
+    "Mini-aperçu de la disposition des fenêtres dans la liste d'instances (hook listPreview)."
+  ],
+  "fixes": [
+    "Suppression de code mort de l'ancien composer (onglets Créer/Composer obsolètes) qui pouvait planter sur /traitements/multiview?vmid=… et au redimensionnement de la fenêtre."
+  ],
+  "known_bugs": [
+    "Le style (bordure, résolution de sortie, taille de label) reste appliqué au déploiement ; seule la géométrie passe à chaud."
+  ]
+}

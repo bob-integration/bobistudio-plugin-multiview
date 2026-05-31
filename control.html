@@ -1,0 +1,101 @@
+<div style="display:grid; grid-template-columns: 1fr 260px; gap:14px; align-items:start">
+<section class="mw-editor empty" id="mw-editor" aria-labelledby="mw-editor-title">
+            <div id="mw-editor-empty">
+                <h2 class="empty-state-title" id="mw-editor-title">Aucun multiview sélectionné</h2>
+                <p class="empty-state-msg">Choisissez un multiview à gauche pour éditer sa composition.</p>
+            </div>
+            <div id="mw-editor-form" hidden>
+                <div class="mw-toast" id="mw-toast" role="status" aria-live="polite"></div>
+                <header class="mw-editor-head">
+                    <h2 id="mw-editor-title-h"><span id="ed_hostname">—</span> <span class="meta">#<span id="ed_vmid">—</span></span></h2>
+                    <button type="button" class="btn" onclick="if(window.MXLMonitor)MXLMonitor.monitorVmid(editorVmid)" title="Monitoring">Monitoring</button>
+                    <button type="button" class="btn btn-orange" onclick="deployerEditor()">Déployer</button>
+                </header>
+                <div class="mw-editor-row">
+                    <div class="field"><label for="ed_shm_out">SHM sortie</label><input type="text" id="ed_shm_out" class="wide" autocomplete="off"></div>
+                    <div class="field field-narrow"><label for="ed_out_w">Largeur sortie</label><input type="number" id="ed_out_w" min="64" onchange="onOutSizeChange()"></div>
+                    <div class="field field-narrow"><label for="ed_out_h">Hauteur sortie</label><input type="number" id="ed_out_h" min="64" onchange="onOutSizeChange()"></div>
+                    <div class="field field-narrow"><label for="ed_max">Max entrées</label><input type="number" id="ed_max" min="1" max="32"></div>
+                </div>
+                <div class="mw-editor-row">
+                    <div class="field field-narrow"><label for="ed_border_w">Bordure (px)</label><input type="number" id="ed_border_w" min="0" max="30" onchange="onGlobalChange()"></div>
+                    <div class="field field-color"><label for="ed_border_color">Couleur bordure</label><input type="color" id="ed_border_color" onchange="onGlobalChange()"></div>
+                    <div class="field field-narrow"><label for="ed_label_size">Taille texte (px)</label><input type="number" id="ed_label_size" min="6" max="80" onchange="onGlobalChange()"></div>
+                    <label class="field field-inline" for="ed_overlay_below"><input type="checkbox" id="ed_overlay_below" onchange="onGlobalChange()"> Texte sous l'image</label>
+                    <div class="field field-narrow"><label for="ed_tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
+                </div>
+                <div class="mw-source-picker">
+                    <div class="field field-grow"><label for="ed_src_select">Source</label><select id="ed_src_select"><option value="">— laisser vide —</option></select></div>
+                    <div class="field field-narrow"><label for="ed_src_w">Largeur src</label><input type="number" id="ed_src_w" value="640"></div>
+                    <div class="field field-narrow"><label for="ed_src_h">Hauteur src</label><input type="number" id="ed_src_h" value="360"></div>
+                    <button type="button" class="btn btn-blue" onclick="ajouterEntree()">+ Ajouter PiP</button>
+                </div>
+                <div class="align-toolbar" role="group" aria-label="Outils d'alignement">
+                    <span class="align-label">Aligner :</span>
+                    <button type="button" class="btn btn-blue" onclick="aligner('left')">⇤</button>
+                    <button type="button" class="btn btn-blue" onclick="aligner('hcenter')">⇔</button>
+                    <button type="button" class="btn btn-blue" onclick="aligner('right')">⇥</button>
+                    <button type="button" class="btn btn-blue" onclick="aligner('top')">⤒</button>
+                    <button type="button" class="btn btn-blue" onclick="aligner('vcenter')">⇳</button>
+                    <button type="button" class="btn btn-blue" onclick="aligner('bottom')">⤓</button>
+                    <span class="align-label">Taille :</span>
+                    <button type="button" class="btn btn-purple" onclick="matchSize('w')">↔</button>
+                    <button type="button" class="btn btn-purple" onclick="matchSize('h')">↕</button>
+                    <button type="button" class="btn btn-purple" onclick="matchSize('both')">⛶</button>
+                    <span class="align-label">Distribuer :</span>
+                    <button type="button" class="btn btn-green" onclick="distribuer('h')">⇶</button>
+                    <button type="button" class="btn btn-green" onclick="distribuer('v')">⇲</button>
+                    <span class="align-label">Réglages :</span>
+                    <button type="button" class="btn" onclick="copierReglagesFenetre()">⧉ Copier</button>
+                    <button type="button" class="btn" id="ed_paste_btn" onclick="collerReglagesFenetre()" disabled>⪼ Coller</button>
+                    <label class="align-snap" for="ed_snap"><input type="checkbox" id="ed_snap" onchange="snapEnabled=this.checked"> Snap magnétique</label>
+                </div>
+                <p class="align-hint">Maj + clic pour multi-sélectionner.</p>
+                <div class="mw-canvas-wrap">
+                    <canvas id="ed_canvas" aria-label="Aperçu de la composition multiview"
+                            onmousedown="canvasMouseDown(event)" onmousemove="canvasMouseMove(event)" onmouseup="canvasMouseUp(event)"></canvas>
+                </div>
+                <div id="ed_entry_panel" class="mw-entry-panel" hidden>
+                    <div class="mw-editor-row">
+                        <div class="field"><label for="ed_label_source">Nom affiché</label><select id="ed_label_source" onchange="onEntryChange()"></select></div>
+                        <div class="field field-grow"><label for="ed_path">Source</label><select id="ed_path" onchange="onEntryChange()"></select></div>
+                        <label class="field field-inline" for="ed_show_label"><input type="checkbox" id="ed_show_label" onchange="onEntryChange()"> Afficher le nom</label>
+                        <label class="field field-inline" for="ed_show_tally"><input type="checkbox" id="ed_show_tally" onchange="onEntryChange()"> Cases Tally</label>
+                        <div class="field field-narrow"><label for="ed_tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
+                        <button type="button" class="btn btn-red" onclick="supprimerEntreeSelectionnee()">Supprimer</button>
+                    </div>
+                    <div class="mw-editor-row">
+                        <div class="field field-narrow"><label for="ed_x">X</label><input type="number" id="ed_x" onchange="onEntryGeomChange()"></div>
+                        <div class="field field-narrow"><label for="ed_y">Y</label><input type="number" id="ed_y" onchange="onEntryGeomChange()"></div>
+                        <div class="field field-narrow"><label for="ed_w">Largeur</label><input type="number" id="ed_w" onchange="onEntryGeomChange()"></div>
+                        <div class="field field-narrow"><label for="ed_h">Hauteur</label><input type="number" id="ed_h" onchange="onEntryGeomChange()"></div>
+                    </div>
+                    <div class="mw-editor-row mw-editor-row-divider">
+                        <div class="field"><label for="ed_meter_channels">Peak meter</label><select id="ed_meter_channels" onchange="onEntryChange()"><option value="0">Désactivé</option><option value="2">2 ch</option><option value="4">4 ch</option><option value="6">6 ch</option><option value="8">8 ch</option></select></div>
+                        <div class="field"><label for="ed_meter_position">Position</label><select id="ed_meter_position" onchange="onEntryChange()"><option value="right">Droite</option><option value="left">Gauche</option></select></div>
+                        <div class="field"><label for="ed_meter_inside">Placement</label><select id="ed_meter_inside" onchange="onEntryChange()"><option value="0">Hors image</option><option value="1">Dans l'image</option></select></div>
+                        <div class="field field-narrow"><label for="ed_meter_opacity">Opacité</label><input type="number" id="ed_meter_opacity" min="10" max="100" onchange="onEntryChange()"></div>
+                        <div class="field"><label for="ed_meter_scale">Graduation</label><select id="ed_meter_scale" onchange="onEntryChange()"><option value="dbfs">dBFS</option><option value="ppm">EBU PPM</option></select></div>
+                    </div>
+                </div>
+                <table class="mw-entry-table" aria-label="Entrées de la composition">
+                    <thead><tr><th class="w40" scope="col">#</th><th scope="col">Nom</th><th scope="col">Source SHM</th><th class="w90" scope="col">Position</th><th class="w90" scope="col">Taille</th></tr></thead>
+                    <tbody id="ed_tbody"></tbody>
+                </table>
+            </div>
+        </section>
+<section class="layout-list" aria-labelledby="layout-list-title">
+            <h2 id="layout-list-title">Layouts enregistrés</h2>
+            <div class="save-layout-form">
+                <label for="layout-save-name">Nom du layout</label>
+                <input type="text" id="layout-save-name" placeholder="ex. 2×2 mosaïque…" autocomplete="off">
+                <button type="button" class="btn btn-green" onclick="enregistrerLayout()">Enregistrer l'éditeur actuel</button>
+            </div>
+            <div class="save-layout-form">
+                <button type="button" class="btn btn-ghost" onclick="importerLayout()">Importer un fichier…</button>
+                <input type="file" id="layout-import-input" accept=".json" hidden onchange="onImportLayoutFile(this)">
+            </div>
+            <ul id="layout-saved-list" role="list"><li class="meta" aria-live="polite">Chargement…</li></ul>
+        </section>
+
+</div>
