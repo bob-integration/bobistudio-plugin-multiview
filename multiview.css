@@ -1,0 +1,364 @@
+/* ─── Layout principal ────────────────────────────────────── */
+.compose-layout {
+    display: grid;
+    grid-template-columns: 260px 1fr 260px;
+    gap: var(--space-4);
+    align-items: start;
+}
+
+/* Panneaux latéraux : surface unique (bg-elev), pas de carte dans carte */
+.mw-list,
+.layout-list {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    min-width: 0;
+}
+.mw-list h2,
+.layout-list h2 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin: 0 0 var(--space-3) 0;
+    color: var(--text-strong);
+}
+
+.mw-list ul,
+.layout-list ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.mw-list li,
+.layout-list li {
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-small);
+    cursor: pointer;
+    margin-bottom: var(--space-2);
+    font-size: 0.9em;
+    background: var(--bg-input);
+    border: 1px solid var(--border-soft);
+    transition: border-color 0.12s, background 0.12s;
+}
+.mw-list li:hover,
+.layout-list li:hover { background: var(--bg-hover); }
+.mw-list li.selected  { background: var(--bg-selected); border-color: var(--accent); }
+.mw-list li:focus-visible,
+.layout-list li:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.mw-list .meta,
+.layout-list .meta {
+    color: var(--text-muted);
+    font-size: 0.78em;
+    margin-top: 2px;
+}
+
+/* Aperçus canvas : background tokenisé, pas de noir pur */
+.mw-list canvas,
+.layout-list canvas {
+    display: block;
+    margin-top: var(--space-2);
+    background: var(--canvas-bg);
+    border: 1px solid var(--border);
+    width: 100%;
+    height: auto;
+    border-radius: var(--radius-small);
+}
+
+/* Actions sur les layouts enregistrés : touch-friendly */
+.layout-list .actions {
+    display: flex;
+    gap: var(--space-1);
+    margin-top: var(--space-2);
+}
+.layout-list .actions .btn {
+    flex: 1;
+    padding: 6px var(--space-2);
+    font-size: 0.78em;
+    margin: 0;
+    min-height: 28px;
+}
+
+/* Forme d'enregistrement d'un layout : input puis bouton, séparés par une fine bordure */
+.save-layout-form {
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid var(--border-soft);
+}
+.save-layout-form + .save-layout-form {
+    border-bottom: none;
+}
+.save-layout-form label {
+    display: block;
+    font-size: 0.78em;
+    color: var(--text-muted);
+    margin-bottom: var(--space-1);
+    font-weight: 500;
+}
+.save-layout-form input[type="text"] {
+    width: 100%;
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 9px;
+    border-radius: var(--radius-small);
+    margin-bottom: var(--space-2);
+    font-family: var(--font-base);
+    font-size: 0.88em;
+}
+.save-layout-form .btn { width: 100%; margin: 0; }
+
+/* ─── Éditeur (panneau central) ─────────────────────────────── */
+.mw-editor {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-4);
+    min-width: 0;
+}
+.mw-editor.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    min-height: 240px;
+    text-align: center;
+    gap: var(--space-2);
+}
+.mw-editor.empty .empty-state-title {
+    color: var(--text-strong);
+    font-size: 1em;
+    font-weight: 600;
+    margin: 0;
+}
+.mw-editor.empty .empty-state-msg {
+    margin: 0;
+    max-width: 38ch;
+    font-size: 0.9em;
+}
+
+/* En-tête éditeur */
+.mw-editor-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+}
+.mw-editor-head h2 {
+    margin: 0;
+    font-size: 1em;
+    font-weight: 600;
+    color: var(--text-strong);
+}
+.mw-editor-head .meta {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: var(--space-1);
+}
+
+/* Lignes de champs */
+.mw-editor-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+    align-items: flex-end;
+}
+.mw-editor-row .field { display: flex; flex-direction: column; gap: 4px; }
+.mw-editor-row .field label {
+    font-size: 0.78em;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+.mw-editor-row .field input,
+.mw-editor-row .field select {
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 9px;
+    border-radius: var(--radius-small);
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    min-height: 32px;
+}
+.mw-editor-row .field input:focus-visible,
+.mw-editor-row .field select:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--bg);
+}
+.mw-editor-row .field-grow { flex: 1 1 280px; min-width: 240px; }
+.mw-editor-row .field-inline {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-2);
+    align-self: center;
+    font-size: 0.88em;
+}
+.mw-editor-row .field-color input {
+    width: 60px;
+    padding: 0;
+    min-height: 32px;
+}
+.mw-editor-row .field-narrow input { width: 88px; }
+
+/* Toolbar d'alignement : surface tonale, pas de bordure (anti nested-card) */
+.align-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    margin-bottom: var(--space-2);
+    padding: var(--space-2);
+    background: var(--bg-input);
+    border-radius: var(--radius-small);
+    font-size: 0.82em;
+}
+.align-toolbar .btn {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px 8px;
+}
+.align-toolbar .align-label {
+    color: var(--text-muted);
+    align-self: center;
+    margin: 0 var(--space-1) 0 var(--space-2);
+    font-size: 0.82em;
+    font-weight: 500;
+}
+.align-toolbar .align-label:first-child { margin-left: 0; }
+.align-toolbar .align-snap {
+    margin-left: auto;
+    align-self: center;
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.align-hint {
+    color: var(--text-muted);
+    font-size: 0.78em;
+    margin-bottom: var(--space-2);
+}
+
+/* Wrapper canvas : surface noire conservée (= zone signal-less rendue),
+   pas de bordure pour ne pas créer une nième surface. */
+.mw-canvas-wrap {
+    position: relative;
+    background: var(--canvas-bg);
+    border-radius: var(--radius-small);
+    overflow: hidden;
+}
+.mw-canvas-wrap canvas { display: block; cursor: crosshair; }
+
+/* Source picker */
+.mw-source-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+    align-items: flex-end;
+}
+.mw-source-picker .field-grow { flex: 1 1 320px; min-width: 240px; }
+.mw-source-picker select { width: 100%; }
+
+/* Table des entrées : pas de bordure d'encadrement, séparée par un fond tonal léger */
+.mw-entry-table {
+    margin-top: var(--space-3);
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.9em;
+}
+.mw-entry-table thead tr {
+    color: var(--text-muted);
+    text-align: left;
+}
+.mw-entry-table th,
+.mw-entry-table td {
+    padding: 6px var(--space-2);
+    border-bottom: 1px solid var(--border-soft);
+}
+.mw-entry-table th { border-bottom-color: var(--border); }
+.mw-entry-table th.w40 { width: 40px; }
+.mw-entry-table th.w90 { width: 90px; }
+
+.mw-entry-row { cursor: pointer; transition: background 0.1s; }
+.mw-entry-row:hover { background: var(--bg-hover); }
+.mw-entry-row.is-selected { background: var(--accent-soft); }
+.mw-entry-row.is-primary {
+    background: var(--bg-selected);
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+.mw-entry-row.is-primary td:first-child { font-weight: 600; color: var(--accent); }
+.mw-entry-color {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+    border: 1px solid var(--border-soft);
+    background: var(--swatch, var(--text-muted));
+}
+.mw-entry-path {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+}
+
+/* Panneau d'édition d'une entrée : surface tonale au lieu d'une carte
+   bordée, pour rester en cohérence "pas de carte dans carte". */
+.mw-entry-panel {
+    margin-top: var(--space-3);
+    padding: var(--space-3);
+    background: var(--bg-input);
+    border-radius: var(--radius-small);
+}
+.mw-entry-panel .mw-editor-row { margin-bottom: var(--space-2); }
+.mw-entry-panel .mw-editor-row:last-child { margin-bottom: 0; }
+.mw-entry-panel .mw-editor-row-divider {
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--border-soft);
+}
+
+/* Bandeau d'alerte local à l'éditeur, role=status — remplace les alert() natifs */
+.mw-toast {
+    position: sticky;
+    top: 8px;
+    z-index: 10;
+    margin-bottom: var(--space-3);
+    padding: 8px var(--space-3);
+    border-radius: var(--radius-small);
+    background: var(--status-warning-bg);
+    color: var(--status-warning-fg);
+    border: 1px solid var(--status-warning-fg);
+    font-size: 0.88em;
+    display: none;
+}
+.mw-toast.visible { display: block; animation: mw-toast-in 220ms cubic-bezier(.22,1,.36,1); }
+@keyframes mw-toast-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* ─── Responsive ────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+    .compose-layout {
+        grid-template-columns: 1fr;
+    }
+    .mw-list,
+    .layout-list {
+        max-height: 340px;
+        overflow-y: auto;
+    }
+}
+
+@media (max-width: 640px) {
+    .align-toolbar .align-snap { margin-left: 0; width: 100%; padding-top: var(--space-2); }
+    .mw-editor-row .field-grow { flex-basis: 100%; }
+}

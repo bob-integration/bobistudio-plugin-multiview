@@ -6,7 +6,7 @@
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": { "section": "traitements", "label": "Traitements", "route": "/traitements/multiview", "order": 10 },
   "script_template": "script.py",
-  "ui": { "control_html": "control.html", "control_js": "control.js" },
+  "ui": { "control_html": "control.html", "control_js": "control.js", "extra_js": "multiview.js", "extra_css": "multiview.css" },
   "deploy_defaults": {
     "flux_config": [], "shm_out": "mxl_mix",
     "out_width": 1280, "out_height": 720, "fps": 25, "scan": "p",
