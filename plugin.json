@@ -1,6 +1,7 @@
 {
   "type": "multiview",
   "label": "Multiviewer",
+  "badge": { "label": "Multiviewer", "class": "mode-multiview" },
   "version": "0.3.0",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
