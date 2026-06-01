@@ -6,7 +6,7 @@
     "class": "mode-multiview"
   },
   "deploy_order": 1,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
@@ -34,7 +34,8 @@
     "overlay_below": false,
     "label_size": 14,
     "tsl_port": 0,
-    "max_inputs": 4
+    "max_inputs": 4,
+    "frame_style": "none"
   },
   "config_schema": [
     {
@@ -74,6 +75,30 @@
       "min": 6,
       "max": 80,
       "default": 14
+    },
+    {
+      "key": "frame_style",
+      "type": "select",
+      "label": "Style de cadre",
+      "default": "none",
+      "options": [
+        {
+          "value": "none",
+          "label": "Aucun (bordure simple)"
+        },
+        {
+          "value": "classic",
+          "label": "Monitor broadcast"
+        },
+        {
+          "value": "tally_border",
+          "label": "Bordure tally colorée"
+        },
+        {
+          "value": "stylized",
+          "label": "Stylisé (pastilles)"
+        }
+      ]
     },
     {
       "key": "tsl_port",

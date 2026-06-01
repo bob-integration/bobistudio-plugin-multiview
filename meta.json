@@ -1,9 +1,10 @@
 {
-  "version": "0.3.1",
-  "date": "2026-05-31",
+  "version": "0.3.3",
+  "date": "2026-06-01",
   "changes": {
     "Nouveautés": [
-      "Ring buffer vidéo/audio configurable depuis Réglages → MXL (shm_video_ring / shm_audio_ring)."
+      "4 styles de cadre des fenêtres (none / classic / tally_border / stylized) — sélecteur « Style de cadre » dans le composer et la palette.",
+      "Styles tally_border et stylized intègrent tally (bordure colorée / pastilles PGM-PVW) et UMD."
     ],
     "Corrections": [],
     "Bugs connus": []

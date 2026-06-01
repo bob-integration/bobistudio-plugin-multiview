@@ -145,6 +145,7 @@ async function chargerMw(vmid) {
         border_color: '#ffffff',
         overlay_below: false,
         label_size: 14,
+        frame_style: 'none',
         max_inputs: 4,
         tsl_port: 4801
     }, dc.params || {});
@@ -224,6 +225,13 @@ function renderEditor(hostname) {
             <div class="field"><label>Taille texte (px)</label>
                 <input type="number" id="ed_label_size" min="6" max="80" value="${p.label_size || 14}"
                        onchange="onGlobalChange()"></div>
+            <div class="field"><label>Style de cadre</label>
+                <select id="ed_frame_style" onchange="onGlobalChange()">
+                    <option value="none"${(p.frame_style||'none')==='none'?' selected':''}>Aucun (bordure simple)</option>
+                    <option value="classic"${p.frame_style==='classic'?' selected':''}>Monitor broadcast</option>
+                    <option value="tally_border"${p.frame_style==='tally_border'?' selected':''}>Bordure tally colorée</option>
+                    <option value="stylized"${p.frame_style==='stylized'?' selected':''}>Stylisé (pastilles)</option>
+                </select></div>
             <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:6px">
                 <input type="checkbox" id="ed_overlay_below" ${p.overlay_below ? 'checked' : ''}
                        onchange="onGlobalChange()">
@@ -378,6 +386,7 @@ function onGlobalChange() {
     editorParams.border_color  = document.getElementById('ed_border_color').value;
     editorParams.overlay_below = document.getElementById('ed_overlay_below').checked;
     editorParams.label_size    = Math.max(6, parseInt(document.getElementById('ed_label_size').value) || 14);
+    { const fs = document.getElementById('ed_frame_style'); if (fs) editorParams.frame_style = fs.value; }
     dessiner();
 }
 
@@ -935,6 +944,7 @@ async function deployerEditor() {
     editorParams.border_color  = document.getElementById('ed_border_color').value;
     editorParams.overlay_below = document.getElementById('ed_overlay_below').checked;
     editorParams.label_size    = Math.max(6, parseInt(document.getElementById('ed_label_size').value) || 14);
+    { const fs = document.getElementById('ed_frame_style'); if (fs) editorParams.frame_style = fs.value; }
     const tslPortEl = document.getElementById('ed_tsl_port');
     if (tslPortEl) editorParams.tsl_port = parseInt(tslPortEl.value) || 0;
 
@@ -967,6 +977,7 @@ async function deployerEditor() {
         border_color:  editorParams.border_color,
         overlay_below: editorParams.overlay_below,
         label_size:    editorParams.label_size,
+        frame_style:   editorParams.frame_style || 'none',
         max_inputs:    editorParams.max_inputs,
         tsl_port:      editorParams.tsl_port ?? 4801
     };
@@ -1121,6 +1132,7 @@ async function enregistrerLayout() {
         border_color:  editorParams.border_color,
         overlay_below: editorParams.overlay_below,
         label_size:    editorParams.label_size,
+        frame_style:   editorParams.frame_style || 'none',
         max_inputs:    editorParams.max_inputs,
         // Path et in_w/in_h volontairement omis : un layout = réglages géométriques + style,
         // pas l'affectation de source. Les sources sont restaurées à l'apply depuis l'éditeur.
@@ -1158,6 +1170,7 @@ function appliquerLayout(lid) {
     editorParams.border_color  = cfg.border_color || '#ffffff';
     editorParams.overlay_below = !!cfg.overlay_below;
     editorParams.label_size    = cfg.label_size || editorParams.label_size || 14;
+    editorParams.frame_style   = cfg.frame_style || editorParams.frame_style || 'none';
     editorParams.max_inputs    = cfg.max_inputs || editorParams.max_inputs;
     // Préserve les sources affectées dans l'éditeur (par index) — le layout n'apporte
     // que les réglages géométriques et de style.

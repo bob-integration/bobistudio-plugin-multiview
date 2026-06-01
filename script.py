@@ -69,9 +69,32 @@ TALLY_TEXT_COLORS = {{
     "green": (255, 255, 255, 255),   # blanc sur fond vert
     "amber": (255,  90,  90, 255),   # rouge sur fond vert
 }}
-TALLY_SIZE = max(8,  int(round(LABEL_SIZE * 1.4)))
-TALLY_PAD  = max(2,  int(round(LABEL_SIZE * 0.35)))
-BAR_H      = max(14, int(round(LABEL_SIZE * 2)))
+TALLY_SIZE  = max(8,  int(round(LABEL_SIZE * 1.4)))
+TALLY_PAD   = max(2,  int(round(LABEL_SIZE * 0.35)))
+BAR_H       = max(14, int(round(LABEL_SIZE * 2)))
+FRAME_STYLE = CONFIG.get("frame_style") or "none"  # none | classic | tally_border | stylized
+
+# Couleurs de bordure épaisse selon tally dominant (styles tally_border / stylized)
+_TALLY_BORDER_RGBA = {{
+    "off":   (  0,   0,   0,   0),
+    "red":   (220,  40,  40, 255),
+    "green": ( 40, 200,  80, 255),
+    "amber": (220, 160,   0, 255),
+}}
+# Couleur du texte TSL selon dominante (styles tally_border / stylized)
+_TALLY_TEXT_BY_DOMINANT = {{
+    "off":   (200, 200, 200, 255),
+    "red":   (255, 100, 100, 255),
+    "green": (120, 255, 140, 255),
+    "amber": (255, 200,  60, 255),
+}}
+# (fill, outline) des pastilles rondes par état (style stylized)
+_PILL_COLORS = {{
+    "off":   (( 50,  50,  50, 180), ( 90,  90,  90, 200)),
+    "red":   ((220,  40,  40, 240), (255,  80,  80, 255)),
+    "green": (( 40, 200,  80, 240), ( 80, 255, 120, 255)),
+    "amber": ((220, 160,   0, 240), (255, 200,  40, 255)),
+}}
 
 # ─── Peak meters (audio) ─────────────────────────────────────
 # Format shm audio cohérent avec receiver_nmos.py : header 64B + ring 100 chunks
@@ -412,64 +435,199 @@ except Exception:
 def _is_protocol_label(cfg):
     return cfg.get("show_label") and cfg.get("label_source") == "protocol"
 
+def _window_tally_dominant(i):
+    """Dominante des deux slots L/R d'une fenêtre → "red"|"green"|"amber"|"off".
+    Rouge prioritaire ; rouge+vert simultanés → amber."""
+    stL = tally_state.get(f"{{i}}_L", "off")
+    stR = tally_state.get(f"{{i}}_R", "off")
+    states = {{stL, stR}}
+    if "amber" in states:
+        return "amber"
+    has_red   = "red" in states
+    has_green = "green" in states
+    if has_red and has_green:
+        return "amber"
+    if has_red:
+        return "red"
+    if has_green:
+        return "green"
+    return "off"
+
+def _render_border_colored(d, x, y, w, h, color_rgba, thickness):
+    """Rectangle plein de `thickness` px tout autour de (x,y,w,h)."""
+    if color_rgba[3] == 0 or thickness <= 0:
+        return
+    for k in range(thickness):
+        d.rectangle([x + k, y + k, x + w - 1 - k, y + h - 1 - k], outline=color_rgba)
+
+def _render_pill(d, cx, cy, r, fill, outline):
+    """Pastille ronde centrée (cx, cy) de rayon r."""
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill, outline=outline, width=2)
+
+def _render_gradient_bar(img, x, y, w, h, rgb, a_top, a_bot):
+    """Dégradé vertical alpha (a_top → a_bot) de couleur `rgb`, collé sur `img` RGBA."""
+    if w <= 0 or h <= 0:
+        return
+    ramp = np.linspace(a_top, a_bot, h).astype(np.uint8)          # (h,)
+    alpha = np.repeat(ramp[:, None], w, axis=1)                   # (h, w)
+    tile = np.zeros((h, w, 4), dtype=np.uint8)
+    tile[..., 0] = rgb[0]; tile[..., 1] = rgb[1]; tile[..., 2] = rgb[2]
+    tile[..., 3] = alpha
+    img.alpha_composite(Image.fromarray(tile, "RGBA"), (x, y))
+
 def render_static():
-    """Pré-rendu une fois : bordures + bandeau noir + labels statiques (hostname/mxl_path).
-    Les labels en mode 'protocol' et les pavés tally sont rendus dynamiquement."""
+    """Pré-rendu une fois : décor fixe (bordures + bandeau + labels statiques).
+    Les labels 'protocol' et les éléments dépendant du tally → render_dynamic."""
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     for cfg in FLUX_CONFIG:
         x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
-        if BORDER_W > 0:
-            for i in range(BORDER_W):
-                d.rectangle([x + i, y + i, x + w - 1 - i, y + h - 1 - i], outline=BORDER_COLOR)
-        bar_on = bool(cfg.get("show_label") or cfg.get("show_tally"))
-        if bar_on:
-            bar_top = y + h - BAR_H
-            d.rectangle([x, bar_top, x + w, y + h], fill=(0, 0, 0, 180))
-            if cfg.get("show_label") and not _is_protocol_label(cfg):
-                text_l, text_r = x, x + w
-                if cfg.get("show_tally"):
-                    text_l += TALLY_PAD + TALLY_SIZE + 4
-                    text_r -= TALLY_PAD + TALLY_SIZE + 4
-                name = cfg.get("name", "") or ""
-                d.text(((text_l + text_r) // 2, bar_top + BAR_H // 2),
-                       name, font=FONT, fill=(255, 255, 255, 255), anchor="mm")
+        show_label = bool(cfg.get("show_label"))
+        show_tally = bool(cfg.get("show_tally"))
+        bar_on = show_label or show_tally
+        static_label = show_label and not _is_protocol_label(cfg)
+        name = cfg.get("name", "") or ""
+
+        if FRAME_STYLE == "classic":
+            # Barre noire épaisse en bas + label centré. Lampes L/R en dynamique.
+            cbar = max(BAR_H, int(round(LABEL_SIZE * 2.5)))
+            if bar_on:
+                bar_top = y + h - cbar
+                d.rectangle([x, bar_top, x + w, y + h], fill=(10, 10, 12, 235))
+                d.line([x, bar_top, x + w, bar_top], fill=(80, 80, 90, 255), width=1)
+                if static_label:
+                    tl, tr = x + TALLY_PAD + TALLY_SIZE + 6, x + w - TALLY_PAD - TALLY_SIZE - 6
+                    d.text(((tl + tr) // 2, bar_top + cbar // 2),
+                           name, font=FONT, fill=(240, 240, 245, 255), anchor="mm")
+            # Cadre fin gris
+            d.rectangle([x, y, x + w - 1, y + h - 1], outline=(60, 60, 68, 255))
+
+        elif FRAME_STYLE == "tally_border":
+            # La bordure colorée est dynamique. Ici : juste le label sur fond translucide
+            # posé en overlay dans le bas de l'image (pas de barre dédiée).
+            if static_label:
+                lab_h = BAR_H
+                _render_gradient_bar(img, x, y + h - lab_h, w, lab_h, (0, 0, 0), 0, 200)
+                d.text((x + w // 2, y + h - lab_h // 2),
+                       name, font=FONT, fill=(245, 245, 250, 255), anchor="mm")
+
+        elif FRAME_STYLE == "stylized":
+            # Dégradé bas pour l'UMD + cadre fin. Pastilles L/R en dynamique.
+            if bar_on:
+                grad_h = max(BAR_H, int(round(LABEL_SIZE * 2.2)))
+                _render_gradient_bar(img, x, y + h - grad_h, w, grad_h, (0, 0, 0), 0, 210)
+                if static_label:
+                    d.text((x + w // 2, y + h - grad_h // 2 + 2),
+                           name, font=FONT, fill=(245, 245, 250, 255), anchor="mm")
+            d.rectangle([x, y, x + w - 1, y + h - 1], outline=(90, 90, 100, 220))
+
+        else:  # "none" — comportement historique
+            if BORDER_W > 0:
+                for i in range(BORDER_W):
+                    d.rectangle([x + i, y + i, x + w - 1 - i, y + h - 1 - i], outline=BORDER_COLOR)
+            if bar_on:
+                bar_top = y + h - BAR_H
+                d.rectangle([x, bar_top, x + w, y + h], fill=(0, 0, 0, 180))
+                if static_label:
+                    text_l, text_r = x, x + w
+                    if show_tally:
+                        text_l += TALLY_PAD + TALLY_SIZE + 4
+                        text_r -= TALLY_PAD + TALLY_SIZE + 4
+                    d.text(((text_l + text_r) // 2, bar_top + BAR_H // 2),
+                           name, font=FONT, fill=(255, 255, 255, 255), anchor="mm")
     return rgba_to_yuv(img)
 
 def render_dynamic():
-    """Re-rendu à chaque changement Tally/TSL : labels protocole + pavés L/R."""
+    """Re-rendu à chaque changement Tally/TSL : éléments dépendant de l'état tally
+    (bordures colorées, pastilles, lampes, labels protocole)."""
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     for i, cfg in enumerate(FLUX_CONFIG):
-        if not (cfg.get("show_label") or cfg.get("show_tally")):
+        show_label = bool(cfg.get("show_label"))
+        show_tally = bool(cfg.get("show_tally"))
+        if not (show_label or show_tally):
             continue
         x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
-        bar_top = y + h - BAR_H
-        if _is_protocol_label(cfg):
-            text_l, text_r = x, x + w
-            tally_color = tally_state.get(f"{{i}}_L", "off")  # L et R ont la même couleur
-            if cfg.get("show_tally"):
-                text_l += TALLY_PAD + TALLY_SIZE + 4
-                text_r -= TALLY_PAD + TALLY_SIZE + 4
-            bg = TALLY_TEXT_BG.get(tally_color)
-            if bg:
-                d.rectangle([text_l, bar_top, text_r, y + h], fill=bg)
-            txt = tsl_text.get(i, "") or ""
-            txt_fill = TALLY_TEXT_COLORS.get(tally_color, (200, 200, 200, 255))
-            d.text(((text_l + text_r) // 2, bar_top + BAR_H // 2),
-                   txt, font=FONT, fill=txt_fill, anchor="mm")
-        if cfg.get("show_tally"):
-            ty = bar_top + (BAR_H - TALLY_SIZE) // 2
-            stL = tally_state.get(f"{{i}}_L", "off")
-            stR = tally_state.get(f"{{i}}_R", "off")
-            cL  = TALLY_COLORS[stL];        bL = TALLY_BORDER_COLORS[stL]
-            cR  = TALLY_COLORS[stR];        bR = TALLY_BORDER_COLORS[stR]
-            d.rectangle([x + TALLY_PAD,                  ty,
-                         x + TALLY_PAD + TALLY_SIZE,     ty + TALLY_SIZE],
-                        fill=cL, outline=bL)
-            d.rectangle([x + w - TALLY_PAD - TALLY_SIZE, ty,
-                         x + w - TALLY_PAD,              ty + TALLY_SIZE],
-                        fill=cR, outline=bR)
+        is_proto = _is_protocol_label(cfg)
+        proto_txt = (tsl_text.get(i, "") or "") if is_proto else ""
+        dom = _window_tally_dominant(i)
+
+        if FRAME_STYLE == "classic":
+            cbar = max(BAR_H, int(round(LABEL_SIZE * 2.5)))
+            bar_top = y + h - cbar
+            # Fond de barre teinté selon dominante
+            if show_tally and dom != "off":
+                tint = {{"red": (120, 20, 20, 235), "green": (20, 90, 35, 235),
+                        "amber": (120, 80, 0, 235)}}[dom]
+                d.rectangle([x, bar_top, x + w, y + h], fill=tint)
+            # Lampes carrées L/R
+            if show_tally:
+                ty = bar_top + (cbar - TALLY_SIZE) // 2
+                for st, lx in ((tally_state.get(f"{{i}}_L", "off"), x + TALLY_PAD),
+                               (tally_state.get(f"{{i}}_R", "off"),
+                                x + w - TALLY_PAD - TALLY_SIZE)):
+                    fill = _TALLY_BORDER_RGBA.get(st, (0, 0, 0, 0))
+                    if fill[3] == 0:
+                        fill = (40, 40, 44, 200)
+                    d.rectangle([lx, ty, lx + TALLY_SIZE, ty + TALLY_SIZE],
+                                fill=fill, outline=(220, 220, 225, 255))
+            if is_proto and proto_txt:
+                tl, tr = x + TALLY_PAD + TALLY_SIZE + 6, x + w - TALLY_PAD - TALLY_SIZE - 6
+                d.text(((tl + tr) // 2, bar_top + cbar // 2),
+                       proto_txt, font=FONT, fill=(245, 245, 250, 255), anchor="mm")
+
+        elif FRAME_STYLE == "tally_border":
+            thick = max(4, int(round(LABEL_SIZE * 0.45)))
+            _render_border_colored(d, x, y, w, h, _TALLY_BORDER_RGBA[dom], thick)
+            if is_proto and proto_txt:
+                lab_h = BAR_H
+                _render_gradient_bar(img, x, y + h - lab_h, w, lab_h, (0, 0, 0), 0, 200)
+                d.text((x + w // 2, y + h - lab_h // 2), proto_txt, font=FONT,
+                       fill=_TALLY_TEXT_BY_DOMINANT[dom], anchor="mm")
+
+        elif FRAME_STYLE == "stylized":
+            # Pastilles rondes PGM (gauche) / PVW (droite) en haut
+            if show_tally:
+                r = max(5, int(round(LABEL_SIZE * 0.5)))
+                cy = y + r + 6
+                stL = tally_state.get(f"{{i}}_L", "off")
+                stR = tally_state.get(f"{{i}}_R", "off")
+                fL, oL = _PILL_COLORS.get(stL, _PILL_COLORS["off"])
+                fR, oR = _PILL_COLORS.get(stR, _PILL_COLORS["off"])
+                _render_pill(d, x + r + 6,     cy, r, fL, oL)
+                _render_pill(d, x + w - r - 6, cy, r, fR, oR)
+            if is_proto and proto_txt:
+                grad_h = max(BAR_H, int(round(LABEL_SIZE * 2.2)))
+                _render_gradient_bar(img, x, y + h - grad_h, w, grad_h, (0, 0, 0), 0, 210)
+                d.text((x + w // 2, y + h - grad_h // 2 + 2), proto_txt, font=FONT,
+                       fill=_TALLY_TEXT_BY_DOMINANT[dom], anchor="mm")
+
+        else:  # "none" — comportement historique
+            bar_top = y + h - BAR_H
+            if is_proto:
+                text_l, text_r = x, x + w
+                tally_color = tally_state.get(f"{{i}}_L", "off")
+                if show_tally:
+                    text_l += TALLY_PAD + TALLY_SIZE + 4
+                    text_r -= TALLY_PAD + TALLY_SIZE + 4
+                bg = TALLY_TEXT_BG.get(tally_color)
+                if bg:
+                    d.rectangle([text_l, bar_top, text_r, y + h], fill=bg)
+                txt_fill = TALLY_TEXT_COLORS.get(tally_color, (200, 200, 200, 255))
+                d.text(((text_l + text_r) // 2, bar_top + BAR_H // 2),
+                       proto_txt, font=FONT, fill=txt_fill, anchor="mm")
+            if show_tally:
+                ty = bar_top + (BAR_H - TALLY_SIZE) // 2
+                stL = tally_state.get(f"{{i}}_L", "off")
+                stR = tally_state.get(f"{{i}}_R", "off")
+                cL = TALLY_COLORS[stL]; bL = TALLY_BORDER_COLORS[stL]
+                cR = TALLY_COLORS[stR]; bR = TALLY_BORDER_COLORS[stR]
+                d.rectangle([x + TALLY_PAD, ty,
+                             x + TALLY_PAD + TALLY_SIZE, ty + TALLY_SIZE],
+                            fill=cL, outline=bL)
+                d.rectangle([x + w - TALLY_PAD - TALLY_SIZE, ty,
+                             x + w - TALLY_PAD, ty + TALLY_SIZE],
+                            fill=cR, outline=bR)
     return rgba_to_yuv(img)
 
 def render_meters(now):
