@@ -1,42 +1,130 @@
 {
   "type": "multiview",
   "label": "Multiviewer",
-  "badge": { "label": "Multiviewer", "class": "mode-multiview" },
+  "badge": {
+    "label": "Multiviewer",
+    "class": "mode-multiview"
+  },
   "deploy_order": 1,
-  "version": "0.3.0",
+  "version": "0.3.2",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
-  "nav": { "section": "traitements", "label": "Traitements", "route": "/traitements/multiview", "order": 10 },
+  "nav": {
+    "section": "traitements",
+    "label": "Traitements",
+    "route": "/traitements/multiview",
+    "order": 10
+  },
   "script_template": "script.py",
-  "ui": { "control_html": "control.html", "control_js": "control.js", "extra_js": "multiview.js", "extra_css": "multiview.css" },
+  "ui": {
+    "control_html": "control.html",
+    "control_js": "control.js",
+    "extra_js": "multiview.js",
+    "extra_css": "multiview.css"
+  },
   "deploy_defaults": {
-    "flux_config": [], "shm_out": "mxl_mix",
-    "out_width": 1280, "out_height": 720, "fps": 25, "scan": "p",
-    "border_w": 0, "border_color": "#ffffff", "overlay_below": false,
-    "label_size": 14, "tsl_port": 0, "max_inputs": 4
+    "flux_config": [],
+    "shm_out": "mxl_mix",
+    "out_width": 1280,
+    "out_height": 720,
+    "fps": 25,
+    "scan": "p",
+    "border_w": 0,
+    "border_color": "#ffffff",
+    "overlay_below": false,
+    "label_size": 14,
+    "tsl_port": 0,
+    "max_inputs": 4
   },
   "config_schema": [
-    { "key": "shm_out", "type": "text", "label": "SHM sortie", "placeholder": "mxl_mix", "default": "mxl_mix" },
-    { "key": "max_inputs", "type": "number", "label": "Max entrées", "min": 1, "max": 16, "default": 4 },
-    { "key": "border_w", "type": "number", "label": "Bordure (px)", "min": 0, "max": 30, "default": 0 },
-    { "key": "border_color", "type": "text", "label": "Couleur bordure", "placeholder": "#ffffff", "default": "#ffffff" },
-    { "key": "label_size", "type": "number", "label": "Taille label (px)", "min": 6, "max": 80, "default": 14 },
-    { "key": "tsl_port", "type": "number", "label": "Port TSL 5.0 (0 = off)", "min": 0, "max": 65535, "default": 0 }
+    {
+      "key": "shm_out",
+      "type": "text",
+      "label": "SHM sortie",
+      "placeholder": "mxl_mix",
+      "default": "mxl_mix"
+    },
+    {
+      "key": "max_inputs",
+      "type": "number",
+      "label": "Max entrées",
+      "min": 1,
+      "max": 16,
+      "default": 4
+    },
+    {
+      "key": "border_w",
+      "type": "number",
+      "label": "Bordure (px)",
+      "min": 0,
+      "max": 30,
+      "default": 0
+    },
+    {
+      "key": "border_color",
+      "type": "text",
+      "label": "Couleur bordure",
+      "placeholder": "#ffffff",
+      "default": "#ffffff"
+    },
+    {
+      "key": "label_size",
+      "type": "number",
+      "label": "Taille label (px)",
+      "min": 6,
+      "max": 80,
+      "default": 14
+    },
+    {
+      "key": "tsl_port",
+      "type": "number",
+      "label": "Port TSL 5.0 (0 = off, ignoré si TSL orchestrateur activé)",
+      "min": 0,
+      "max": 65535,
+      "default": 0
+    },
+    {
+      "key": "tsl_remote",
+      "type": "bool",
+      "label": "TSL géré par l'orchestrateur (service centralisé)",
+      "default": false
+    }
   ],
   "wiring": {
     "produces": [
-      { "essence": "video", "shm": "{shm_out}" }
+      {
+        "essence": "video",
+        "shm": "{shm_out}"
+      }
     ],
     "consumes": [
-      { "from_list": "flux_config", "essence": "video", "shm_field": "path",
-        "shm_prefix": "/dev/shm/", "name_field": "name", "dims_fields": ["in_w", "in_h"],
-        "existing_only": true, "input_key": "idx" }
+      {
+        "from_list": "flux_config",
+        "essence": "video",
+        "shm_field": "path",
+        "shm_prefix": "/dev/shm/",
+        "name_field": "name",
+        "dims_fields": [
+          "in_w",
+          "in_h"
+        ],
+        "existing_only": true,
+        "input_key": "idx"
+      }
     ],
     "mode": "hot-wire",
     "state_endpoint": "/input"
   },
   "control": {
-    "endpoints": ["/input", "/state", "/window"],
-    "recall": { "source": "layouts", "scope": "global", "endpoint": "/window" }
+    "endpoints": [
+      "/input",
+      "/state",
+      "/window"
+    ],
+    "recall": {
+      "source": "layouts",
+      "scope": "global",
+      "endpoint": "/window"
+    }
   }
 }
