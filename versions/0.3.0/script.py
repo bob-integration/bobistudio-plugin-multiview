@@ -30,7 +30,6 @@ BORDER_COLOR  = CONFIG.get("border_color") or "#ffffff" # couleur de bordure glo
 OVERLAY_BELOW = bool(CONFIG.get("overlay_below"))       # bandeau sous l'image vs par-dessus
 LABEL_SIZE    = int(CONFIG.get("label_size") or 14)     # taille du texte du label (px)
 TSL_PORT      = int(CONFIG.get("tsl_port") or 0)        # port TCP TSL 5.0 (0 = désactivé)
-TSL_REMOTE    = bool(CONFIG.get("tsl_remote"))          # True = TSL géré par l'orchestrateur (désactive le serveur local)
 
 # Chroma uniforme du pipeline (entrées ET sortie ont le même layout ; défaut 4:2:2).
 CHROMA = str(CONFIG.get("chroma") or "422")
@@ -39,7 +38,7 @@ _CH = {{"420": 2, "422": 1, "444": 1}}.get(CHROMA, 1)   # diviseur hauteur chrom
 PIX_FMT = {{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}.get(CHROMA, "yuv422p")
 OUT_FRAME_SIZE = OUT_WIDTH * OUT_HEIGHT + 2 * (OUT_WIDTH // _CW) * (OUT_HEIGHT // _CH)
 HEADER_SIZE    = 64
-RING_SIZE   = CONFIG.get("shm_video_ring", 10)
+RING_SIZE      = 10
 OUT_TOTAL      = HEADER_SIZE + (OUT_FRAME_SIZE * RING_SIZE)
 FRAME_INTERVAL = 1.0 / 25
 
@@ -82,7 +81,7 @@ A_BIT_DEPTH         = 24
 A_SAMPLES_PER_CHUNK = A_SAMPLE_RATE // 1000        # 48
 A_CHUNK_SIZE        = A_SAMPLES_PER_CHUNK * A_CHANNELS_MAX * (A_BIT_DEPTH // 8)  # 1152
 A_HEADER_SIZE       = 64
-A_RING_SIZE   = CONFIG.get("shm_audio_ring", 100)
+A_RING_SIZE         = 100
 A_TOTAL_SIZE        = A_HEADER_SIZE + A_RING_SIZE * A_CHUNK_SIZE
 
 METER_BAR_W          = 5
@@ -290,49 +289,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(metrics)
 
     def do_POST(self):
+        if self.path != "/tally":
+            self.send_response(404); self.end_headers(); return
         length = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(length).decode() or "{{}}"
         try:
-            data = json.loads(body)
+            data = json.loads(self.rfile.read(length).decode() or "{{}}")
+            idx  = int(data["flux_idx"])
+            slot = str(data["slot"]).upper()
+            color = str(data.get("color", "off")).lower()
+            if slot not in ("L", "R") or color not in TALLY_COLORS:
+                raise ValueError("slot/color invalide")
+            tally_state[f"{{idx}}_{{slot}}"] = color
+            tally_dirty.set()
+            self._send_json({{"status": "ok"}})
         except Exception as e:
             self.send_response(400); self.end_headers()
-            self.wfile.write(str(e).encode()); return
-
-        if self.path == "/tally":
-            try:
-                idx   = int(data["flux_idx"])
-                slot  = str(data["slot"]).upper()
-                color = str(data.get("color", "off")).lower()
-                if slot not in ("L", "R") or color not in TALLY_COLORS:
-                    raise ValueError("slot/color invalide")
-                tally_state[f"{{idx}}_{{slot}}"] = color
-                tally_dirty.set()
-                self._send_json({{"status": "ok"}})
-            except Exception as e:
-                self.send_response(400); self.end_headers()
-                self.wfile.write(str(e).encode())
-
-        elif self.path == "/tally_bulk":
-            try:
-                updates = data.get("updates") or []
-                changed = False
-                for upd in updates:
-                    idx   = int(upd["flux_idx"])
-                    slot  = str(upd["slot"]).upper()
-                    color = str(upd.get("color", "off")).lower()
-                    if slot not in ("L", "R") or color not in TALLY_COLORS:
-                        continue
-                    tally_state[f"{{idx}}_{{slot}}"] = color
-                    changed = True
-                if changed:
-                    tally_dirty.set()
-                self._send_json({{"status": "ok", "updates": len(updates)}})
-            except Exception as e:
-                self.send_response(400); self.end_headers()
-                self.wfile.write(str(e).encode())
-
-        else:
-            self.send_response(404); self.end_headers()
+            self.wfile.write(str(e).encode())
 
     def _send_json(self, payload):
         self.send_response(200)
@@ -682,7 +654,7 @@ def _tsl_server():
             except Exception: pass
             time.sleep(2)
 
-if TSL_PORT > 0 and not TSL_REMOTE:
+if TSL_PORT > 0:
     threading.Thread(target=_tsl_server, daemon=True).start()
 
 static_y, static_u, static_v, static_a, static_a2 = render_static()
