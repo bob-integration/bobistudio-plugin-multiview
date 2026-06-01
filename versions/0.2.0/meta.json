@@ -1,0 +1,12 @@
+{
+  "version": "0.2.0",
+  "date": "2026-05-15",
+  "changes": {
+    "Nouveautés": [
+      "Tally TSL 5.0 par fenêtre (cases L/R + label protocole).",
+      "Peak meters audio par fenêtre (dBFS / EBU PPM, peak hold)."
+    ],
+    "Corrections": [],
+    "Bugs connus": []
+  }
+}

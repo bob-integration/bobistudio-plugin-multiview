@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "date": "2026-05-01",
+  "changes": {
+    "Nouveautés": [
+      "Version initiale du multiviewer : N entrées vidéo composées librement (position / taille) vers une sortie composite unique."
+    ],
+    "Corrections": [],
+    "Bugs connus": []
+  }
+}
