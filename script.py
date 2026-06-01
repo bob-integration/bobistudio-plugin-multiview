@@ -25,12 +25,18 @@ FLUX_CONFIG   = CONFIG.get("flux_config") or []
 SHM_OUT       = "/dev/shm/" + (CONFIG.get("shm_out") or "mxl_mix")
 OUT_WIDTH     = int(CONFIG.get("out_width") or CONFIG.get("width") or 1280)
 OUT_HEIGHT    = int(CONFIG.get("out_height") or CONFIG.get("height") or 720)
+def _as_bool(v):
+    # bool("False") == True : on parse explicitement les chaînes de CONFIG.
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
+
 BORDER_W      = int(CONFIG.get("border_w") or 0)        # bordure globale (px)
 BORDER_COLOR  = CONFIG.get("border_color") or "#ffffff" # couleur de bordure globale
-OVERLAY_BELOW = bool(CONFIG.get("overlay_below"))       # bandeau sous l'image vs par-dessus
+OVERLAY_BELOW = _as_bool(CONFIG.get("overlay_below"))   # bandeau sous l'image vs par-dessus
 LABEL_SIZE    = int(CONFIG.get("label_size") or 14)     # taille du texte du label (px)
 TSL_PORT      = int(CONFIG.get("tsl_port") or 0)        # port TCP TSL 5.0 (0 = désactivé)
-TSL_REMOTE    = bool(CONFIG.get("tsl_remote"))          # True = TSL géré par l'orchestrateur (désactive le serveur local)
+TSL_REMOTE    = _as_bool(CONFIG.get("tsl_remote"))      # True = TSL géré par l'orchestrateur (désactive le serveur local)
 
 # Chroma uniforme du pipeline (entrées ET sortie ont le même layout ; défaut 4:2:2).
 CHROMA = str(CONFIG.get("chroma") or "422")
