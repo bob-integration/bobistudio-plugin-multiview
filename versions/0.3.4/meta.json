@@ -1,0 +1,12 @@
+{
+  "version": "0.3.3",
+  "date": "2026-06-01",
+  "changes": {
+    "Nouveautés": [
+      "4 styles de cadre des fenêtres (none / classic / tally_border / stylized) — sélecteur « Style de cadre » dans le composer et la palette.",
+      "Styles tally_border et stylized intègrent tally (bordure colorée / pastilles PGM-PVW) et UMD."
+    ],
+    "Corrections": [],
+    "Bugs connus": []
+  }
+}

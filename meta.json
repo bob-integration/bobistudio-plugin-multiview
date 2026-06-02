@@ -1,10 +1,9 @@
 {
-  "version": "0.3.3",
-  "date": "2026-06-01",
+  "version": "0.3.5",
+  "date": "2026-06-02",
   "changes": {
     "Nouveautés": [
-      "4 styles de cadre des fenêtres (none / classic / tally_border / stylized) — sélecteur « Style de cadre » dans le composer et la palette.",
-      "Styles tally_border et stylized intègrent tally (bordure colorée / pastilles PGM-PVW) et UMD."
+      "Profondeur de bits du pipeline shm configurable 8/10/12 bits — pilotée par Réglages → MXL « Profondeur du pipeline shm » (force8 par défaut : 8 bits, comportement inchangé ; suivi du format : frames 10/12 bits stockées sur 16 bits, ×2 mémoire)."
     ],
     "Corrections": [],
     "Bugs connus": []
