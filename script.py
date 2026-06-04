@@ -172,11 +172,11 @@ def _update_peaks(state, n_channels, now):
     slot = chunk_index % A_RING_SIZE
     off  = A_HEADER_SIZE + slot * A_CHUNK_SIZE
     chunk = bytes(shm[off:off + A_CHUNK_SIZE])
-    # 3 bytes per sample, little-endian signed, 8 channels interleaved
+    # 3 bytes per sample, BIG-endian signed (wire-native), 8 channels interleaved
     arr = np.frombuffer(chunk, dtype=np.uint8).reshape(A_SAMPLES_PER_CHUNK, A_CHANNELS_MAX, 3)
-    samples = (arr[:, :, 0].astype(np.int32)
+    samples = ((arr[:, :, 0].astype(np.int32) << 16)
                | (arr[:, :, 1].astype(np.int32) << 8)
-               | (arr[:, :, 2].astype(np.int32) << 16))
+               | arr[:, :, 2].astype(np.int32))
     samples = np.where(samples & 0x800000, samples - (1 << 24), samples)
     peaks_lin = np.max(np.abs(samples), axis=0).astype(np.float64)  # (channels,)
     full_scale = float(1 << (A_BIT_DEPTH - 1))

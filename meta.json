@@ -1,8 +1,11 @@
 {
-  "version": "0.3.5",
-  "date": "2026-06-02",
+  "version": "0.3.6",
+  "date": "2026-06-04",
   "changes": {
     "Nouveautés": [
+      "Pipeline audio MXL en BIG-ENDIAN wire-native (s24be) : le shm audio porte désormais les octets du fil 2110-30 (plus de conversion). Migration ATOMIQUE de toute la chaîne audio (receiver_2110/sender_2110/streamer/recorder/player + VU multiview + sinus avsync) — à redéployer TOUS ENSEMBLE (un conteneur resté en s24le = audio cassé). Codecs FICHIER (recorder pcm_s24le) inchangés ; sortie 2110-30 sender = passthrough BE."
+    ],
+    "Nouveautés (0.3.5)": [
       "Profondeur de bits du pipeline shm configurable 8/10/12 bits — pilotée par Réglages → MXL « Profondeur du pipeline shm » (force8 par défaut : 8 bits, comportement inchangé ; suivi du format : frames 10/12 bits stockées sur 16 bits, ×2 mémoire)."
     ],
     "Corrections": [],
