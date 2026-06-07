@@ -63,6 +63,13 @@ HEADER_SIZE    = 64
 RING_SIZE   = CONFIG.get("shm_video_ring", 10)
 OUT_TOTAL      = HEADER_SIZE + (OUT_FRAME_SIZE * RING_SIZE)
 FRAME_INTERVAL = 1.0 / 25
+# Genlock broadcast : sortie du multiview (mur de monitoring) calée en PHASE sur la grille PTP
+# (CLOCK_REALTIME, disciplinée phc2sys) → write_ts = instant de grille. off → cadence libre héritée.
+_gl = CONFIG.get("genlock", True)
+GENLOCK = _gl if isinstance(_gl, bool) else str(_gl).strip().lower() in ("1", "true", "yes", "on")
+def _grid_next(now_s, interval_s):
+    import math as _m
+    return (_m.floor(now_s / interval_s) + 1) * interval_s
 
 TALLY_COLORS = {{
     # fill : rouge seulement quand le signal rouge est actif
@@ -963,7 +970,7 @@ shm_out = mmap.mmap(f_out.fileno(), OUT_TOTAL)
 shm_out_view = memoryview(shm_out)
 out_frame_index = 0
 start_time = time.time()
-next_frame_time = start_time
+next_frame_time = _grid_next(start_time, FRAME_INTERVAL) if GENLOCK else start_time
 
 while True:
     now = time.time()
@@ -1075,7 +1082,9 @@ while True:
     offset = HEADER_SIZE + slot * OUT_FRAME_SIZE
     shm_out_view[offset:offset + OUT_FRAME_SIZE] = out_frame.tobytes()
     ts_out = time.time_ns()
-    shm_out[0:16] = struct.pack("QQ", out_frame_index, ts_out)
+    # write_ts = instant de présentation (grille PTP) en genlock, sinon horloge mur.
+    _wts = int(next_frame_time * 1e9) if GENLOCK else ts_out
+    shm_out[0:16] = struct.pack("QQ", out_frame_index, _wts)
     # Latence par PiP : Δ ts_out − ts_in pour chaque input lu ce cycle
     for path, ts_in in ts_in_per_input.items():
         key = path[len("/dev/shm/"):] if path.startswith("/dev/shm/") else path
@@ -1083,7 +1092,12 @@ while True:
             lat_in[key] = RollingMs()
         lat_in[key].push((ts_out - ts_in) / 1e6)
     out_frame_index += 1
-    next_frame_time = start_time + (out_frame_index * FRAME_INTERVAL)
+    if GENLOCK:
+        next_frame_time += FRAME_INTERVAL
+        if next_frame_time < time.time():           # retard → recale sur la grille
+            next_frame_time = _grid_next(time.time(), FRAME_INTERVAL)
+    else:
+        next_frame_time = start_time + (out_frame_index * FRAME_INTERVAL)
     if out_frame_index % 25 == 0:
         elapsed = time.time() - start_time
         metrics["fps"] = round(out_frame_index / elapsed, 1)

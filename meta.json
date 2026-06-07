@@ -1,8 +1,9 @@
 {
-  "version": "0.4.0",
-  "date": "2026-06-05",
+  "version": "0.5.0",
+  "date": "2026-06-07",
   "changes": {
     "Nouveautés": [
+      "Genlock broadcast : la sortie du mur de monitoring est calée en PHASE sur la grille PTP (CLOCK_REALTIME, disciplinée phc2sys) → write_ts = instant de grille (plus de phase libre). Le multiview composite les vignettes les plus récentes (monitor) ; seule la phase de sortie est genlockée. Activé par défaut (deploy_defaults.genlock=true), repli horloge mur si off.",
       "Exécution sous Docker (runtime compute générique : image bobi-compute avec Pillow, agent-in-container + réseau macvlan, /dev/shm bind-monté). Le type devient docker-only — créé via Réglages → Déploiement → Nœuds sur un nœud compute (plus de vaisseau LXC). Le listener TSL écoute sur l'IP macvlan du conteneur."
     ],
     "Nouveautés (0.3.6)": [
