@@ -62,7 +62,19 @@ OUT_FRAME_SIZE = (OUT_WIDTH * OUT_HEIGHT + 2 * (OUT_WIDTH // _CW) * (OUT_HEIGHT 
 HEADER_SIZE    = 64
 RING_SIZE   = CONFIG.get("shm_video_ring", 10)
 OUT_TOTAL      = HEADER_SIZE + (OUT_FRAME_SIZE * RING_SIZE)
-FRAME_INTERVAL = 1.0 / 25
+def _rate_nd(v):
+    """Cadence → (num, den) EXACT (fractionnaire NTSC = N*1000/1001 ; accepte \"30000/1001\")."""
+    try:
+        if isinstance(v, str) and "/" in v:
+            a, b = v.split("/"); return int(a), int(b)
+        f = float(v or 25)
+    except Exception:
+        return 25, 1
+    n = round(f)
+    if abs(f - n) < 0.01: return (n or 25), 1
+    nominal = round(f * 1001.0 / 1000.0); return nominal * 1000, 1001
+_FN, _FD = _rate_nd(CONFIG.get("fps") or 25)
+FRAME_INTERVAL = _FD / _FN                # période exacte (cadence rationnelle, gère 29.97/59.94)
 # Genlock broadcast : sortie du multiview (mur de monitoring) calée en PHASE sur la grille PTP
 # (CLOCK_REALTIME, disciplinée phc2sys) → write_ts = instant de grille. off → cadence libre héritée.
 _gl = CONFIG.get("genlock", True)
