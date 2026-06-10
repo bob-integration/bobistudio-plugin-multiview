@@ -1,8 +1,17 @@
 {
-  "version": "0.6.0",
-  "date": "2026-06-07",
+  "version": "0.8.0",
+  "date": "2026-06-10",
   "changes": {
     "Nouveautés": [
+      "Éditeur entièrement à chaud : déplacer/redimensionner une fenêtre (drag ou saisie numérique), modifier les réglages visuels par fenêtre (label, tally, VU-mètre…) et les réglages globaux (bordure, style de cadre, taille de texte…) s'appliquent immédiatement sans coupure ni redéploiement — via :8082/window, :8082/style et :8082/reconfigure.",
+      "Ajout/suppression de source à chaud : ajouter ou retirer une fenêtre depuis l'éditeur reconfigure le multiview en direct. La résolution source est auto-résolue depuis la DB (:8082/reconfigure atomique). Aucun redéploiement ni clignotement de la sortie.",
+      "Interface éditeur simplifiée : les champs redondants (SHM sortie, format vidéo, résolution source) ont été supprimés — ces valeurs sont gérées automatiquement. Fenêtre ajoutée à ¼ de la résolution de sortie ; placement en grille sans chevauchement à chaque ajout."
+    ],
+    "Nouveautés (0.7.0)": [
+      "Hot-apply complet : style global (bordure, taille label, frame_style, overlay_below) et params visuels par fenêtre (show_label, show_tally, name, meter) appliqués à chaud via :8082/style et :8082/window sans redéploiement ni coupure de la sortie vidéo.",
+      "Correction in_w/in_h : résolution des sources auto-détectée depuis la DB au déploiement — le défaut 640×360 de l'éditeur ne provoque plus de frames brouillées quand les sources sont en haute résolution."
+    ],
+    "Nouveautés (0.6.0)": [
       "Cadences FRACTIONNAIRES natives (29.97/59.94/23.976) : la période de sortie est désormais EXACTE (num/den : 29.97→30000/1001, 59.94→60000/1001) au lieu de 1/round(fps) qui dérivait de 0,1 %. _rate_nd() mappe la cadence et accepte la forme 30000/1001 (chaîne). Entier (25/50) inchangé.",
       "Genlock broadcast : la sortie du mur de monitoring est calée en PHASE sur la grille PTP (CLOCK_REALTIME, disciplinée phc2sys) → write_ts = instant de grille (plus de phase libre). Le multiview composite les vignettes les plus récentes (monitor) ; seule la phase de sortie est genlockée. Activé par défaut (deploy_defaults.genlock=true), repli horloge mur si off.",
       "Exécution sous Docker (runtime compute générique : image bobi-compute avec Pillow, agent-in-container + réseau macvlan, /dev/shm bind-monté). Le type devient docker-only — créé via Réglages → Déploiement → Nœuds sur un nœud compute (plus de vaisseau LXC). Le listener TSL écoute sur l'IP macvlan du conteneur."

@@ -904,25 +904,31 @@ sources = [None] * len(FLUX_CONFIG)
 
 def ensure_input(i):
     with state_lock:
+        if i >= len(mv_state["inputs"]) or i >= len(sources):
+            return None
         wanted = mv_state["inputs"][i]
-    cur = sources[i]
+        cur    = sources[i]
+        cfg_iw = FLUX_CONFIG[i].get("in_w", 640) if i < len(FLUX_CONFIG) else 640
+        cfg_ih = FLUX_CONFIG[i].get("in_h", 640) if i < len(FLUX_CONFIG) else 360
     if not wanted:
         if cur is not None:
             try: cur["shm"].close(); cur["f"].close()
             except Exception: pass
-            sources[i] = None
+            with state_lock:
+                if i < len(sources): sources[i] = None
         return None
     if cur is not None and cur.get("path") == wanted:
         return cur
     if cur is not None:
         try: cur["shm"].close(); cur["f"].close()
         except Exception: pass
-        sources[i] = None
-    cfg = FLUX_CONFIG[i]
-    src = open_source({{"path": wanted, "in_w": cfg.get("in_w", 640), "in_h": cfg.get("in_h", 360)}})
+        with state_lock:
+            if i < len(sources): sources[i] = None
+    src = open_source({{"path": wanted, "in_w": cfg_iw, "in_h": cfg_ih}})
     if src is not None:
         src["path"] = wanted
-        sources[i] = src
+        with state_lock:
+            if i < len(sources): sources[i] = src
     return src
 
 class MvControlHandler(BaseHTTPRequestHandler):
@@ -933,6 +939,10 @@ class MvControlHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/window":
             return self._do_window()
+        if self.path == "/style":
+            return self._do_style()
+        if self.path == "/reconfigure":
+            return self._do_reconfigure()
         if self.path != "/input":
             self.send_response(404); self.end_headers(); return
         b = self._json()
@@ -949,7 +959,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": ok}}).encode())
     def _do_window(self):
-        # {{idx, x?, y?, w?, h?}} : repositionne/redimensionne une fenêtre à chaud.
+        # {{idx, x?, y?, w?, h?, + params visuels par fenêtre}} : modifie à chaud.
         b = self._json()
         try: idx = int(b.get("idx"))
         except Exception:
@@ -958,15 +968,70 @@ class MvControlHandler(BaseHTTPRequestHandler):
         with state_lock:
             if 0 <= idx < len(FLUX_CONFIG):
                 cfg = FLUX_CONFIG[idx]
-                for k in ("x", "y", "w", "h"):
+                for k in ("x", "y", "w", "h", "tsl_index", "meter_channels", "meter_opacity"):
                     if k in b and b[k] is not None:
                         try: cfg[k] = int(b[k])
                         except (TypeError, ValueError): pass
+                for k in ("name", "meter_position", "meter_scale"):
+                    if k in b and b[k] is not None:
+                        cfg[k] = str(b[k])
+                for k in ("show_label", "show_tally", "meter_inside"):
+                    if k in b and b[k] is not None:
+                        cfg[k] = _as_bool(b[k])
                 ok = True
-                geom_dirty.set()   # re-baker la couche statique (bordures/labels)
+                geom_dirty.set()
+                tally_dirty.set()
         self.send_response(200 if ok else 400)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": ok}}).encode())
+    def _do_style(self):
+        # Params globaux visuels : border_w, border_color, overlay_below, label_size, frame_style.
+        b = self._json()
+        with state_lock:
+            global BORDER_W, BORDER_COLOR, OVERLAY_BELOW, LABEL_SIZE, FRAME_STYLE
+            global BAR_H, TALLY_SIZE, TALLY_PAD, FONT
+            if "border_w" in b:
+                try: BORDER_W = max(0, int(b["border_w"]))
+                except (TypeError, ValueError): pass
+            if "border_color" in b:
+                BORDER_COLOR = str(b["border_color"])
+            if "overlay_below" in b:
+                OVERLAY_BELOW = _as_bool(b["overlay_below"])
+            if "label_size" in b:
+                try:
+                    LABEL_SIZE = max(6, int(b["label_size"]))
+                    TALLY_SIZE = max(8,  int(round(LABEL_SIZE * 1.4)))
+                    TALLY_PAD  = max(2,  int(round(LABEL_SIZE * 0.35)))
+                    BAR_H      = max(14, int(round(LABEL_SIZE * 2)))
+                    try: FONT = ImageFont.truetype(
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", LABEL_SIZE)
+                    except Exception: FONT = ImageFont.load_default()
+                except (TypeError, ValueError): pass
+            if "frame_style" in b:
+                FRAME_STYLE = str(b["frame_style"])
+            geom_dirty.set()
+            tally_dirty.set()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(json.dumps({{"ok": True}}).encode())
+    def _do_reconfigure(self):
+        # Remplacement atomique de toute la liste de sources + géométrie.
+        # Permet l'ajout/suppression de fenêtres à chaud depuis l'éditeur.
+        b = self._json()
+        new_fc = b.get("flux_config") or []
+        with state_lock:
+            for src in list(sources):
+                if src is not None:
+                    try: src["shm"].close(); src["f"].close()
+                    except Exception: pass
+            FLUX_CONFIG[:] = new_fc
+            mv_state["inputs"][:] = [cfg.get("path", "") for cfg in new_fc]
+            sources[:] = [None] * len(new_fc)
+            geom_dirty.set()
+            tally_dirty.set()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(json.dumps({{"ok": True}}).encode())
     def do_GET(self):
         with state_lock: inp = list(mv_state["inputs"])
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
@@ -995,9 +1060,11 @@ while True:
     canvas_v = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
     ts_in_per_input = {{}}  # path → ts_in_ns, rempli par les lectures réussies
 
-    for i in range(len(FLUX_CONFIG)):
+    with state_lock:
+        _fc = list(FLUX_CONFIG)   # snapshot stable pour cette frame
+
+    for i, cfg in enumerate(_fc):
         src = ensure_input(i)   # rouvre le mmap si la source a changé (hot-input)
-        cfg = FLUX_CONFIG[i]
         x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
         x = max(0, min(x, OUT_WIDTH  - 1))
         y = max(0, min(y, OUT_HEIGHT - 1))

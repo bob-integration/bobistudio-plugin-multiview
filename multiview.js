@@ -18,8 +18,14 @@ function primaryIdx() {
 }
 function isSelected(i) { return selectedIdxs.includes(i); }
 const COLORS = [
-    '#1d4ed8','#166534','#92400e','#5b21b6',
-    '#0e7490','#be123c','#15803d','#b45309'
+    'oklch(0.56 0.15 248)',
+    'oklch(0.52 0.14 145)',
+    'oklch(0.60 0.13 62)',
+    'oklch(0.50 0.15 298)',
+    'oklch(0.54 0.13 196)',
+    'oklch(0.52 0.14 22)',
+    'oklch(0.57 0.11 162)',
+    'oklch(0.61 0.12 86)',
 ];
 
 const LABEL_SOURCES = [
@@ -96,7 +102,8 @@ function drawMiniPreview(canvas, params) {
     const sx = cw / ow;
     const sy = ch / oh;
 
-    ctx.fillStyle = '#0d1117';
+    const _cs = getComputedStyle(document.documentElement);
+    ctx.fillStyle = _cs.getPropertyValue('--canvas-bg').trim() || '#0d1117';
     ctx.fillRect(0, 0, cw, ch);
 
     const borderW     = (params.border_w || 0) * Math.min(sx, sy);
@@ -105,8 +112,10 @@ function drawMiniPreview(canvas, params) {
     (params.flux_config || []).forEach((f, i) => {
         const x = f.x * sx, y = f.y * sy;
         const w = f.w * sx, h = f.h * sy;
-        ctx.fillStyle = COLORS[i % COLORS.length] + 'aa';
+        ctx.globalAlpha = 0.67;
+        ctx.fillStyle   = COLORS[i % COLORS.length];
         ctx.fillRect(x, y, w, h);
+        ctx.globalAlpha = 1;
         if (borderW > 0.5) {
             ctx.strokeStyle = borderColor;
             ctx.lineWidth = Math.max(1, borderW);
@@ -132,7 +141,7 @@ async function chargerMw(vmid) {
     let dc = null;
     try { dc = c.deploy_config ? JSON.parse(c.deploy_config) : null; } catch(e) {}
     if (!dc || dc.type !== 'multiview') {
-        alert('Container sans config multiview.');
+        mwFlash('Container sans config multiview.');
         return;
     }
     editorVmid   = vmid;
@@ -163,14 +172,34 @@ async function chargerMw(vmid) {
 function renderEditor(hostname) {
     const el = document.getElementById('mw-editor');
     el.classList.remove('empty');
+    document.getElementById('mw-editor-empty').hidden = true;
+    document.getElementById('mw-editor-form').hidden  = false;
+
     const p = editorParams;
-    // shm_out d'un container peut maintenant être une chaîne agrégée style
-    // "Mire_0 · Mire_audio_0" (receiver unifié) ou "Mire_0..3" (multi N>1).
-    // On splitte sur " · " pour avoir un option par shm individuel, puis on
-    // expand les ranges "_0..N-1" → ["_0","_1",...]. Les shms audio
-    // (contenant "_audio_") sont filtrés : un multiview affiche que de la vidéo
-    // (les peak-meters lui dérivent l'audio automatiquement par convention).
-    const sourceOptions = allContainers
+
+    document.getElementById('ed_hostname').textContent = hostname || '';
+    document.getElementById('ed_vmid').textContent     = editorVmid ?? '';
+
+    _rebuildSourceOptions();
+
+    document.getElementById('ed_max').value             = p.max_inputs;
+    document.getElementById('ed_border_w').value        = p.border_w;
+    document.getElementById('ed_border_color').value    = p.border_color;
+    document.getElementById('ed_label_size').value      = p.label_size || 14;
+    document.getElementById('ed_frame_style').value     = p.frame_style || 'none';
+    document.getElementById('ed_overlay_below').checked = !!p.overlay_below;
+    document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
+    document.getElementById('ed_snap').checked          = snapEnabled;
+    document.getElementById('ed_paste_btn').disabled    = !reglagesClipboard;
+
+    resizeCanvas();
+    dessiner();
+}
+
+function _rebuildSourceOptions() {
+    const sel = document.getElementById('ed_src_select');
+    if (!sel) return;
+    sel.innerHTML = allContainers
         .filter(c => c.shm_out && !String(c.shm_out).includes(':') && c.shm_out !== '—')
         .flatMap(c => {
             const parts = String(c.shm_out).split(' · ');
@@ -185,201 +214,14 @@ function renderEditor(hostname) {
                 }
             }
             return shms
-                .filter(s => !s.includes('_audio_'))   // pas d'audio sur un multiview
+                .filter(s => !s.includes('_audio_'))
                 .map(s => ({hostname: c.hostname, vmid: c.vmid, shm: s}));
         })
-        .map(o => `<option value="/dev/shm/${o.shm}" data-name="${o.hostname}" data-vmid="${o.vmid}">
-            ${o.hostname} → ${o.shm}
-        </option>`).join('');
-
-    el.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-            <h3>${hostname || ''} <span class="meta">#${editorVmid}</span></h3>
-            <div style="display:flex; gap:8px">
-                <button class="btn" onclick="if(window.MXLMonitor)MXLMonitor.monitorVmid(editorVmid)" title="Monitoring">Monitoring</button>
-                <button class="btn btn-orange" onclick="deployerEditor()">Déployer</button>
-            </div>
-        </div>
-
-        <div class="row" style="margin-bottom:10px">
-            <div class="field"><label>SHM sortie</label>
-                <input type="text" id="ed_shm_out" class="wide" value="${p.shm_out}"></div>
-            <div class="field"><label>Largeur sortie</label>
-                <input type="number" id="ed_out_w" value="${p.out_width}"
-                       onchange="onOutSizeChange()"></div>
-            <div class="field"><label>Hauteur sortie</label>
-                <input type="number" id="ed_out_h" value="${p.out_height}"
-                       onchange="onOutSizeChange()"></div>
-            <div class="field"><label>Max entrées</label>
-                <input type="number" id="ed_max" min="1" max="32" value="${p.max_inputs}"></div>
-        </div>
-
-        <div class="row" style="margin-bottom:10px">
-            <div class="field"><label>Bordure (px)</label>
-                <input type="number" id="ed_border_w" min="0" max="30" value="${p.border_w}"
-                       onchange="onGlobalChange()"></div>
-            <div class="field"><label>Couleur bordure</label>
-                <input type="color" id="ed_border_color" value="${p.border_color}"
-                       onchange="onGlobalChange()"
-                       style="width:60px; padding:0; height:32px"></div>
-            <div class="field"><label>Taille texte (px)</label>
-                <input type="number" id="ed_label_size" min="6" max="80" value="${p.label_size || 14}"
-                       onchange="onGlobalChange()"></div>
-            <div class="field"><label>Style de cadre</label>
-                <select id="ed_frame_style" onchange="onGlobalChange()">
-                    <option value="none"${(p.frame_style||'none')==='none'?' selected':''}>Aucun (bordure simple)</option>
-                    <option value="classic"${p.frame_style==='classic'?' selected':''}>Monitor broadcast</option>
-                    <option value="tally_border"${p.frame_style==='tally_border'?' selected':''}>Bordure tally colorée</option>
-                    <option value="stylized"${p.frame_style==='stylized'?' selected':''}>Stylisé (pastilles)</option>
-                </select></div>
-            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:6px">
-                <input type="checkbox" id="ed_overlay_below" ${p.overlay_below ? 'checked' : ''}
-                       onchange="onGlobalChange()">
-                Texte sous l'image (sinon par-dessus)
-            </label></div>
-            <div class="field"><label>TSL port TCP</label>
-                <input type="number" id="ed_tsl_port" min="0" max="65535" value="${p.tsl_port ?? 4801}"
-                       title="Port d'écoute TSL 5.0 (0 = désactivé)"
-                       onchange="onGlobalChange()"></div>
-        </div>
-
-        <div class="row" style="margin-bottom:10px; align-items:flex-end">
-            <div class="field" style="flex:1; min-width:280px">
-                <label>Ajouter une source</label>
-                <select id="ed_src_select" style="width:100%">${sourceOptions}</select>
-            </div>
-            <div class="field"><label>Largeur src</label>
-                <input type="number" id="ed_src_w" value="640"></div>
-            <div class="field"><label>Hauteur src</label>
-                <input type="number" id="ed_src_h" value="360"></div>
-            <button class="btn btn-blue" onclick="ajouterEntree()">+ Ajouter</button>
-        </div>
-
-        <!-- Outils d'alignement -->
-        <div class="align-toolbar">
-            <span class="align-label">Aligner :</span>
-            <button class="btn btn-blue" onclick="aligner('left')"     title="Bord gauche">⇤</button>
-            <button class="btn btn-blue" onclick="aligner('hcenter')"  title="Centre horizontal">⇔</button>
-            <button class="btn btn-blue" onclick="aligner('right')"    title="Bord droit">⇥</button>
-            <button class="btn btn-blue" onclick="aligner('top')"      title="Bord haut">⤒</button>
-            <button class="btn btn-blue" onclick="aligner('vcenter')"  title="Centre vertical">⇳</button>
-            <button class="btn btn-blue" onclick="aligner('bottom')"   title="Bord bas">⤓</button>
-            <span class="align-label">Taille :</span>
-            <button class="btn btn-purple" onclick="matchSize('w')"   title="Même largeur">↔</button>
-            <button class="btn btn-purple" onclick="matchSize('h')"   title="Même hauteur">↕</button>
-            <button class="btn btn-purple" onclick="matchSize('both')" title="Même taille">⛶</button>
-            <span class="align-label">Distribuer :</span>
-            <button class="btn btn-green" onclick="distribuer('h')" title="Horizontalement">⇶</button>
-            <button class="btn btn-green" onclick="distribuer('v')" title="Verticalement">⇲</button>
-            <span class="align-label">Réglages :</span>
-            <button class="btn" onclick="copierReglagesFenetre()" title="Copier les réglages de la fenêtre (hors position)">⧉ Copier</button>
-            <button class="btn" id="ed_paste_btn" onclick="collerReglagesFenetre()" ${reglagesClipboard ? '' : 'disabled'} title="Coller les réglages dans les fenêtres sélectionnées">⪼ Coller</button>
-            <label class="align-snap">
-                <input type="checkbox" id="ed_snap" ${snapEnabled ? 'checked' : ''} onchange="snapEnabled = this.checked">
-                Snap
-            </label>
-        </div>
-        <div class="align-hint">
-            Shift+clic pour multi-sélectionner. Référence = dernière sélectionnée (cadre blanc).
-            Avec 1 sélectionnée, l'alignement se fait sur le canvas.
-        </div>
-
-        <div class="mw-canvas-wrap">
-            <canvas id="ed_canvas"
-                    onmousedown="canvasMouseDown(event)"
-                    onmousemove="canvasMouseMove(event)"
-                    onmouseup="canvasMouseUp(event)"
-                    style="display:block"></canvas>
-        </div>
-
-        <div id="ed_entry_panel" class="mw-entry-panel" style="display:none">
-            <div class="row">
-                <div class="field"><label>Nom affiché</label>
-                    <select id="ed_label_source" onchange="onEntryChange()" style="min-width:180px">
-                        ${LABEL_SOURCES.map(o => `<option value="${o.value}" ${o.disabled ? 'disabled' : ''}>${o.label}</option>`).join('')}
-                    </select></div>
-                <div class="field"><label>Source</label>
-                    <select id="ed_path" onchange="onEntryChange()" style="min-width:220px"></select></div>
-                <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:6px">
-                    <input type="checkbox" id="ed_show_label" onchange="onEntryChange()">
-                    Afficher le nom
-                </label></div>
-                <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:6px">
-                    <input type="checkbox" id="ed_show_tally" onchange="onEntryChange()">
-                    Cases Tally (L+R)
-                </label></div>
-                <div class="field"><label>TSL index</label>
-                    <input type="number" id="ed_tsl_index" min="0" max="65535" style="width:80px"
-                           title="Index TSL 5.0 écouté (0 = aucun)"
-                           onchange="onEntryChange()"></div>
-                <button class="btn btn-red" onclick="supprimerEntreeSelectionnee()">Supprimer</button>
-            </div>
-            <div class="row" style="margin-top:8px">
-                <div class="field"><label>X</label>
-                    <input type="number" id="ed_x" onchange="onEntryGeomChange()"></div>
-                <div class="field"><label>Y</label>
-                    <input type="number" id="ed_y" onchange="onEntryGeomChange()"></div>
-                <div class="field"><label>Largeur</label>
-                    <input type="number" id="ed_w" onchange="onEntryGeomChange()"></div>
-                <div class="field"><label>Hauteur</label>
-                    <input type="number" id="ed_h" onchange="onEntryGeomChange()"></div>
-            </div>
-            <div class="row" style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border-soft)">
-                <div class="field"><label>Peak meter (canaux)</label>
-                    <select id="ed_meter_channels" onchange="onEntryChange()">
-                        <option value="0">Désactivé</option>
-                        <option value="2">2 ch</option>
-                        <option value="4">4 ch</option>
-                        <option value="6">6 ch</option>
-                        <option value="8">8 ch</option>
-                    </select></div>
-                <div class="field"><label>Position</label>
-                    <select id="ed_meter_position" onchange="onEntryChange()">
-                        <option value="right">Droite</option>
-                        <option value="left">Gauche</option>
-                    </select></div>
-                <div class="field"><label>Placement</label>
-                    <select id="ed_meter_inside" onchange="onEntryChange()">
-                        <option value="0">Hors image (réduit la vidéo)</option>
-                        <option value="1">Dans l'image (overlay)</option>
-                    </select></div>
-                <div class="field"><label>Opacité (overlay)</label>
-                    <input type="number" id="ed_meter_opacity" min="10" max="100" value="70"
-                           onchange="onEntryChange()" style="width:80px"></div>
-                <div class="field"><label>Graduation</label>
-                    <select id="ed_meter_scale" onchange="onEntryChange()">
-                        <option value="dbfs">dBFS (0 / -60)</option>
-                        <option value="ppm">EBU PPM (-12 / +12)</option>
-                    </select></div>
-            </div>
-        </div>
-
-        <table class="mw-entry-table">
-            <thead>
-                <tr>
-                    <th class="w40">#</th>
-                    <th>Nom</th>
-                    <th>Source SHM</th>
-                    <th class="w90">Position</th>
-                    <th class="w90">Taille</th>
-                </tr>
-            </thead>
-            <tbody id="ed_tbody"></tbody>
-        </table>
-    `;
-
-    resizeCanvas();
-    dessiner();
+        .map(o => `<option value="/dev/shm/${o.shm}" data-name="${o.hostname}" data-vmid="${o.vmid}">${o.hostname} → ${o.shm}</option>`)
+        .join('');
 }
 
 // ─── Handlers globaux ────────────────────────────────────────
-
-function onOutSizeChange() {
-    editorParams.out_width  = parseInt(document.getElementById('ed_out_w').value)  || 1280;
-    editorParams.out_height = parseInt(document.getElementById('ed_out_h').value) || 720;
-    resizeCanvas();
-    dessiner();
-}
 
 function onGlobalChange() {
     editorParams.border_w      = parseInt(document.getElementById('ed_border_w').value) || 0;
@@ -388,6 +230,7 @@ function onGlobalChange() {
     editorParams.label_size    = Math.max(6, parseInt(document.getElementById('ed_label_size').value) || 14);
     { const fs = document.getElementById('ed_frame_style'); if (fs) editorParams.frame_style = fs.value; }
     dessiner();
+    hotApplyStyle();
 }
 
 function resizeCanvas() {
@@ -407,28 +250,29 @@ function resizeCanvas() {
 
 function ajouterEntree() {
     if (editorParams.flux_config.length >= editorParams.max_inputs) {
-        alert(`Limite max_inputs = ${editorParams.max_inputs} atteinte.`);
+        mwFlash(`Limite max_inputs = ${editorParams.max_inputs} atteinte.`);
         return;
     }
     const sel = document.getElementById('ed_src_select');
     const opt = sel && sel.selectedOptions[0];
-    if (!opt) { alert('Aucune source disponible.'); return; }
-    const in_w = parseInt(document.getElementById('ed_src_w').value) || 640;
-    const in_h = parseInt(document.getElementById('ed_src_h').value) || 360;
-    const idx  = editorParams.flux_config.length;
-    const offset = idx * 30;
+    if (!opt) { mwFlash('Aucune source disponible.'); return; }
+    const idx   = editorParams.flux_config.length;
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
+    const win_w = Math.round(out_w / 2);
+    const win_h = Math.round(out_h / 2);
+    const cols  = Math.max(1, Math.floor(out_w / win_w));
+    const x     = (idx % cols) * win_w;
+    const y     = Math.floor(idx / cols) * win_h;
 
     editorParams.flux_config.push({
         path: opt.value,
         label_source: 'hostname',
-        in_w, in_h,
-        x: offset % Math.max(1, out_w - 200),
-        y: offset % Math.max(1, out_h - 150),
-        w: Math.round(out_w / 2),
-        h: Math.round(out_h / 2),
-        ratio: in_w / in_h,
+        in_w: 0, in_h: 0,
+        x, y,
+        w: win_w,
+        h: win_h,
+        ratio: 16/9,
         color: COLORS[idx % COLORS.length],
         show_label: true,
         show_tally: false,
@@ -443,6 +287,7 @@ function ajouterEntree() {
     if (sel.selectedIndex < sel.options.length - 1) sel.selectedIndex++;
     selectedIdxs = [idx];
     dessiner();
+    hotApplyFull();
 }
 
 function supprimerEntreeSelectionnee() {
@@ -453,6 +298,7 @@ function supprimerEntreeSelectionnee() {
     });
     selectedIdxs = [];
     dessiner();
+    hotApplyFull();
 }
 
 // ─── Panneau d'édition d'une entrée ──────────────────────────
@@ -462,11 +308,11 @@ function refreshEntryPanel() {
     if (!panel) return;
     const primary = primaryIdx();
     if (primary < 0) {
-        panel.style.display = 'none';
+        panel.hidden = true;
         return;
     }
     const f = editorParams.flux_config[primary];
-    panel.style.display = 'block';
+    panel.hidden = false;
     document.getElementById('ed_label_source').value = f.label_source || 'hostname';
     document.getElementById('ed_show_label').checked = !!f.show_label;
     document.getElementById('ed_show_tally').checked = !!f.show_tally;
@@ -510,6 +356,7 @@ function onEntryChange() {
     f.meter_opacity  = Math.max(10, Math.min(100, parseInt(document.getElementById('ed_meter_opacity').value) || 70));
     f.meter_scale    = document.getElementById('ed_meter_scale').value || 'dbfs';
     dessiner();
+    hotApplyWindow(primary);
 }
 
 function onEntryGeomChange() {
@@ -523,6 +370,7 @@ function onEntryGeomChange() {
     f.w = nw % 2 === 0 ? nw : nw - 1;
     f.h = nh % 2 === 0 ? nh : nh - 1;
     dessiner();
+    hotApplyWindow(primary);
 }
 
 // ─── Copier / coller les réglages d'une fenêtre ──────────────
@@ -575,10 +423,15 @@ function dessiner() {
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
 
-    ctx.fillStyle = '#0d1117';
+    const _dcs = getComputedStyle(document.documentElement);
+    const canvasBg   = _dcs.getPropertyValue('--canvas-bg').trim()   || '#0d1117';
+    const gridColor  = _dcs.getPropertyValue('--border-soft').trim() || '#21262d';
+    const mutedColor = _dcs.getPropertyValue('--text-muted').trim()  || '#8b949e';
+
+    ctx.fillStyle = canvasBg;
     ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = '#21262d';
+    ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
     for (let x = 0; x < w; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
     for (let y = 0; y < h; y += 64) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
@@ -599,8 +452,10 @@ function dessiner() {
         const barOn = f.show_label || f.show_tally;
         const videoH = (overlayBelow && barOn) ? Math.max(2, f.h - BAR_H) : f.h;
 
-        ctx.fillStyle = f.color + (sel ? 'cc' : '66');
+        ctx.globalAlpha = sel ? 0.8 : 0.4;
+        ctx.fillStyle   = f.color;
         ctx.fillRect(f.x, f.y, f.w, videoH);
+        ctx.globalAlpha = 1;
 
         if (borderW > 0) {
             ctx.strokeStyle = borderColor;
@@ -702,7 +557,7 @@ function dessiner() {
         ctx.textAlign = 'start';
         ctx.textBaseline = 'alphabetic';
 
-        ctx.fillStyle = '#8b949e';
+        ctx.fillStyle = mutedColor;
         ctx.font = '11px monospace';
         ctx.fillText(`${f.w}×${f.h}`, f.x + 4, f.y + 14);
 
@@ -727,7 +582,7 @@ function dessiner() {
         ctx.setLineDash([]);
     }
 
-    ctx.fillStyle = '#8b949e';
+    ctx.fillStyle = mutedColor;
     ctx.font = '11px monospace';
     ctx.fillText(`${w} × ${h}`, 8, h - 8);
 }
@@ -837,7 +692,53 @@ function canvasMouseMove(e) {
     dessiner();
 }
 
-function canvasMouseUp() { dragMode = null; snapGuides = []; dessiner(); }
+function canvasMouseUp() {
+    dragMode = null; snapGuides = []; dessiner();
+    selectedIdxs.forEach(idx => hotApplyWindow(idx));
+}
+
+function hotApplyWindow(idx) {
+    if (editorVmid === null || !editorParams) return;
+    const f = editorParams.flux_config[idx];
+    if (!f) return;
+    fetch(`/api/containers/${editorVmid}/plugin/window`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            idx,
+            x: f.x, y: f.y,
+            w: f.w % 2 === 0 ? f.w : f.w - 1,
+            h: f.h % 2 === 0 ? f.h : f.h - 1,
+            name:           computeDisplayName(f),
+            show_label:     !!f.show_label,
+            show_tally:     !!f.show_tally,
+            tsl_index:      f.tsl_index ?? 0,
+            meter_channels: f.meter_channels ?? 0,
+            meter_position: f.meter_position || 'right',
+            meter_inside:   !!f.meter_inside,
+            meter_opacity:  f.meter_opacity ?? 70,
+            meter_scale:    f.meter_scale || 'dbfs',
+        })
+    }).catch(() => {});
+}
+
+function hotApplyFull() {
+    // Passe par le endpoint deploy pour que _multiview_hot_apply résolve in_w/in_h via _shm_dims.
+    deployerEditor();
+}
+
+function hotApplyStyle() {
+    if (editorVmid === null || !editorParams) return;
+    fetch(`/api/containers/${editorVmid}/plugin/style`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            border_w:      editorParams.border_w,
+            border_color:  editorParams.border_color,
+            overlay_below: editorParams.overlay_below,
+            label_size:    editorParams.label_size,
+            frame_style:   editorParams.frame_style || 'none',
+        })
+    }).catch(() => {});
+}
 
 // ─── Snap ──────────────────────────────────────────────────────
 
@@ -936,9 +837,6 @@ async function deployerEditor() {
     if (editorVmid === null) return;
 
     // Lit les champs globaux au cas où ils n'auraient pas déclenché onchange
-    editorParams.shm_out       = document.getElementById('ed_shm_out').value || 'mxl_mix';
-    editorParams.out_width     = parseInt(document.getElementById('ed_out_w').value)  || 1280;
-    editorParams.out_height    = parseInt(document.getElementById('ed_out_h').value) || 720;
     editorParams.max_inputs    = parseInt(document.getElementById('ed_max').value) || editorParams.max_inputs;
     editorParams.border_w      = parseInt(document.getElementById('ed_border_w').value) || 0;
     editorParams.border_color  = document.getElementById('ed_border_color').value;
@@ -992,7 +890,7 @@ async function deployerEditor() {
         // Refresh la sidebar générique (badge version + mini-aperçu) après déploiement
         if (window.tpLoadInstances) setTimeout(window.tpLoadInstances, 800);
     } else {
-        alert('Erreur déploiement');
+        mwFlash('Erreur déploiement');
     }
 }
 
@@ -1031,7 +929,7 @@ function aligner(mode) {
 
 function matchSize(mode) {
     if (!editorParams || selectedIdxs.length < 2) {
-        alert('Sélectionne au moins 2 fenêtres (la dernière sert de référence).');
+        mwFlash('Sélectionne au moins 2 fenêtres (la dernière sert de référence).');
         return;
     }
     const fc = editorParams.flux_config;
@@ -1055,7 +953,7 @@ function matchSize(mode) {
 
 function distribuer(axis) {
     if (!editorParams || selectedIdxs.length < 3) {
-        alert('Sélectionne au moins 3 fenêtres pour distribuer.');
+        mwFlash('Sélectionne au moins 3 fenêtres pour distribuer.');
         return;
     }
     const fc = editorParams.flux_config;
@@ -1119,9 +1017,9 @@ function escapeAttr(s) {
 async function enregistrerLayout() {
     const nameEl = document.getElementById('layout-save-name');
     const name = (nameEl.value || '').trim();
-    if (!name) { alert('Donne un nom au layout.'); return; }
+    if (!name) { mwFlash('Donne un nom au layout.'); return; }
     if (!editorParams) {
-        alert('Sélectionne d\'abord un multiview à éditer.');
+        mwFlash('Sélectionne d\'abord un multiview à éditer.');
         return;
     }
     // Sérialise la config courante (sans champs internes color/ratio)
@@ -1151,13 +1049,13 @@ async function enregistrerLayout() {
         nameEl.value = '';
         rafraichirListeLayouts();
     } else {
-        alert('Erreur enregistrement layout');
+        mwFlash('Erreur enregistrement layout');
     }
 }
 
 function appliquerLayout(lid) {
     if (!editorParams) {
-        alert('Sélectionne d\'abord un multiview à éditer.');
+        mwFlash('Sélectionne d\'abord un multiview à éditer.');
         return;
     }
     const l = savedLayouts.find(x => x.id === lid);
@@ -1180,16 +1078,16 @@ function appliquerLayout(lid) {
         return Object.assign({
             color: COLORS[i % COLORS.length],
             path: prev.path || '',
-            in_w: prev.in_w || 640,
-            in_h: prev.in_h || 360,
-            ratio: (prev.in_w && prev.in_h) ? prev.in_w / prev.in_h : 16/9
+            in_w: 0,
+            in_h: 0,
+            ratio: 16/9
         }, f);
     });
     selectedIdxs = [];
-    // Re-render l'éditeur pour relire shm_out depuis editorParams + repeindre
-    const titleEl = document.querySelector('#mw-editor h3');
-    const hostname = titleEl ? titleEl.firstChild.textContent.trim() : '';
+    const hostnameEl = document.getElementById('ed_hostname');
+    const hostname = hostnameEl ? hostnameEl.textContent.trim() : '';
     renderEditor(hostname);
+    deployerEditor();
 }
 
 async function supprimerLayout(lid, name) {
