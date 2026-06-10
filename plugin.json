@@ -5,8 +5,10 @@
   "label": "Multiviewer",
   "badge": {
     "label": "Multiviewer",
-    "class": "mode-multiview"
+    "class": "mode-multiview",
+    "oklch": "0.77 0.07 306"
   },
+  "skaarhoj": {"mode": "multiview", "desc_i18n": "settings.js.skh_desc_multiview"},
   "deploy_order": 1,
   "version": "0.8.0",
   "adapts_input": true,
