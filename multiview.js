@@ -1,6 +1,7 @@
 // ─── État global ──────────────────────────────────────────────
 
 let allContainers = [];
+let videoSources = [];   // sorties vidéo individuelles de la flotte (cf. loadVideoSources)
 let editorVmid    = null;
 let editorParams  = null;   // {flux_config, shm_out, out_width, out_height, border_w, border_color, overlay_below, max_inputs}
 let selectedIdxs  = [];     // multi-select : le dernier est le primary (référence pour align/match-size)
@@ -134,8 +135,24 @@ async function loadAllContainers() {
     catch(e) { allContainers = []; }
 }
 
+// Sorties VIDÉO individuelles de toute la flotte, depuis la topologie (produces[]
+// structuré : un container multi-sorties — mixer PGM/CLEAN/PVW, receiver multi-flux —
+// expose chaque sortie séparément, avec son label). Bien plus fiable que de re-parser
+// la chaîne composite shm_out. Aligné sur la page Câbles (n.produces → renderPort).
+async function loadVideoSources() {
+    try {
+        const j = await (await fetch('/api/home/summary')).json();
+        const nodes = (j && j.topology && j.topology.nodes) || [];
+        videoSources = nodes.flatMap(n =>
+            (n.produces || [])
+                .filter(p => (p.kind || 'video') === 'video' && p.shm)
+                .map(p => ({ vmid: n.vmid, hostname: n.hostname || ('mxl' + n.vmid),
+                             shm: p.shm, label: p.label || '' })));
+    } catch(e) { videoSources = []; }
+}
+
 async function chargerMw(vmid) {
-    await loadAllContainers();
+    await Promise.all([loadAllContainers(), loadVideoSources()]);
     const r = await fetch('/api/containers/' + vmid + '/config');
     const c = await r.json();
     let dc = null;
@@ -156,6 +173,7 @@ async function chargerMw(vmid) {
         label_size: 14,
         frame_style: 'none',
         max_inputs: 4,
+        genlock: true,
         tsl_port: 4801
     }, dc.params || {});
     // Couleurs locales pour le rendu (non sauvegardé)
@@ -180,45 +198,19 @@ function renderEditor(hostname) {
     document.getElementById('ed_hostname').textContent = hostname || '';
     document.getElementById('ed_vmid').textContent     = editorVmid ?? '';
 
-    _rebuildSourceOptions();
-
     document.getElementById('ed_max').value             = p.max_inputs;
     document.getElementById('ed_border_w').value        = p.border_w;
     document.getElementById('ed_border_color').value    = p.border_color;
     document.getElementById('ed_label_size').value      = p.label_size || 14;
     document.getElementById('ed_frame_style').value     = p.frame_style || 'none';
     document.getElementById('ed_overlay_below').checked = !!p.overlay_below;
+    document.getElementById('ed_genlock').checked       = p.genlock !== false;
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     document.getElementById('ed_snap').checked          = snapEnabled;
     document.getElementById('ed_paste_btn').disabled    = !reglagesClipboard;
 
     resizeCanvas();
     dessiner();
-}
-
-function _rebuildSourceOptions() {
-    const sel = document.getElementById('ed_src_select');
-    if (!sel) return;
-    sel.innerHTML = allContainers
-        .filter(c => c.shm_out && !String(c.shm_out).includes(':') && c.shm_out !== '—')
-        .flatMap(c => {
-            const parts = String(c.shm_out).split(' · ');
-            const shms = [];
-            for (const part of parts) {
-                const m = part.match(/^(.+)_(\d+)\.\.(\d+)$/);
-                if (m) {
-                    const base = m[1], a = +m[2], b = +m[3];
-                    for (let i = a; i <= b; i++) shms.push(`${base}_${i}`);
-                } else {
-                    shms.push(part);
-                }
-            }
-            return shms
-                .filter(s => !s.includes('_audio_'))
-                .map(s => ({hostname: c.hostname, vmid: c.vmid, shm: s}));
-        })
-        .map(o => `<option value="/dev/shm/${o.shm}" data-name="${o.hostname}" data-vmid="${o.vmid}">${o.hostname} → ${o.shm}</option>`)
-        .join('');
 }
 
 // ─── Handlers globaux ────────────────────────────────────────
@@ -253,9 +245,6 @@ function ajouterEntree() {
         mwFlash(`Limite max_inputs = ${editorParams.max_inputs} atteinte.`);
         return;
     }
-    const sel = document.getElementById('ed_src_select');
-    const opt = sel && sel.selectedOptions[0];
-    if (!opt) { mwFlash('Aucune source disponible.'); return; }
     const idx   = editorParams.flux_config.length;
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
@@ -266,7 +255,7 @@ function ajouterEntree() {
     const y     = Math.floor(idx / cols) * win_h;
 
     editorParams.flux_config.push({
-        path: opt.value,
+        path: '',
         label_source: 'hostname',
         in_w: 0, in_h: 0,
         x, y,
@@ -284,7 +273,6 @@ function ajouterEntree() {
         meter_opacity: 70,           // 10..100 (utilisé si inside=true)
         meter_scale: 'dbfs',         // dbfs | ppm (EBU)
     });
-    if (sel.selectedIndex < sel.options.length - 1) sel.selectedIndex++;
     selectedIdxs = [idx];
     dessiner();
     hotApplyFull();
@@ -330,15 +318,20 @@ function refreshEntryPanel() {
 
     // Re-peuple la dropdown source pour cette entrée
     const pathSel = document.getElementById('ed_path');
-    const opts = allContainers
-        .filter(c => c.shm_out && !String(c.shm_out).includes(':') && c.shm_out !== '—')
-        .map(c => `<option value="/dev/shm/${c.shm_out}">${c.hostname} → ${c.shm_out}</option>`);
-    // Inclure le path actuel même si introuvable dans la liste (container détruit p.ex.)
-    if (!opts.some(o => o.includes(`value="${f.path}"`))) {
-        opts.unshift(`<option value="${f.path}">${f.path}</option>`);
+    // Une <option> par sortie vidéo individuelle (libellé hostname → label (shm)).
+    const opts = videoSources.map(s => {
+        const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
+                            : `${s.hostname} → ${s.shm}`;
+        return `<option value="/dev/shm/${s.shm}">${txt}</option>`;
+    });
+    // PiP vide : option explicite « aucune source » en tête (path = '').
+    opts.unshift('<option value="">— aucune source —</option>');
+    // Inclure le path actuel même si introuvable dans la liste (container détruit p.ex.).
+    if (f.path && !opts.some(o => o.includes(`value="${f.path}"`))) {
+        opts.splice(1, 0, `<option value="${f.path}">${f.path}</option>`);
     }
     pathSel.innerHTML = opts.join('');
-    pathSel.value = f.path;
+    pathSel.value = f.path || '';
 }
 
 function onEntryChange() {
@@ -843,6 +836,7 @@ async function deployerEditor() {
     editorParams.overlay_below = document.getElementById('ed_overlay_below').checked;
     editorParams.label_size    = Math.max(6, parseInt(document.getElementById('ed_label_size').value) || 14);
     { const fs = document.getElementById('ed_frame_style'); if (fs) editorParams.frame_style = fs.value; }
+    editorParams.genlock = document.getElementById('ed_genlock').checked;
     const tslPortEl = document.getElementById('ed_tsl_port');
     if (tslPortEl) editorParams.tsl_port = parseInt(tslPortEl.value) || 0;
 
@@ -877,6 +871,7 @@ async function deployerEditor() {
         label_size:    editorParams.label_size,
         frame_style:   editorParams.frame_style || 'none',
         max_inputs:    editorParams.max_inputs,
+        genlock:       editorParams.genlock,
         tsl_port:      editorParams.tsl_port ?? 4801
     };
 

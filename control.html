@@ -8,7 +8,6 @@
             <div id="mw-editor-form" hidden>
                 <header class="mw-editor-head">
                     <h2 id="mw-editor-title-h"><span id="ed_hostname">—</span> <span class="meta">#<span id="ed_vmid">—</span></span></h2>
-                    <button type="button" class="btn" onclick="if(window.MXLMonitor)MXLMonitor.monitorVmid(editorVmid)" title="Monitoring">Monitoring</button>
                     <button type="button" class="btn btn-orange" onclick="deployerEditor()">Déployer</button>
                 </header>
                 <div class="mw-editor-row">
@@ -18,11 +17,11 @@
                     <div class="field field-narrow"><label for="ed_label_size">Taille texte (px)</label><input type="number" id="ed_label_size" min="6" max="80" onchange="onGlobalChange()"></div>
                     <div class="field"><label for="ed_frame_style">Style de cadre</label><select id="ed_frame_style" onchange="onGlobalChange()"><option value="none">Aucun</option><option value="classic">Monitor broadcast</option><option value="tally_border">Bordure tally</option><option value="stylized">Stylisé</option></select></div>
                     <label class="field field-inline" for="ed_overlay_below"><input type="checkbox" class="ios-toggle" id="ed_overlay_below" onchange="onGlobalChange()"> Texte sous l'image</label>
+                    <label class="field field-inline" for="ed_genlock" title="Verrouille la phase de sortie sur la grille PTP. Param structurel : un changement redéploie le container."><input type="checkbox" class="ios-toggle" id="ed_genlock"> Genlock</label>
                     <div class="field field-narrow"><label for="ed_tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
                 </div>
                 <div class="mw-source-picker">
-                    <div class="field field-grow"><label for="ed_src_select">Ajouter une source</label><select id="ed_src_select"><option value="">— laisser vide —</option></select></div>
-                    <button type="button" class="btn btn-blue" onclick="ajouterEntree()">+ Ajouter</button>
+                    <button type="button" class="btn btn-blue" onclick="ajouterEntree()" title="Ajoute une fenêtre vide ; affectez-lui une source ensuite dans le panneau de droite ou via la page Câbles.">+ Ajouter un PiP</button>
                 </div>
                 <div class="align-toolbar" role="group" aria-label="Outils d'alignement">
                     <span class="align-label">Aligner :</span>
