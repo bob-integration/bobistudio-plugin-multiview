@@ -468,10 +468,19 @@ def blend(dst, src, alpha):
 
 # ─── Rendu d'overlay (PIL) ───────────────────────────────────
 
-try:
-    FONT = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", LABEL_SIZE)
-except Exception:
-    FONT = ImageFont.load_default()
+def _make_font(size):
+    """Police d'overlay à la taille demandée. DejaVu Bold si présente (image avec
+    fonts-dejavu-core), sinon repli sur la police par défaut Pillow — SCALABLE
+    depuis Pillow 10.1 (load_default(size)) → le texte grossit même sans DejaVu."""
+    try:
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
+    except Exception:
+        try:
+            return ImageFont.load_default(size)
+        except Exception:
+            return ImageFont.load_default()
+
+FONT = _make_font(LABEL_SIZE)
 
 def _is_protocol_label(cfg):
     return cfg.get("show_label") and cfg.get("label_source") == "protocol"
@@ -500,6 +509,24 @@ def _render_border_colored(d, x, y, w, h, color_rgba, thickness):
         return
     for k in range(thickness):
         d.rectangle([x + k, y + k, x + w - 1 - k, y + h - 1 - k], outline=color_rgba)
+
+def _border_rect(cfg):
+    """Rectangle de l'IMAGE vidéo dans la cellule — copie EXACTE de la géométrie
+    de la boucle de composite. La bordure s'y colle : elle exclut donc la bande
+    VU « hors image » et le bandeau « sous l'image », mais englobe tout élément
+    superposé SUR l'image (label/tally en overlay, VU « dans l'image »)."""
+    x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
+    bar_on = bool(cfg.get("show_label") or cfg.get("show_tally"))
+    vh = h - BAR_H if (OVERLAY_BELOW and bar_on) else h
+    if vh < 2:
+        vh = h
+    meter_n = int(cfg.get("meter_channels") or 0)
+    moff = 0
+    if meter_n > 0 and not cfg.get("meter_inside"):
+        moff = _meter_layout(meter_n) + 4
+    video_w = max(2, w - moff)
+    video_x = x + (moff if cfg.get("meter_position") == "left" else 0)
+    return video_x, y, video_w, vh
 
 def _render_pill(d, cx, cy, r, fill, outline):
     """Pastille ronde centrée (cx, cy) de rayon r."""
@@ -540,8 +567,7 @@ def render_static():
                     tl, tr = x + TALLY_PAD + TALLY_SIZE + 6, x + w - TALLY_PAD - TALLY_SIZE - 6
                     d.text(((tl + tr) // 2, bar_top + cbar // 2),
                            name, font=FONT, fill=(240, 240, 245, 255), anchor="mm")
-            # Cadre fin gris
-            d.rectangle([x, y, x + w - 1, y + h - 1], outline=(60, 60, 68, 255))
+            # Cadre fin gris → couche bordure (render_border), au-dessus du bandeau.
 
         elif FRAME_STYLE == "tally_border":
             # La bordure colorée est dynamique. Ici : juste le label sur fond translucide
@@ -560,12 +586,10 @@ def render_static():
                 if static_label:
                     d.text((x + w // 2, y + h - grad_h // 2 + 2),
                            name, font=FONT, fill=(245, 245, 250, 255), anchor="mm")
-            d.rectangle([x, y, x + w - 1, y + h - 1], outline=(90, 90, 100, 220))
+            # Cadre fin → couche bordure (render_border), au-dessus du bandeau.
 
         else:  # "none" — comportement historique
-            if BORDER_W > 0:
-                for i in range(BORDER_W):
-                    d.rectangle([x + i, y + i, x + w - 1 - i, y + h - 1 - i], outline=BORDER_COLOR)
+            # Bordure globale → couche bordure (render_border), au-dessus du bandeau.
             if bar_on:
                 bar_top = y + h - BAR_H
                 d.rectangle([x, bar_top, x + w, y + h], fill=(0, 0, 0, 180))
@@ -618,8 +642,7 @@ def render_dynamic():
                        proto_txt, font=FONT, fill=(245, 245, 250, 255), anchor="mm")
 
         elif FRAME_STYLE == "tally_border":
-            thick = max(4, int(round(LABEL_SIZE * 0.45)))
-            _render_border_colored(d, x, y, w, h, _TALLY_BORDER_RGBA[dom], thick)
+            # La bordure colorée est tracée par render_border (couche du dessus).
             if is_proto and proto_txt:
                 lab_h = BAR_H
                 _render_gradient_bar(img, x, y + h - lab_h, w, lab_h, (0, 0, 0), 0, 200)
@@ -669,6 +692,29 @@ def render_dynamic():
                 d.rectangle([x + w - TALLY_PAD - TALLY_SIZE, ty,
                              x + w - TALLY_PAD, ty + TALLY_SIZE],
                             fill=cR, outline=bR)
+    return rgba_to_yuv(img)
+
+def render_border():
+    """Couche bordure SEULE, blendée EN DERNIER → la bordure reste visible
+    au-dessus du bandeau, des labels et des pavés tally. Cerne le rectangle image
+    (_border_rect) selon le style courant. Dépend du tally pour 'tally_border'."""
+    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    for i, cfg in enumerate(FLUX_CONFIG):
+        bx, by, bw, bh = _border_rect(cfg)
+        if FRAME_STYLE == "classic":
+            d.rectangle([bx, by, bx + bw - 1, by + bh - 1], outline=(60, 60, 68, 255))
+        elif FRAME_STYLE == "stylized":
+            d.rectangle([bx, by, bx + bw - 1, by + bh - 1], outline=(90, 90, 100, 220))
+        elif FRAME_STYLE == "tally_border":
+            thick = max(4, int(round(LABEL_SIZE * 0.45)))
+            _render_border_colored(d, bx, by, bw, bh,
+                                   _TALLY_BORDER_RGBA[_window_tally_dominant(i)], thick)
+        else:  # "none"
+            if BORDER_W > 0:
+                for k in range(BORDER_W):
+                    d.rectangle([bx + k, by + k, bx + bw - 1 - k, by + bh - 1 - k],
+                                outline=BORDER_COLOR)
     return rgba_to_yuv(img)
 
 def render_meters(now):
@@ -886,6 +932,7 @@ if TSL_PORT > 0 and not TSL_REMOTE:
 
 static_y, static_u, static_v, static_a, static_a2 = render_static()
 dyn_y = dyn_u = dyn_v = dyn_a = dyn_a2 = None
+border_y, border_u, border_v, border_a, border_a2 = render_border()
 
 # ─── Boucle de mix ───────────────────────────────────────────
 
@@ -1003,9 +1050,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
                     TALLY_SIZE = max(8,  int(round(LABEL_SIZE * 1.4)))
                     TALLY_PAD  = max(2,  int(round(LABEL_SIZE * 0.35)))
                     BAR_H      = max(14, int(round(LABEL_SIZE * 2)))
-                    try: FONT = ImageFont.truetype(
-                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", LABEL_SIZE)
-                    except Exception: FONT = ImageFont.load_default()
+                    FONT = _make_font(LABEL_SIZE)
                 except (TypeError, ValueError): pass
             if "frame_style" in b:
                 FRAME_STYLE = str(b["frame_style"])
@@ -1138,9 +1183,12 @@ while True:
     canvas_u = blend(canvas_u, static_u,  static_a2)
     canvas_v = blend(canvas_v, static_v,  static_a2)
 
-    # Re-rendu dynamique (labels protocole + tally) si l'état a changé
+    # Re-rendu dynamique (labels protocole + tally) si l'état a changé.
+    # La couche bordure dépend aussi du tally (style tally_border) et de la géo/
+    # style (geom_dirty arme tally_dirty) → on la re-bake ici en même temps.
     if tally_dirty.is_set():
         dyn_y, dyn_u, dyn_v, dyn_a, dyn_a2 = render_dynamic()
+        border_y, border_u, border_v, border_a, border_a2 = render_border()
         tally_dirty.clear()
 
     if dyn_a is not None:
@@ -1155,6 +1203,12 @@ while True:
         canvas_y = blend(canvas_y, m_y, m_a)
         canvas_u = blend(canvas_u, m_u, m_a2)
         canvas_v = blend(canvas_v, m_v, m_a2)
+
+    # Bordure EN DERNIER → visible par-dessus bandeau, labels et pavés tally.
+    if border_a is not None:
+        canvas_y = blend(canvas_y, border_y, border_a)
+        canvas_u = blend(canvas_u, border_u, border_a2)
+        canvas_v = blend(canvas_v, border_v, border_a2)
 
     out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
     slot   = out_frame_index % RING_SIZE

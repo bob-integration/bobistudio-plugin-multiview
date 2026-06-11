@@ -1,8 +1,21 @@
 {
-  "version": "0.8.0",
-  "date": "2026-06-10",
+  "version": "0.8.3",
+  "date": "2026-06-11",
   "changes": {
     "Nouveautés": [
+      "Taille du texte du label : le texte grossit désormais RÉELLEMENT avec le réglage. La police de l'overlay est rendue scalable même quand l'image Docker n'embarque pas DejaVu (repli load_default(size), Pillow ≥ 10.1) ; et l'image compute (bobi-compute) installe désormais fonts-dejavu-core (DejaVu Bold propre, profite aussi aux autres plugins compute). Auparavant, police absente → repli bitmap de taille fixe : seule la zone ombrée du bandeau grossissait.",
+      "Bordure de fenêtre rendue AU-DESSUS du bandeau de texte et des pavés tally (couche dédiée blendée en dernier) — la bordure n'est plus masquée par le label ni les lampes tally. Cerne toujours le rectangle image. Application à chaud, tous styles de cadre."
+    ],
+    "Nouveautés (0.8.2)": [
+      "Bordure de fenêtre cernant l'IMAGE seule : la bordure (bordure globale et styles de cadre Monitor broadcast / Bordure tally / Stylisé) n'enveloppe plus la bande VU-mètre « hors image » ni le bandeau label « sous l'image » — ces zones réservées restent hors-bordure. Les éléments superposés SUR l'image (label/tally en overlay, VU-mètre « dans l'image ») restent à l'intérieur de la bordure. Application à chaud."
+    ],
+    "Nouveautés (0.8.1)": [
+      "« + Ajouter un PiP » : le bouton d'ajout crée désormais une fenêtre VIDE (sans source pré-affectée) au lieu d'imposer le choix d'une source via un menu déroulant. La source s'affecte ensuite dans le panneau de droite (option « — aucune source — » par défaut) ou via la page Câbles. L'ajout reste à chaud.",
+      "Commutateur Genlock dans l'éditeur : le verrouillage de phase de la sortie sur la grille PTP est désormais activable/désactivable depuis le composer. Param structurel (lu au démarrage du script) : un changement redéploie le container — l'info-bulle du toggle le rappelle.",
+      "Plafond « Max entrées » ajustable à chaud : augmenter le nombre maximal d'entrées ne force plus un redéploiement (max_inputs retiré des params structurels côté orchestrateur). L'ajout/suppression de sources reste à chaud comme avant.",
+      "Bouton « Monitoring » redondant retiré du header du composer (déjà présent dans la barre d'instances à gauche)."
+    ],
+    "Nouveautés (0.8.0)": [
       "Éditeur entièrement à chaud : déplacer/redimensionner une fenêtre (drag ou saisie numérique), modifier les réglages visuels par fenêtre (label, tally, VU-mètre…) et les réglages globaux (bordure, style de cadre, taille de texte…) s'appliquent immédiatement sans coupure ni redéploiement — via :8082/window, :8082/style et :8082/reconfigure.",
       "Ajout/suppression de source à chaud : ajouter ou retirer une fenêtre depuis l'éditeur reconfigure le multiview en direct. La résolution source est auto-résolue depuis la DB (:8082/reconfigure atomique). Aucun redéploiement ni clignotement de la sortie.",
       "Interface éditeur simplifiée : les champs redondants (SHM sortie, format vidéo, résolution source) ont été supprimés — ces valeurs sont gérées automatiquement. Fenêtre ajoutée à ¼ de la résolution de sortie ; placement en grille sans chevauchement à chaque ajout."
@@ -22,7 +35,9 @@
     "Nouveautés (0.3.5)": [
       "Profondeur de bits du pipeline shm configurable 8/10/12 bits — pilotée par Réglages → MXL « Profondeur du pipeline shm » (force8 par défaut : 8 bits, comportement inchangé ; suivi du format : frames 10/12 bits stockées sur 16 bits, ×2 mémoire)."
     ],
-    "Corrections": [],
+    "Corrections": [
+      "Sélection de source : les containers à sorties multiples (mixer PGM/CLEAN/PVW, receiver multi-flux, stills main/key…) exposent désormais CHAQUE sortie vidéo individuellement dans la dropdown du PiP — avec son label — au lieu d'une seule entrée illisible avec la chaîne composite. La liste est construite depuis produces[] de la topologie (/api/home/summary), l'audio/anc est filtré."
+    ],
     "Bugs connus": []
   }
 }
