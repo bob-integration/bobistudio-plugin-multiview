@@ -59,7 +59,35 @@ def before_deploy(params, context):
                 params["fps"]        = fmt["fps"]
                 params["scan"]       = fmt.get("scan", "p")
 
+    # 3. Banque d'entrées : flux_config paddée à max_inputs entrées à indices STABLES
+    #    (slot de câblage = tally = Ember). Les entrées au-delà des PiP affichés sont
+    #    masquées (hidden) mais restent câblables — supprimer un PiP ne coupe plus la
+    #    source. Migration implicite des anciens configs (liste courte → paddée).
+    #    On ne tronque JAMAIS (une entrée câblée au-delà de max_inputs survit).
+    params["flux_config"] = pad_input_bank(params)
+
     return params
+
+
+def pad_input_bank(params):
+    """flux_config complétée à max_inputs entrées (masquées, sans source). Idempotent."""
+    try:
+        max_inputs = int(params.get("max_inputs") or 0)
+    except (TypeError, ValueError):
+        max_inputs = 0
+    fc = [dict(f) for f in (params.get("flux_config") or []) if isinstance(f, dict)]
+    out_w = int(params.get("out_width") or 1280)
+    out_h = int(params.get("out_height") or 720)
+    while len(fc) < max_inputs:
+        fc.append({
+            "path": "", "hidden": True, "name": "", "label_source": "hostname",
+            "in_w": 0, "in_h": 0,
+            "x": 0, "y": 0, "w": (out_w // 2) & ~1, "h": (out_h // 2) & ~1,
+            "show_label": True, "show_tally": False, "tsl_index": 0,
+            "meter_channels": 0, "meter_position": "right", "meter_inside": False,
+            "meter_opacity": 70, "meter_scale": "dbfs",
+        })
+    return fc
 
 
 def produced_flow_count(params, ctx):

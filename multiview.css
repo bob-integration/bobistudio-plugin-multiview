@@ -290,6 +290,9 @@
 .mw-entry-row { cursor: pointer; transition: background 0.1s; }
 .mw-entry-row:hover { background: var(--bg-hover); }
 .mw-entry-row.is-selected { background: var(--accent-soft); }
+/* Entrée de la banque non affichée (PiP retiré) : source câblée conservée */
+.mw-entry-row.is-hidden td { opacity: 0.45; }
+.mw-entry-row.is-hidden td:last-child { opacity: 1; }
 .mw-entry-row.is-primary {
     background: var(--bg-selected);
     box-shadow: inset 0 0 0 1px var(--accent);

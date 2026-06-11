@@ -1,8 +1,14 @@
 {
-  "version": "0.8.4",
+  "version": "0.9.0",
   "date": "2026-06-11",
   "changes": {
     "Nouveautés": [
+      "Banque d'entrées à indices stables : flux_config contient désormais TOUJOURS max_inputs entrées (paddée au déploiement). Les entrées sont câblables en avance (page Câbles : tous les ports existent dès le déploiement) et « Retirer de l'image » (ex-Supprimer) masque le PiP SANS couper sa source — déplacer/retirer des PiP ne décâble plus rien et ne décale plus les indices tally/Ember. Nouvelle colonne « À l'image » dans le tableau de l'éditeur pour afficher/masquer chaque entrée ; « + Ajouter un PiP » réaffiche la première entrée masquée (source conservée).",
+      "Plafond de taille du texte PAR FENÊTRE : le label ne dépasse jamais 30 % de la hauteur du PiP (bandeau ≤ 40 %, barres classic/stylized ≤ 45 %), et la police est réduite si le texte déborde en largeur — un label_size global énorme ne fait plus disparaître le texte hors des petites fenêtres. Aperçu éditeur aligné sur les mêmes formules.",
+      "« Texte sous l'image » sans déformation : la vidéo est réduite au même ratio que la hauteur restante (pillarbox centré) au lieu d'être étirée dans la zone amputée du bandeau. Géométrie unifiée (_video_rect) partagée par le composite, la couche bordure et les VU-mètres ; la réservation tient compte de la vraie hauteur de barre du style (classic/stylized).",
+      "Orchestrateur : le hot-apply multiview est désormais conditionné à la version du script déployé (= version du manifeste) — un vieux script reçoit un redéploiement complet au lieu de paramètres qu'il ignorerait."
+    ],
+    "Nouveautés (0.8.4)": [
       "Ouverture du composer accélérée : la liste des sources vidéo est servie par le nouvel endpoint léger /api/sources (dérivation DB seule) au lieu de /api/home/summary — l'éditeur ne paie plus l'interrogation PTP/sondes live de la route complète (~1 s par clic d'instance quand PTP est activé)."
     ],
     "Nouveautés (0.8.3)": [

@@ -110,7 +110,7 @@ function drawMiniPreview(canvas, params) {
     const borderW     = (params.border_w || 0) * Math.min(sx, sy);
     const borderColor = params.border_color || '#ffffff';
 
-    (params.flux_config || []).forEach((f, i) => {
+    (params.flux_config || []).filter(f => !f.hidden).forEach((f, i) => {
         const x = f.x * sx, y = f.y * sy;
         const w = f.w * sx, h = f.h * sy;
         ctx.globalAlpha = 0.67;
@@ -179,6 +179,7 @@ async function chargerMw(vmid) {
         color: COLORS[i % COLORS.length],
         ratio: (f.in_w && f.in_h) ? f.in_w / f.in_h : 16/9
     }, f));
+    padBank();   // banque à indices stables : toujours max_inputs entrées
     selectedIdxs = [];
     renderEditor(c.hostname);
 }
@@ -236,29 +237,21 @@ function resizeCanvas() {
     canvas.style.maxWidth = w + 'px'; // pas plus grand que la résolution native
 }
 
-// ─── Ajouter / supprimer une entrée ──────────────────────────
+// ─── Banque d'entrées / PiP ──────────────────────────────────
+// flux_config = banque de max_inputs entrées à indices STABLES (slot de câblage =
+// tally = Ember). Un PiP est une entrée non masquée (hidden) ; retirer un PiP de
+// l'image NE COUPE PAS sa source. Miroir de hooks.pad_input_bank côté orchestrateur.
 
-function ajouterEntree() {
-    if (editorParams.flux_config.length >= editorParams.max_inputs) {
-        mwFlash(`Limite max_inputs = ${editorParams.max_inputs} atteinte.`);
-        return;
-    }
-    const idx   = editorParams.flux_config.length;
+function newEntry(idx, hidden) {
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
-    const win_w = Math.round(out_w / 2);
-    const win_h = Math.round(out_h / 2);
-    const cols  = Math.max(1, Math.floor(out_w / win_w));
-    const x     = (idx % cols) * win_w;
-    const y     = Math.floor(idx / cols) * win_h;
-
-    editorParams.flux_config.push({
-        path: '',
+    return {
+        path: '', hidden: !!hidden, name: '',
         label_source: 'hostname',
         in_w: 0, in_h: 0,
-        x, y,
-        w: win_w,
-        h: win_h,
+        x: 0, y: 0,
+        w: Math.round(out_w / 2) & ~1,
+        h: Math.round(out_h / 2) & ~1,
         ratio: 16/9,
         color: COLORS[idx % COLORS.length],
         show_label: true,
@@ -270,7 +263,36 @@ function ajouterEntree() {
         meter_inside: false,         // false = à côté (réduit la vidéo), true = overlay
         meter_opacity: 70,           // 10..100 (utilisé si inside=true)
         meter_scale: 'dbfs',         // dbfs | ppm (EBU)
-    });
+    };
+}
+
+function padBank() {
+    const max = Math.max(1, parseInt(editorParams.max_inputs) || 1);
+    const fc = editorParams.flux_config;
+    while (fc.length < max) fc.push(newEntry(fc.length, true));
+    // Au-delà de max : on garde (ne jamais détruire une entrée potentiellement câblée).
+}
+
+function ajouterEntree() {
+    padBank();
+    // « Ajouter un PiP » = réafficher la première entrée masquée de la banque
+    // (sa source câblée éventuelle est conservée et réapparaît).
+    const idx = editorParams.flux_config.findIndex(f => f.hidden);
+    if (idx < 0) {
+        mwFlash(`Limite max_inputs = ${editorParams.max_inputs} atteinte.`);
+        return;
+    }
+    const f = editorParams.flux_config[idx];
+    f.hidden = false;
+    // Entrée jamais positionnée (défauts de la banque) → placement en grille
+    const out_w = editorParams.out_width;
+    const win_w = Math.round(out_w / 2) & ~1;
+    const win_h = Math.round(editorParams.out_height / 2) & ~1;
+    if (!f.x && !f.y && f.w === win_w && f.h === win_h) {
+        const cols = Math.max(1, Math.floor(out_w / win_w));
+        f.x = (idx % cols) * win_w;
+        f.y = Math.floor(idx / cols) * win_h;
+    }
     selectedIdxs = [idx];
     dessiner();
     hotApplyFull();
@@ -278,11 +300,20 @@ function ajouterEntree() {
 
 function supprimerEntreeSelectionnee() {
     if (selectedIdxs.length === 0) return;
-    // Supprime du dernier au premier pour préserver les indices
-    [...selectedIdxs].sort((a, b) => b - a).forEach(i => {
-        editorParams.flux_config.splice(i, 1);
+    // Retire le PiP de l'image SANS couper la source (entrée masquée, câble conservé).
+    selectedIdxs.forEach(i => {
+        const f = editorParams.flux_config[i];
+        if (f) f.hidden = true;
     });
     selectedIdxs = [];
+    dessiner();
+    hotApplyFull();
+}
+
+function toggleEntryHidden(i, shown) {
+    const f = editorParams.flux_config[i];
+    if (!f) return;
+    f.hidden = !shown;
     dessiner();
     hotApplyFull();
 }
@@ -431,21 +462,29 @@ function dessiner() {
     const borderColor  = editorParams.border_color || '#ffffff';
     const overlayBelow = !!editorParams.overlay_below;
     const labelSize    = Math.max(6, editorParams.label_size || 14);
-    // Formules identiques à multiview.py
-    const BAR_H      = Math.max(14, Math.round(labelSize * 2));
-    const TALLY_SIZE = Math.max(8,  Math.round(labelSize * 1.4));
-    const TALLY_PAD  = Math.max(2,  Math.round(labelSize * 0.35));
 
     const primary = primaryIdx();
     editorParams.flux_config.forEach((f, i) => {
+        if (f.hidden) return;   // entrée de la banque non affichée
         const sel = isSelected(i);
         const isPrimary = i === primary;
         const barOn = f.show_label || f.show_tally;
+        // Plafonds PAR FENÊTRE — formules miroir de _label_metrics (script.py) :
+        // texte ≤ 30 % de la hauteur du PiP, bandeau ≤ 40 %.
+        const effRaw     = Math.max(6, Math.min(labelSize, Math.floor(f.h * 0.30)));
+        const BAR_H      = Math.min(Math.max(14, Math.round(effRaw * 2)), Math.max(8, Math.floor(f.h * 0.40)));
+        const eff        = Math.max(6, Math.min(effRaw, BAR_H - 4));
+        const TALLY_SIZE = Math.max(4, Math.min(Math.round(eff * 1.4), BAR_H - 2));
+        const TALLY_PAD  = Math.max(2, Math.round(eff * 0.35));
         const videoH = (overlayBelow && barOn) ? Math.max(2, f.h - BAR_H) : f.h;
+        // Bandeau sous l'image : largeur réduite au même ratio (pillarbox centré,
+        // pas d'étirement) — même géométrie que _video_rect (script.py).
+        const videoW = videoH < f.h ? Math.max(2, Math.round(f.w * videoH / f.h)) : f.w;
+        const videoX = f.x + Math.floor((f.w - videoW) / 2);
 
         ctx.globalAlpha = sel ? 0.8 : 0.4;
         ctx.fillStyle   = f.color;
-        ctx.fillRect(f.x, f.y, f.w, videoH);
+        ctx.fillRect(videoX, f.y, videoW, videoH);
         ctx.globalAlpha = 1;
 
         if (borderW > 0) {
@@ -483,7 +522,7 @@ function dessiner() {
 
             if (f.show_label) {
                 ctx.fillStyle = '#ffffff';
-                ctx.font = `bold ${labelSize}px monospace`;
+                ctx.font = `bold ${eff}px monospace`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.fillText(computeDisplayName(f), (textL + textR) / 2, barTop + BAR_H / 2);
@@ -585,14 +624,17 @@ function renderEntryTable() {
     tbody.innerHTML = editorParams.flux_config.map((f, i) => {
         const sel = isSelected(i);
         const isP = i === primary;
-        const cls = isP ? 'is-primary' : (sel ? 'is-selected' : '');
+        const cls = (isP ? 'is-primary' : (sel ? 'is-selected' : '')) + (f.hidden ? ' is-hidden' : '');
         return `
         <tr class="mw-entry-row ${cls}" onclick="selectEntry(${i}, event)">
             <td><span class="mw-entry-color" style="background:${f.color}"></span>${i + 1}</td>
             <td>${sourceHostname(f) || '—'}</td>
             <td class="mw-entry-path">${f.path}</td>
-            <td>${f.x}, ${f.y}</td>
-            <td>${f.w}×${f.h}</td>
+            <td>${f.hidden ? '—' : `${f.x}, ${f.y}`}</td>
+            <td>${f.hidden ? '—' : `${f.w}×${f.h}`}</td>
+            <td><input type="checkbox" class="ios-toggle" ${f.hidden ? '' : 'checked'}
+                onclick="event.stopPropagation(); toggleEntryHidden(${i}, this.checked)"
+                title="Afficher / retirer ce PiP de l'image — la source reste câblée"></td>
         </tr>`;
     }).join('');
 }
@@ -618,6 +660,7 @@ function canvasMouseDown(e) {
     const primary = primaryIdx();
     for (let i = editorParams.flux_config.length - 1; i >= 0; i--) {
         const f = editorParams.flux_config[i];
+        if (f.hidden) continue;   // entrées masquées : pas dans le canvas
         if (i === primary &&
             pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
             dragMode = 'resize'; dragStart = pos; dragOrigRect = {...f};
@@ -699,6 +742,7 @@ function hotApplyWindow(idx) {
             x: f.x, y: f.y,
             w: f.w % 2 === 0 ? f.w : f.w - 1,
             h: f.h % 2 === 0 ? f.h : f.h - 1,
+            hidden:         !!f.hidden,
             name:           computeDisplayName(f),
             show_label:     !!f.show_label,
             show_tally:     !!f.show_tally,
@@ -837,9 +881,11 @@ async function deployerEditor() {
     editorParams.genlock = document.getElementById('ed_genlock').checked;
     const tslPortEl = document.getElementById('ed_tsl_port');
     if (tslPortEl) editorParams.tsl_port = parseInt(tslPortEl.value) || 0;
+    padBank();   // max_inputs a pu changer → complète la banque
 
     const flux_config = editorParams.flux_config.map(f => ({
         path: f.path,
+        hidden: !!f.hidden,
         label_source: f.label_source || 'hostname',
         name: computeDisplayName(f),
         in_w: f.in_w,
@@ -1027,7 +1073,8 @@ async function enregistrerLayout() {
         max_inputs:    editorParams.max_inputs,
         // Path et in_w/in_h volontairement omis : un layout = réglages géométriques + style,
         // pas l'affectation de source. Les sources sont restaurées à l'apply depuis l'éditeur.
-        flux_config:   (editorParams.flux_config || []).map(f => ({
+        // Seuls les PiP AFFICHÉS font partie du layout (les entrées masquées de la banque, non).
+        flux_config:   (editorParams.flux_config || []).filter(f => !f.hidden).map(f => ({
             label_source: f.label_source || 'hostname',
             x: f.x, y: f.y, w: f.w, h: f.h,
             show_label: !!f.show_label,
@@ -1066,7 +1113,7 @@ function appliquerLayout(lid) {
     // Préserve les sources affectées dans l'éditeur (par index) — le layout n'apporte
     // que les réglages géométriques et de style.
     const existing = editorParams.flux_config || [];
-    editorParams.flux_config = (cfg.flux_config || []).map((f, i) => {
+    const applied = (cfg.flux_config || []).map((f, i) => {
         const prev = existing[i] || {};
         return Object.assign({
             color: COLORS[i % COLORS.length],
@@ -1074,8 +1121,14 @@ function appliquerLayout(lid) {
             in_w: 0,
             in_h: 0,
             ratio: 16/9
-        }, f);
+        }, f, {hidden: false});
     });
+    // Entrées existantes au-delà du layout : conservées MASQUÉES (sources préservées).
+    for (let i = applied.length; i < existing.length; i++) {
+        applied.push(Object.assign({}, existing[i], {hidden: true}));
+    }
+    editorParams.flux_config = applied;
+    padBank();
     selectedIdxs = [];
     const hostnameEl = document.getElementById('ed_hostname');
     const hostname = hostnameEl ? hostnameEl.textContent.trim() : '';

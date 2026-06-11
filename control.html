@@ -21,7 +21,7 @@
                     <div class="field field-narrow"><label for="ed_tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
                 </div>
                 <div class="mw-source-picker">
-                    <button type="button" class="btn btn-blue" onclick="ajouterEntree()" title="Ajoute une fenêtre vide ; affectez-lui une source ensuite dans le panneau de droite ou via la page Câbles.">+ Ajouter un PiP</button>
+                    <button type="button" class="btn btn-blue" onclick="ajouterEntree()" title="Réaffiche la première entrée masquée de la banque (sa source câblée est conservée) ; affectez-lui une source dans le panneau de droite ou via la page Câbles.">+ Ajouter un PiP</button>
                 </div>
                 <div class="align-toolbar" role="group" aria-label="Outils d'alignement">
                     <span class="align-label">Aligner :</span>
@@ -55,7 +55,7 @@
                         <label class="field field-inline" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> Afficher le nom</label>
                         <label class="field field-inline" for="ed_show_tally"><input type="checkbox" class="ios-toggle" id="ed_show_tally" onchange="onEntryChange()"> Cases Tally</label>
                         <div class="field field-narrow"><label for="ed_tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
-                        <button type="button" class="btn btn-red" onclick="supprimerEntreeSelectionnee()">Supprimer</button>
+                        <button type="button" class="btn btn-red" onclick="supprimerEntreeSelectionnee()" title="Retire le PiP de l'image SANS couper sa source : l'entrée reste câblée et peut être réaffichée.">Retirer de l'image</button>
                     </div>
                     <div class="mw-editor-row">
                         <div class="field field-narrow"><label for="ed_x">X</label><input type="number" id="ed_x" onchange="onEntryGeomChange()"></div>
@@ -72,7 +72,7 @@
                     </div>
                 </div>
                 <table class="mw-entry-table" aria-label="Entrées de la composition">
-                    <thead><tr><th class="w40" scope="col">#</th><th scope="col">Nom</th><th scope="col">Source SHM</th><th class="w90" scope="col">Position</th><th class="w90" scope="col">Taille</th></tr></thead>
+                    <thead><tr><th class="w40" scope="col">#</th><th scope="col">Nom</th><th scope="col">Source SHM</th><th class="w90" scope="col">Position</th><th class="w90" scope="col">Taille</th><th class="w90" scope="col" title="Une entrée masquée garde sa source câblée">À l'image</th></tr></thead>
                     <tbody id="ed_tbody"></tbody>
                 </table>
             </div>
