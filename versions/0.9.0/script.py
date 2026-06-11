@@ -3,7 +3,7 @@
 # Auteur : Cyril Mazouer, pour le compte de BOBI SAS
 # Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
-import mmap, socket, struct, time, numpy as np, threading, json, os, re, base64, io
+import mmap, socket, struct, time, numpy as np, threading, json, os, re
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
@@ -316,8 +316,6 @@ def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opac
 tally_state = {{}}
 # texte dynamique reçu par TSL, indexé par flux idx (utilisé si label_source == 'protocol')
 tsl_text = {{}}
-# texte TSL indexé par index TSL brut (utilisé par les overlays texte sourcés TSL, hors fenêtres)
-tsl_text_by_index = {{}}
 tally_dirty = threading.Event()
 tally_dirty.set()
 # Accumulateur par slot TSL : (tsl_index, 'rh'|'tt'|'lh') → [valeur, last_ts, smoothed_interval_or_None]
@@ -935,7 +933,6 @@ def _apply_tsl(index, control, text):
     tt = _tsl_slots.get((index, 'tt'), [0])[0]
     lh = _tsl_slots.get((index, 'lh'), [0])[0]
     color = _tally_dominant(rh, lh, tt)
-    tsl_text_by_index[index] = text   # exposé aux overlays texte sourcés TSL
     changed = False
     for i, cfg in enumerate(FLUX_CONFIG):
         if int(cfg.get("tsl_index", 0) or 0) != index:
@@ -1011,252 +1008,6 @@ def _tsl_server():
 if TSL_PORT > 0 and not TSL_REMOTE:
     threading.Thread(target=_tsl_server, daemon=True).start()
 
-# ─── Overlays : Texte / Horloge / Image (outils non-vidéo) ───
-# Liste séparée de flux_config (objets purement visuels : non câblés, non tally-slot).
-OVERLAYS = CONFIG.get("overlays") or []
-overlay_dirty = threading.Event()
-overlay_dirty.set()
-overlay_bg_layer = None              # couche images de fond (cachée, re-bakée sur overlay_dirty)
-_overlay_img_cache = {{}}            # id → (signature_b64, PIL RGBA)
-_chrono_state = {{}}                 # id → {{"running": bool, "base": s, "since": epoch|None}}
-
-# Polices embarquées dans l'image compute (cf. _compute_runtime/Dockerfile). Chaque clé →
-# liste de chemins candidats ; repli DejaVu Bold puis police Pillow par défaut si absente.
-_FONT_FILES = {{
-    "dejavu-sans":          ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"],
-    "dejavu-sans-bold":     ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"],
-    "dejavu-serif":         ["/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"],
-    "dejavu-mono":          ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"],
-    "liberation-sans":      ["/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"],
-    "liberation-sans-bold": ["/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"],
-    "liberation-mono":      ["/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"],
-    "inter":    ["/usr/share/fonts/truetype/inter/Inter-Regular.otf",
-                 "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
-                 "/usr/share/fonts/truetype/inter/InterVariable.ttf"],
-    "roboto":   ["/usr/share/fonts/truetype/roboto/unhinted/Roboto-Regular.ttf",
-                 "/usr/share/fonts/truetype/roboto/hinted/Roboto-Regular.ttf",
-                 "/usr/share/fonts/truetype/roboto/Roboto-Regular.ttf"],
-    "firacode": ["/usr/share/fonts/truetype/firacode/FiraCode-Regular.ttf",
-                 "/usr/share/fonts/opentype/firacode/FiraCode-Regular.otf"],
-}}
-_DEFAULT_FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-_ofont_cache = {{}}
-def _overlay_font(key, size):
-    size = max(6, int(size))
-    ck = (key, size)
-    f = _ofont_cache.get(ck)
-    if f is not None:
-        return f
-    for path in _FONT_FILES.get(key or "", []):
-        try:
-            f = ImageFont.truetype(path, size); break
-        except Exception:
-            f = None
-    if f is None:
-        try:
-            f = ImageFont.truetype(_DEFAULT_FONT_FILE, size)
-        except Exception:
-            try: f = ImageFont.load_default(size)
-            except Exception: f = ImageFont.load_default()
-    _ofont_cache[ck] = f
-    return f
-
-def _hex_rgb(s, default=(255, 255, 255)):
-    try:
-        s = (s or "").strip().lstrip("#")
-        if len(s) == 3:
-            s = "".join(c * 2 for c in s)
-        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
-    except Exception:
-        return default
-
-def _overlay_get(ov, key, default):
-    v = ov.get(key)
-    return default if v is None else v
-
-def _tsl_index_dominant(index):
-    rh = _tsl_slots.get((index, 'rh'), [0])[0]
-    tt = _tsl_slots.get((index, 'tt'), [0])[0]
-    lh = _tsl_slots.get((index, 'lh'), [0])[0]
-    return _tally_dominant(rh, lh, tt)
-
-def _overlay_geom(ov):
-    x = max(0, min(int(ov.get("x") or 0), OUT_WIDTH - 1))
-    y = max(0, min(int(ov.get("y") or 0), OUT_HEIGHT - 1))
-    w = max(2, min(int(ov.get("w") or 2), OUT_WIDTH - x))
-    h = max(2, min(int(ov.get("h") or 2), OUT_HEIGHT - y))
-    return x, y, w, h
-
-def _overlay_active(ov):
-    """État Tally On : True si l'index TSL référencé a un tally actif (≠ off)."""
-    ti = int(ov.get("tally_index") or 0)
-    if ti <= 0:
-        return False
-    return _tsl_index_dominant(ti) != "off"
-
-def _draw_text_overlay(d, ov, text):
-    x, y, w, h = _overlay_geom(ov)
-    active = _overlay_active(ov)
-    col = _hex_rgb(ov.get("color_on") if active else ov.get("color"), (255, 255, 255))
-    bg_hex = (ov.get("bg_color_on") if active else ov.get("bg_color")) or ""
-    bg_op = max(0, min(100, int(_overlay_get(ov, "bg_opacity", 100))))
-    pad = max(2, h // 12)
-    if bg_hex.strip():
-        br, bgc, bb = _hex_rgb(bg_hex, (0, 0, 0))
-        d.rectangle([x, y, x + w - 1, y + h - 1],
-                    fill=(br, bgc, bb, int(255 * bg_op / 100)))
-    text = text or ""
-    if not text:
-        return
-    fs = int(_overlay_get(ov, "font_size", 0) or 0)
-    if fs <= 0:
-        fs = max(6, int(h * 0.7))
-    fkey = ov.get("font") or "dejavu-sans-bold"
-    font = _overlay_font(fkey, fs)
-    try:
-        tw = d.textlength(text, font=font)
-        maxw = w - 2 * pad
-        if tw > maxw > 0:
-            fs = max(6, int(fs * maxw / tw))
-            font = _overlay_font(fkey, fs)
-    except Exception:
-        pass
-    fill = col + (255,)
-    cy = y + h // 2
-    align = ov.get("align") or "center"
-    if align == "left":
-        d.text((x + pad, cy), text, font=font, fill=fill, anchor="lm")
-    elif align == "right":
-        d.text((x + w - pad, cy), text, font=font, fill=fill, anchor="rm")
-    else:
-        d.text((x + w // 2, cy), text, font=font, fill=fill, anchor="mm")
-
-def _overlay_text_value(ov):
-    if (ov.get("text_source") or "local") == "tsl":
-        return tsl_text_by_index.get(int(ov.get("tsl_index") or 0), "") or ""
-    return ov.get("text") or ""
-
-def _parse_tc_seconds(s):
-    # Champs séparés par ":" alignés à DROITE. 4 champs → HH:MM:SS:FF (le dernier = images) ;
-    # ≤3 champs → HH:MM:SS (pas d'images). "00:01:30" = 90 s, "00:00:00:12" = 12 images.
-    try:
-        f = [int(x) for x in str(s or "").split(":") if x != ""]
-    except Exception:
-        return 0.0
-    if not f:
-        return 0.0
-    ff = 0
-    if len(f) >= 4:
-        f = f[-4:]; ff = f[3]; f = f[:3]
-    f = f[-3:]
-    while len(f) < 3:
-        f = [0] + f
-    hh, mm, ss = f
-    return hh * 3600 + mm * 60 + ss + ff * _FD / _FN
-
-def _chrono_elapsed(ov, now):
-    cid = ov.get("id")
-    st = _chrono_state.get(cid)
-    if st is None:
-        run = _as_bool(ov.get("chrono_running"))
-        st = {{"running": run, "base": 0.0, "since": now if run else None}}
-        _chrono_state[cid] = st
-    base = st["base"]
-    if st["running"] and st["since"] is not None:
-        base += now - st["since"]
-    return base
-
-def _format_clock(ov, now):
-    src = ov.get("clock_source") or "ptp"
-    if src in ("chrono", "countdown"):
-        elapsed = _chrono_elapsed(ov, now)
-        if src == "countdown":
-            val = max(0.0, _parse_tc_seconds(ov.get("chrono_start")) - elapsed)
-        else:
-            val = elapsed
-    else:  # ptp : heure du jour (CLOCK_REALTIME disciplinée phc2sys) + offset signé
-        val = (now + int(_overlay_get(ov, "offset_ms", 0)) / 1000.0) % 86400
-    hh = int(val // 3600)
-    mm = int((val % 3600) // 60)
-    ss = int(val % 60)
-    ff = int((val - int(val)) * _FN / _FD)
-    parts = []
-    if _as_bool(_overlay_get(ov, "show_hh", True)): parts.append("%02d" % hh)
-    if _as_bool(_overlay_get(ov, "show_mm", True)): parts.append("%02d" % mm)
-    if _as_bool(_overlay_get(ov, "show_ss", True)): parts.append("%02d" % ss)
-    if _as_bool(_overlay_get(ov, "show_ff", False)): parts.append("%02d" % ff)
-    return ":".join(parts) if parts else "%02d:%02d:%02d" % (hh, mm, ss)
-
-def _overlay_image(ov):
-    b64 = ov.get("image_b64") or ""
-    if not b64:
-        return None
-    cid = ov.get("id")
-    sig = (len(b64), b64[:24])
-    c = _overlay_img_cache.get(cid)
-    if c and c[0] == sig:
-        return c[1]
-    try:
-        pim = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA")
-    except Exception:
-        pim = None
-    _overlay_img_cache[cid] = (sig, pim)
-    return pim
-
-def _draw_image_overlay(img, ov):
-    pim = _overlay_image(ov)
-    if pim is None:
-        return
-    x, y, w, h = _overlay_geom(ov)
-    fit = ov.get("fit") or "contain"
-    iw, ih = pim.size
-    if iw <= 0 or ih <= 0:
-        return
-    if fit == "stretch":
-        rim = pim.resize((w, h)); ox, oy = x, y
-    elif fit == "cover":
-        scale = max(w / iw, h / ih)
-        nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-        rim = pim.resize((nw, nh))
-        left = (nw - w) // 2; top = (nh - h) // 2
-        rim = rim.crop((left, top, left + w, top + h)); ox, oy = x, y
-    else:  # contain
-        scale = min(w / iw, h / ih)
-        nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-        rim = pim.resize((nw, nh))
-        ox = x + (w - nw) // 2; oy = y + (h - nh) // 2
-    op = max(0, min(100, int(_overlay_get(ov, "opacity", 100))))
-    if op < 100:
-        rim.putalpha(rim.split()[3].point(lambda v: int(v * op / 100)))
-    img.alpha_composite(rim, (ox, oy))
-
-def render_overlays_bg():
-    bg = [ov for ov in OVERLAYS if (not ov.get("hidden"))
-          and ov.get("kind") == "image" and ov.get("layer") == "background"]
-    if not bg:
-        return None
-    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-    for ov in bg:
-        _draw_image_overlay(img, ov)
-    return rgba_to_yuv(img)
-
-def render_overlays_fg(now):
-    fg = [ov for ov in OVERLAYS if (not ov.get("hidden"))
-          and not (ov.get("kind") == "image" and ov.get("layer") == "background")]
-    if not fg:
-        return None
-    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img, "RGBA")
-    for ov in fg:
-        k = ov.get("kind")
-        if k == "text":
-            _draw_text_overlay(d, ov, _overlay_text_value(ov))
-        elif k == "clock":
-            _draw_text_overlay(d, ov, _format_clock(ov, now))
-        elif k == "image":
-            _draw_image_overlay(img, ov)
-    return rgba_to_yuv(img)
-
 static_y, static_u, static_v, static_a, static_a2 = render_static()
 dyn_y = dyn_u = dyn_v = dyn_a = dyn_a2 = None
 border_y, border_u, border_v, border_a, border_a2 = render_border()
@@ -1317,10 +1068,6 @@ class MvControlHandler(BaseHTTPRequestHandler):
             return self._do_style()
         if self.path == "/reconfigure":
             return self._do_reconfigure()
-        if self.path == "/overlays":
-            return self._do_overlays()
-        if self.path == "/chrono":
-            return self._do_chrono()
         if self.path != "/input":
             self.send_response(404); self.end_headers(); return
         b = self._json()
@@ -1404,51 +1151,6 @@ class MvControlHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": True}}).encode())
-    def _do_overlays(self):
-        # Remplacement atomique de la liste d'overlays (texte/horloge/image). Hot-apply.
-        b = self._json()
-        new_ov = b.get("overlays")
-        if not isinstance(new_ov, list):
-            self.send_response(400); self.end_headers(); return
-        with state_lock:
-            OVERLAYS[:] = new_ov
-            live = {{ov.get("id") for ov in new_ov}}
-            for cid in list(_overlay_img_cache):
-                if cid not in live:
-                    _overlay_img_cache.pop(cid, None)
-            for cid in list(_chrono_state):
-                if cid not in live:
-                    _chrono_state.pop(cid, None)
-            overlay_dirty.set()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json"); self.end_headers()
-        self.wfile.write(json.dumps({{"ok": True}}).encode())
-    def _do_chrono(self):
-        # Pilotage live d'un chrono/décompte : {{id, action: start|stop|reset}}.
-        b = self._json()
-        cid = b.get("id"); action = (b.get("action") or "").lower()
-        now = time.time(); ok = False
-        with state_lock:
-            st = _chrono_state.get(cid)
-            if st is None:
-                st = {{"running": False, "base": 0.0, "since": None}}
-                _chrono_state[cid] = st
-            if action == "start":
-                if not st["running"]:
-                    st["running"] = True; st["since"] = now
-                ok = True
-            elif action == "stop":
-                if st["running"] and st["since"] is not None:
-                    st["base"] += now - st["since"]
-                st["running"] = False; st["since"] = None
-                ok = True
-            elif action == "reset":
-                st["base"] = 0.0
-                st["since"] = now if st["running"] else None
-                ok = True
-        self.send_response(200 if ok else 400)
-        self.send_header("Content-Type", "application/json"); self.end_headers()
-        self.wfile.write(json.dumps({{"ok": ok}}).encode())
     def do_GET(self):
         with state_lock: inp = list(mv_state["inputs"])
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
@@ -1479,17 +1181,6 @@ while True:
 
     with state_lock:
         _fc = list(FLUX_CONFIG)   # snapshot stable pour cette frame
-
-    # Images de fond (layer=background) : sous la vidéo. Couche cachée, re-bakée sur changement.
-    if overlay_dirty.is_set():
-        with state_lock:
-            overlay_bg_layer = render_overlays_bg()
-        overlay_dirty.clear()
-    if overlay_bg_layer is not None:
-        _oby, _obu, _obv, _oba, _oba2 = overlay_bg_layer
-        canvas_y = blend(canvas_y, _oby, _oba)
-        canvas_u = blend(canvas_u, _obu, _oba2)
-        canvas_v = blend(canvas_v, _obv, _oba2)
 
     for i, cfg in enumerate(_fc):
         if cfg.get("hidden"):
@@ -1572,15 +1263,6 @@ while True:
         canvas_y = blend(canvas_y, border_y, border_a)
         canvas_u = blend(canvas_u, border_u, border_a2)
         canvas_v = blend(canvas_v, border_v, border_a2)
-
-    # Overlays texte/horloge/logo (layer=foreground) : par-dessus TOUT, re-rendus chaque frame
-    # (l'horloge avance en continu, le texte/couleur peut suivre le tally TSL).
-    _ovfg = render_overlays_fg(now)
-    if _ovfg is not None:
-        _ofy, _ofu, _ofv, _ofa, _ofa2 = _ovfg
-        canvas_y = blend(canvas_y, _ofy, _ofa)
-        canvas_u = blend(canvas_u, _ofu, _ofa2)
-        canvas_v = blend(canvas_v, _ofv, _ofa2)
 
     out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
     slot   = out_frame_index % RING_SIZE

@@ -10,7 +10,7 @@
   },
   "skaarhoj": {"mode": "multiview", "desc_i18n": "settings.js.skh_desc_multiview"},
   "deploy_order": 1,
-  "version": "0.10.0",
+  "version": "0.9.0",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
@@ -28,7 +28,6 @@
   },
   "deploy_defaults": {
     "flux_config": [],
-    "overlays": [],
     "shm_out": "mxl_mix",
     "out_width": 1280,
     "out_height": 720,
@@ -152,9 +151,7 @@
       "/state",
       "/window",
       "/style",
-      "/reconfigure",
-      "/overlays",
-      "/chrono"
+      "/reconfigure"
     ],
     "recall": {
       "source": "layouts",

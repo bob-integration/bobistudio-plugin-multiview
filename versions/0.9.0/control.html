@@ -22,10 +22,6 @@
                 </div>
                 <div class="mw-source-picker">
                     <button type="button" class="btn btn-blue" onclick="ajouterEntree()" title="Réaffiche la première entrée masquée de la banque (sa source câblée est conservée) ; affectez-lui une source dans le panneau de droite ou via la page Câbles.">+ Ajouter un PiP</button>
-                    <span class="align-label" style="margin-left:10px">Outils :</span>
-                    <button type="button" class="btn btn-purple" onclick="ajouterOverlay('text')" title="Ajouter un champ texte (texte local ou TSL)">+ Texte</button>
-                    <button type="button" class="btn btn-purple" onclick="ajouterOverlay('clock')" title="Ajouter une horloge / timecode (PTP, chrono ou décompte)">+ Horloge</button>
-                    <button type="button" class="btn btn-purple" onclick="ajouterOverlay('image')" title="Ajouter une image (logo ou fond) depuis le stockage média">+ Image</button>
                 </div>
                 <div class="align-toolbar" role="group" aria-label="Outils d'alignement">
                     <span class="align-label">Aligner :</span>
@@ -75,62 +71,6 @@
                         <div class="field"><label for="ed_meter_scale">Graduation</label><select id="ed_meter_scale" onchange="onEntryChange()"><option value="dbfs">dBFS</option><option value="ppm">EBU PPM</option></select></div>
                     </div>
                 </div>
-                <div id="ed_overlay_panel" class="mw-entry-panel mw-overlay-panel" hidden>
-                    <div class="mw-overlay-head">
-                        <strong id="ov_title">Overlay</strong>
-                        <button type="button" class="btn btn-red" onclick="supprimerOverlay()" title="Supprimer cet overlay">Supprimer</button>
-                    </div>
-                    <div class="mw-editor-row">
-                        <div class="field field-narrow"><label for="ov_x">X</label><input type="number" id="ov_x" onchange="onOverlayGeomChange()"></div>
-                        <div class="field field-narrow"><label for="ov_y">Y</label><input type="number" id="ov_y" onchange="onOverlayGeomChange()"></div>
-                        <div class="field field-narrow"><label for="ov_w">Largeur</label><input type="number" id="ov_w" onchange="onOverlayGeomChange()"></div>
-                        <div class="field field-narrow"><label for="ov_h">Hauteur</label><input type="number" id="ov_h" onchange="onOverlayGeomChange()"></div>
-                    </div>
-                    <!-- Texte -->
-                    <div class="mw-editor-row ov-grp" data-kind="text">
-                        <div class="field field-grow"><label for="ov_text">Texte</label><input type="text" id="ov_text" onchange="onOverlayChange()" oninput="onOverlayTextInput()"></div>
-                        <div class="field"><label for="ov_text_source">Source</label><select id="ov_text_source" onchange="onOverlayChange()"><option value="local">Texte local</option><option value="tsl">TSL</option></select></div>
-                        <div class="field field-narrow" id="ov_text_tsl_grp"><label for="ov_tsl_index">Index TSL</label><input type="number" id="ov_tsl_index" min="0" max="65535" onchange="onOverlayChange()"></div>
-                    </div>
-                    <!-- Horloge -->
-                    <div class="mw-editor-row ov-grp" data-kind="clock">
-                        <div class="field"><label for="ov_clock_source">Source</label><select id="ov_clock_source" onchange="onOverlayChange()"><option value="ptp">PTP (horloge du jour)</option><option value="chrono">Chrono</option><option value="countdown">Décompte</option><option value="anc" disabled>ANC (à venir)</option></select></div>
-                        <label class="field field-inline" for="ov_show_hh"><input type="checkbox" class="ios-toggle" id="ov_show_hh" onchange="onOverlayChange()"> HH</label>
-                        <label class="field field-inline" for="ov_show_mm"><input type="checkbox" class="ios-toggle" id="ov_show_mm" onchange="onOverlayChange()"> MM</label>
-                        <label class="field field-inline" for="ov_show_ss"><input type="checkbox" class="ios-toggle" id="ov_show_ss" onchange="onOverlayChange()"> SS</label>
-                        <label class="field field-inline" for="ov_show_ff"><input type="checkbox" class="ios-toggle" id="ov_show_ff" onchange="onOverlayChange()"> II</label>
-                        <div class="field field-narrow" id="ov_ptp_grp"><label for="ov_offset_ms">Offset (ms)</label><input type="number" id="ov_offset_ms" onchange="onOverlayChange()"></div>
-                    </div>
-                    <div class="mw-editor-row" id="ov_chrono_grp" hidden>
-                        <div class="field field-narrow"><label for="ov_chrono_start">Départ (HH:MM:SS)</label><input type="text" id="ov_chrono_start" placeholder="00:00:00" onchange="onOverlayChange()"></div>
-                        <button type="button" class="btn btn-green" onclick="chronoAction('start')">▶ Démarrer</button>
-                        <button type="button" class="btn" onclick="chronoAction('stop')">⏸ Arrêter</button>
-                        <button type="button" class="btn btn-blue" onclick="chronoAction('reset')">⟲ Réinitialiser</button>
-                    </div>
-                    <!-- Image -->
-                    <div class="mw-editor-row ov-grp" data-kind="image">
-                        <button type="button" class="btn btn-blue" onclick="openMediaPicker()">Choisir un média…</button>
-                        <span class="meta" id="ov_media_label">— aucune —</span>
-                        <div class="field"><label for="ov_layer">Plan</label><select id="ov_layer" onchange="onOverlayChange()"><option value="foreground">Logo (premier plan)</option><option value="background">Fond (derrière tout)</option></select></div>
-                        <div class="field"><label for="ov_fit">Ajustement</label><select id="ov_fit" onchange="onOverlayChange()"><option value="contain">Contenir</option><option value="cover">Couvrir</option><option value="stretch">Étirer</option></select></div>
-                        <div class="field field-narrow"><label for="ov_opacity">Opacité</label><input type="number" id="ov_opacity" min="0" max="100" onchange="onOverlayChange()"></div>
-                    </div>
-                    <!-- Apparence texte/horloge -->
-                    <div class="mw-editor-row ov-grp" data-kind="text,clock">
-                        <div class="field"><label for="ov_font">Police</label><select id="ov_font" onchange="onOverlayChange()"></select></div>
-                        <div class="field field-narrow"><label for="ov_font_size">Taille (0=auto)</label><input type="number" id="ov_font_size" min="0" max="400" onchange="onOverlayChange()"></div>
-                        <div class="field"><label for="ov_align">Alignement</label><select id="ov_align" onchange="onOverlayChange()"><option value="left">Gauche</option><option value="center">Centre</option><option value="right">Droite</option></select></div>
-                        <div class="field field-color"><label for="ov_color">Couleur texte</label><input type="color" id="ov_color" onchange="onOverlayChange()"></div>
-                        <label class="field field-inline" for="ov_bg_on"><input type="checkbox" class="ios-toggle" id="ov_bg_on" onchange="onOverlayChange()"> Fond</label>
-                        <div class="field field-color"><label for="ov_bg_color">Couleur fond</label><input type="color" id="ov_bg_color" onchange="onOverlayChange()"></div>
-                        <div class="field field-narrow"><label for="ov_bg_opacity">Opacité fond</label><input type="number" id="ov_bg_opacity" min="0" max="100" onchange="onOverlayChange()"></div>
-                    </div>
-                    <div class="mw-editor-row ov-grp" data-kind="text,clock">
-                        <div class="field field-narrow"><label for="ov_tally_index">Tally On — index TSL (0=off)</label><input type="number" id="ov_tally_index" min="0" max="65535" onchange="onOverlayChange()"></div>
-                        <div class="field field-color"><label for="ov_color_on">Texte (Tally On)</label><input type="color" id="ov_color_on" onchange="onOverlayChange()"></div>
-                        <div class="field field-color"><label for="ov_bg_color_on">Fond (Tally On)</label><input type="color" id="ov_bg_color_on" onchange="onOverlayChange()"></div>
-                    </div>
-                </div>
                 <table class="mw-entry-table" aria-label="Entrées de la composition">
                     <thead><tr><th class="w40" scope="col">#</th><th scope="col">Nom</th><th scope="col">Source SHM</th><th class="w90" scope="col">Position</th><th class="w90" scope="col">Taille</th><th class="w90" scope="col" title="Une entrée masquée garde sa source câblée">À l'image</th></tr></thead>
                     <tbody id="ed_tbody"></tbody>
@@ -151,13 +91,4 @@
             <ul id="layout-saved-list" role="list"><li class="meta" aria-live="polite">Chargement…</li></ul>
         </section>
 
-<div id="ov_media_modal" class="ov-media-modal" hidden onclick="if(event.target===this)closeMediaPicker()">
-    <div class="ov-media-dialog" role="dialog" aria-label="Choisir un média">
-        <div class="ov-media-dialog-head">
-            <strong>Stockage média</strong>
-            <button type="button" class="btn" onclick="closeMediaPicker()">Fermer</button>
-        </div>
-        <div class="ov-media-grid" id="ov_media_grid"><p class="meta">Chargement…</p></div>
-    </div>
-</div>
 </div>

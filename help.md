@@ -20,6 +20,27 @@ Enregistrer une disposition (bouton « Enregistrer le layout ») pour la rappele
 
 Le multiviewer expose un endpoint TSL 5.0 (TCP, port 4801) pour signalisation tally rouge/vert sur les fenêtres.
 
+## Outils d'overlay (texte / horloge / image)
+
+En plus des fenêtres vidéo, on peut poser des **objets d'overlay** sur le composer (barre
+« Outils »). Ce sont des objets purement visuels (non câblés) déplaçables/redimensionnables
+comme les fenêtres. Toute modification s'applique **à chaud**.
+
+- **Champ texte** : affiche du texte (sans vidéo). Réglages : police, couleur du texte,
+  couleur de fond. Chaque couleur a un état alternatif **Tally On** (autre couleur) déclenché
+  par un index TSL. Le texte est **saisi en local** ou **issu du TSL** (index TSL).
+- **Champ horloge** : affiche un timecode réglable (cases **HH / MM / SS / II**). Source :
+  **PTP** (horloge synchrone du jour, avec offset positif/négatif), **chrono** ou **décompte**.
+  Pour chrono/décompte, des boutons **Démarrer / Arrêter / Réinitialiser** pilotent l'horloge
+  en direct.
+- **Champ image** : ajoute un **logo** au premier plan, ou un **fond** derrière toute l'image.
+  L'image est choisie dans le **stockage média** du projet (ou de tous les projets si aucun
+  n'est sélectionné) et embarquée au déploiement. Ajustement `contain` / `cover` / `stretch`
+  et opacité réglables.
+
+> La source horloge « entrée ANC depuis SHM » est prévue dans une version ultérieure (elle
+> nécessite l'extraction du timecode en amont, côté receiver).
+
 ## Notes
 
 - La résolution de sortie est fixée au déploiement

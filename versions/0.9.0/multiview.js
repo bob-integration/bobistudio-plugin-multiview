@@ -11,24 +11,6 @@ let dragOrigRect  = null;
 let snapEnabled   = true;
 let snapGuides    = [];     // [{type:'v'|'h', pos:number}] dessinées pendant le drag
 
-// Overlays (texte/horloge/image) : objets visuels séparés de flux_config (non câblés).
-let selectedOverlay = -1;   // index dans editorParams.overlays, ou -1
-let dragOverlay     = false; // true pendant un drag/resize d'overlay (réutilise dragMode/dragStart)
-const _ovThumbCache = {};   // clé "slug|path" → Image (vignette média pour l'aperçu canvas)
-
-const OVERLAY_FONTS = [
-    ['dejavu-sans-bold',     'DejaVu Sans Bold'],
-    ['dejavu-sans',          'DejaVu Sans'],
-    ['dejavu-serif',         'DejaVu Serif'],
-    ['dejavu-mono',          'DejaVu Mono'],
-    ['liberation-sans',      'Liberation Sans'],
-    ['liberation-sans-bold', 'Liberation Sans Bold'],
-    ['liberation-mono',      'Liberation Mono'],
-    ['inter',                'Inter'],
-    ['roboto',               'Roboto'],
-    ['firacode',             'Fira Code'],
-];
-
 const HANDLE_SIZE = 10;
 const SNAP_PX     = 8;      // distance de snap (en coords canvas)
 
@@ -190,18 +172,15 @@ async function chargerMw(vmid) {
         frame_style: 'none',
         max_inputs: 4,
         genlock: true,
-        tsl_port: 4801,
-        overlays: []
+        tsl_port: 4801
     }, dc.params || {});
     // Couleurs locales pour le rendu (non sauvegardé)
     editorParams.flux_config = (editorParams.flux_config || []).map((f, i) => Object.assign({
         color: COLORS[i % COLORS.length],
         ratio: (f.in_w && f.in_h) ? f.in_w / f.in_h : 16/9
     }, f));
-    editorParams.overlays = (editorParams.overlays || []);
     padBank();   // banque à indices stables : toujours max_inputs entrées
     selectedIdxs = [];
-    selectedOverlay = -1;
     renderEditor(c.hostname);
 }
 
@@ -460,7 +439,6 @@ function collerReglagesFenetre() {
 function dessiner() {
     renderEntryTable();
     refreshEntryPanel();
-    refreshOverlayPanel();
 
     const canvas = document.getElementById('ed_canvas');
     if (!canvas) return;
@@ -484,9 +462,6 @@ function dessiner() {
     const borderColor  = editorParams.border_color || '#ffffff';
     const overlayBelow = !!editorParams.overlay_below;
     const labelSize    = Math.max(6, editorParams.label_size || 14);
-
-    // Images de fond (overlay layer=background) : sous les fenêtres vidéo.
-    drawOverlayLayer(ctx, 'background');
 
     const primary = primaryIdx();
     editorParams.flux_config.forEach((f, i) => {
@@ -623,9 +598,6 @@ function dessiner() {
         }
     });
 
-    // Overlays texte/horloge/logo (layer=foreground) : par-dessus les fenêtres.
-    drawOverlayLayer(ctx, 'foreground');
-
     // Lignes guides de snap (pendant le drag)
     if (dragMode && snapGuides.length) {
         ctx.strokeStyle = '#f97316';
@@ -685,62 +657,25 @@ function getCanvasPos(e) {
 
 function canvasMouseDown(e) {
     const pos = getCanvasPos(e);
-    // 1. Overlays de premier plan (au-dessus de la vidéo)
-    let hit = hitOverlay(pos, 'foreground');
-    if (hit) return beginOverlayDrag(hit, pos);
-    // 2. Fenêtres vidéo
     const primary = primaryIdx();
     for (let i = editorParams.flux_config.length - 1; i >= 0; i--) {
         const f = editorParams.flux_config[i];
         if (f.hidden) continue;   // entrées masquées : pas dans le canvas
         if (i === primary &&
             pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
-            selectedOverlay = -1;
-            dragMode = 'resize'; dragOverlay = false; dragStart = pos; dragOrigRect = {...f};
+            dragMode = 'resize'; dragStart = pos; dragOrigRect = {...f};
             return;
         }
         if (pos.x >= f.x && pos.x <= f.x + f.w &&
             pos.y >= f.y && pos.y <= f.y + f.h) {
-            selectedOverlay = -1;
             toggleSelection(i, e.shiftKey);
-            dragMode = 'move'; dragOverlay = false; dragStart = pos; dragOrigRect = {...editorParams.flux_config[primaryIdx()]};
+            dragMode = 'move'; dragStart = pos; dragOrigRect = {...editorParams.flux_config[primaryIdx()]};
             dessiner();
             return;
         }
     }
-    // 3. Images de fond (sous la vidéo)
-    hit = hitOverlay(pos, 'background');
-    if (hit) return beginOverlayDrag(hit, pos);
     if (!e.shiftKey) selectedIdxs = [];
-    selectedOverlay = -1;
     dragMode = null;
-    dessiner();
-}
-
-function hitOverlay(pos, layer) {
-    const ovs = editorParams.overlays || [];
-    for (let i = ovs.length - 1; i >= 0; i--) {
-        const o = ovs[i];
-        const isBg = (o.kind === 'image' && o.layer === 'background');
-        if (layer === 'background' ? !isBg : isBg) continue;
-        if (i === selectedOverlay &&
-            pos.x >= o.x + o.w - HANDLE_SIZE && pos.y >= o.y + o.h - HANDLE_SIZE) {
-            return {i, mode: 'resize'};
-        }
-        if (pos.x >= o.x && pos.x <= o.x + o.w && pos.y >= o.y && pos.y <= o.y + o.h) {
-            return {i, mode: 'move'};
-        }
-    }
-    return null;
-}
-
-function beginOverlayDrag(hit, pos) {
-    selectedOverlay = hit.i;
-    selectedIdxs = [];
-    dragOverlay = true;
-    dragMode = hit.mode;
-    dragStart = pos;
-    dragOrigRect = {...editorParams.overlays[hit.i]};
     dessiner();
 }
 
@@ -759,7 +694,6 @@ function toggleSelection(i, additive) {
 }
 
 function canvasMouseMove(e) {
-    if (dragOverlay) return overlayMouseMove(e);
     const primary = primaryIdx();
     if (!dragMode || primary < 0) return;
     const pos = getCanvasPos(e);
@@ -792,30 +726,7 @@ function canvasMouseMove(e) {
     dessiner();
 }
 
-function overlayMouseMove(e) {
-    if (!dragMode || selectedOverlay < 0) return;
-    const pos = getCanvasPos(e);
-    const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
-    const o = editorParams.overlays[selectedOverlay];
-    const out_w = editorParams.out_width, out_h = editorParams.out_height;
-    if (dragMode === 'move') {
-        o.x = Math.max(0, Math.min(out_w - o.w, Math.round(dragOrigRect.x + dx)));
-        o.y = Math.max(0, Math.min(out_h - o.h, Math.round(dragOrigRect.y + dy)));
-    } else if (dragMode === 'resize') {
-        let nw = Math.max(16, Math.min(out_w - o.x, Math.round(dragOrigRect.w + dx)));
-        let nh = Math.max(16, Math.min(out_h - o.y, Math.round(dragOrigRect.h + dy)));
-        o.w = nw % 2 === 0 ? nw : nw - 1;
-        o.h = nh % 2 === 0 ? nh : nh - 1;
-    }
-    dessiner();
-}
-
 function canvasMouseUp() {
-    if (dragOverlay) {
-        dragOverlay = false; dragMode = null; dessiner();
-        hotApplyFull();   // résout l'image base64 + hot-apply /overlays (pas de coupure)
-        return;
-    }
     dragMode = null; snapGuides = []; dessiner();
     selectedIdxs.forEach(idx => hotApplyWindow(idx));
 }
@@ -862,345 +773,6 @@ function hotApplyStyle() {
             frame_style:   editorParams.frame_style || 'none',
         })
     }).catch(() => {});
-}
-
-// ─── Overlays : texte / horloge / image ──────────────────────
-// Objets visuels posés sur le canvas, séparés des fenêtres vidéo (non câblés).
-// Add/edit/déplacement → hotApplyFull() (deploy) pour résoudre l'image en base64 côté
-// serveur puis appliquer à chaud via :8082/overlays — aucune coupure de la sortie.
-
-function newOverlay(kind) {
-    const ow = editorParams.out_width, oh = editorParams.out_height;
-    let w = Math.round(ow * 0.25) & ~1, h = Math.round(oh * 0.12) & ~1;
-    if (kind === 'image') { w = Math.round(ow * 0.2) & ~1; h = Math.round(oh * 0.2) & ~1; }
-    const o = {
-        id: 'ov' + Date.now().toString(36) + Math.floor(Math.random() * 1000),
-        kind, layer: 'foreground',
-        x: Math.round((ow - w) / 2) & ~1, y: Math.round((oh - h) / 2) & ~1, w, h,
-        font: 'dejavu-sans-bold', font_size: 0, align: 'center',
-        color: '#ffffff', bg_color: '', bg_opacity: 100,
-        tally_index: 0, color_on: '#ffd400', bg_color_on: '#cc0000',
-    };
-    if (kind === 'text')  Object.assign(o, { text: 'TEXTE', text_source: 'local', tsl_index: 0 });
-    if (kind === 'clock') Object.assign(o, {
-        clock_source: 'ptp', show_hh: true, show_mm: true, show_ss: true, show_ff: false,
-        offset_ms: 0, chrono_start: '00:00:00', chrono_running: false,
-        bg_color: '#000000', bg_opacity: 60 });
-    if (kind === 'image') Object.assign(o, { media: { slug: '', path: '' }, fit: 'contain', opacity: 100 });
-    return o;
-}
-
-function ajouterOverlay(kind) {
-    if (!editorParams) return;
-    editorParams.overlays = editorParams.overlays || [];
-    editorParams.overlays.push(newOverlay(kind));
-    selectedOverlay = editorParams.overlays.length - 1;
-    selectedIdxs = [];
-    dessiner();
-    hotApplyFull();
-}
-
-function supprimerOverlay() {
-    if (selectedOverlay < 0) return;
-    editorParams.overlays.splice(selectedOverlay, 1);
-    selectedOverlay = -1;
-    dessiner();
-    hotApplyFull();
-}
-
-function serializeOverlays() {
-    const ev = v => { v = parseInt(v) || 0; return v % 2 === 0 ? v : v - 1; };
-    const clamp = (v, d) => Math.max(0, Math.min(100, parseInt(v ?? d)));
-    return (editorParams.overlays || []).map(o => {
-        const base = { id: o.id, kind: o.kind, layer: o.layer || 'foreground',
-            x: parseInt(o.x) || 0, y: parseInt(o.y) || 0, w: ev(o.w), h: ev(o.h) };
-        if (o.kind === 'text' || o.kind === 'clock') Object.assign(base, {
-            font: o.font || 'dejavu-sans-bold', font_size: parseInt(o.font_size) || 0,
-            align: o.align || 'center', color: o.color || '#ffffff',
-            bg_color: o.bg_color || '', bg_opacity: clamp(o.bg_opacity, 100),
-            tally_index: parseInt(o.tally_index) || 0,
-            color_on: o.color_on || '#ffffff', bg_color_on: o.bg_color_on || '' });
-        if (o.kind === 'text') Object.assign(base, {
-            text: o.text || '', text_source: o.text_source || 'local',
-            tsl_index: parseInt(o.tsl_index) || 0 });
-        if (o.kind === 'clock') Object.assign(base, {
-            clock_source: o.clock_source || 'ptp',
-            show_hh: o.show_hh !== false, show_mm: o.show_mm !== false,
-            show_ss: o.show_ss !== false, show_ff: !!o.show_ff,
-            offset_ms: parseInt(o.offset_ms) || 0,
-            chrono_start: o.chrono_start || '00:00:00', chrono_running: !!o.chrono_running });
-        if (o.kind === 'image') Object.assign(base, {
-            media: { slug: (o.media && o.media.slug) || '', path: (o.media && o.media.path) || '' },
-            fit: o.fit || 'contain', opacity: clamp(o.opacity, 100) });
-        return base;
-    });
-}
-
-// ── Rendu des overlays sur le canvas de l'éditeur ──
-function _ovThumb(media) {
-    if (!media || !media.path) return null;
-    const key = (media.slug || '') + '|' + media.path;
-    let img = _ovThumbCache[key];
-    if (img) return img;
-    img = new Image();
-    img.onload = () => dessiner();
-    img.onerror = () => {};
-    img.src = '/api/media/thumb?slug=' + encodeURIComponent(media.slug || '') +
-              '&path=' + encodeURIComponent(media.path);
-    _ovThumbCache[key] = img;
-    return img;
-}
-
-function hexA(hex, alpha) {
-    const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
-    if (!m) return `rgba(0,0,0,${alpha})`;
-    const n = parseInt(m[1], 16);
-    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
-}
-
-function clockSample(o) {
-    const p = [];
-    if (o.show_hh !== false) p.push('12');
-    if (o.show_mm !== false) p.push('34');
-    if (o.show_ss !== false) p.push('56');
-    if (o.show_ff) p.push('00');
-    return p.join(':') || '12:34:56';
-}
-
-function drawImageFit(ctx, img, o) {
-    const iw = img.naturalWidth, ih = img.naturalHeight;
-    const fit = o.fit || 'contain';
-    if (fit === 'stretch') { ctx.drawImage(img, o.x, o.y, o.w, o.h); return; }
-    const scale = fit === 'cover' ? Math.max(o.w / iw, o.h / ih) : Math.min(o.w / iw, o.h / ih);
-    const nw = Math.max(1, iw * scale), nh = Math.max(1, ih * scale);
-    ctx.save(); ctx.beginPath(); ctx.rect(o.x, o.y, o.w, o.h); ctx.clip();
-    ctx.drawImage(img, o.x + (o.w - nw) / 2, o.y + (o.h - nh) / 2, nw, nh);
-    ctx.restore();
-}
-
-function drawOverlayLayer(ctx, layer) {
-    (editorParams.overlays || []).forEach((o, i) => {
-        const isBg = (o.kind === 'image' && o.layer === 'background');
-        if (layer === 'background' ? !isBg : isBg) return;
-        const sel = (i === selectedOverlay);
-        ctx.save();
-        if (o.kind === 'image') {
-            const img = _ovThumb(o.media);
-            if (img && img.complete && img.naturalWidth) {
-                ctx.globalAlpha = Math.max(0.2, (o.opacity ?? 100) / 100);
-                drawImageFit(ctx, img, o);
-                ctx.globalAlpha = 1;
-            } else {
-                ctx.globalAlpha = 0.45; ctx.fillStyle = '#3a2f44';
-                ctx.fillRect(o.x, o.y, o.w, o.h); ctx.globalAlpha = 1;
-                ctx.fillStyle = '#d7c6e6'; ctx.font = '12px monospace';
-                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                ctx.fillText((o.media && o.media.path) || '(choisir une image)', o.x + o.w / 2, o.y + o.h / 2);
-                ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
-            }
-        } else {
-            if (o.bg_color) {
-                ctx.fillStyle = hexA(o.bg_color, (o.bg_opacity ?? 100) / 100);
-                ctx.fillRect(o.x, o.y, o.w, o.h);
-            }
-            const txt = o.kind === 'clock' ? clockSample(o)
-                : (o.text_source === 'tsl' ? `(TSL #${o.tsl_index || 0})` : (o.text || ''));
-            const fs = (o.font_size > 0 ? o.font_size : Math.max(8, Math.round(o.h * 0.7)));
-            ctx.fillStyle = o.color || '#ffffff';
-            ctx.font = `bold ${fs}px sans-serif`;
-            ctx.textBaseline = 'middle';
-            ctx.textAlign = o.align === 'left' ? 'left' : o.align === 'right' ? 'right' : 'center';
-            const tx = o.align === 'left' ? o.x + 4 : o.align === 'right' ? o.x + o.w - 4 : o.x + o.w / 2;
-            ctx.save();
-            ctx.beginPath(); ctx.rect(o.x, o.y, o.w, o.h); ctx.clip();
-            ctx.fillText(txt, tx, o.y + o.h / 2);
-            ctx.restore();
-            ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
-        }
-        ctx.strokeStyle = sel ? '#ffffff' : '#d24cff';
-        ctx.lineWidth = sel ? 2 : 1;
-        ctx.setLineDash(sel ? [6, 4] : [4, 3]);
-        ctx.strokeRect(o.x, o.y, o.w, o.h);
-        ctx.setLineDash([]);
-        ctx.fillStyle = '#d24cff'; ctx.font = '10px monospace';
-        ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
-        ctx.fillText(o.kind + (isBg ? ' (fond)' : ''), o.x + 3, o.y + 11);
-        if (sel) {
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(o.x + o.w - HANDLE_SIZE, o.y + o.h - HANDLE_SIZE, HANDLE_SIZE, HANDLE_SIZE);
-        }
-        ctx.restore();
-    });
-}
-
-// ── Panneau de propriétés overlay ──
-function _ovSetVal(id, v) { const e = document.getElementById(id); if (e) e.value = v; }
-function _ovSetChk(id, v) { const e = document.getElementById(id); if (e) e.checked = !!v; }
-function _ovFillFonts() {
-    const sel = document.getElementById('ov_font');
-    if (!sel || sel.dataset.filled) return;
-    sel.innerHTML = OVERLAY_FONTS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
-    sel.dataset.filled = '1';
-}
-
-function refreshOverlayPanel() {
-    const panel = document.getElementById('ed_overlay_panel');
-    if (!panel) return;
-    if (selectedOverlay < 0 || !editorParams.overlays || !editorParams.overlays[selectedOverlay]) {
-        panel.hidden = true; return;
-    }
-    const o = editorParams.overlays[selectedOverlay];
-    panel.hidden = false;
-    const ttl = document.getElementById('ov_title');
-    if (ttl) ttl.textContent = ({text: 'Champ texte', clock: 'Champ horloge', image: 'Champ image'})[o.kind] || 'Overlay';
-    panel.querySelectorAll('.ov-grp').forEach(g => {
-        const kinds = (g.dataset.kind || '').split(',').filter(Boolean);
-        g.hidden = kinds.length > 0 && !kinds.includes(o.kind);
-    });
-    _ovSetVal('ov_x', o.x); _ovSetVal('ov_y', o.y); _ovSetVal('ov_w', o.w); _ovSetVal('ov_h', o.h);
-    _ovFillFonts();
-    _ovSetVal('ov_font', o.font || 'dejavu-sans-bold');
-    _ovSetVal('ov_font_size', o.font_size || 0);
-    _ovSetVal('ov_align', o.align || 'center');
-    _ovSetVal('ov_color', o.color || '#ffffff');
-    _ovSetVal('ov_bg_color', o.bg_color || '#000000');
-    _ovSetChk('ov_bg_on', !!o.bg_color);
-    _ovSetVal('ov_bg_opacity', o.bg_opacity ?? 100);
-    _ovSetVal('ov_tally_index', o.tally_index || 0);
-    _ovSetVal('ov_color_on', o.color_on || '#ffd400');
-    _ovSetVal('ov_bg_color_on', o.bg_color_on || '#cc0000');
-    _ovSetVal('ov_text', o.text || '');
-    _ovSetVal('ov_text_source', o.text_source || 'local');
-    _ovSetVal('ov_tsl_index', o.tsl_index || 0);
-    _ovSetVal('ov_clock_source', o.clock_source || 'ptp');
-    _ovSetChk('ov_show_hh', o.show_hh !== false);
-    _ovSetChk('ov_show_mm', o.show_mm !== false);
-    _ovSetChk('ov_show_ss', o.show_ss !== false);
-    _ovSetChk('ov_show_ff', !!o.show_ff);
-    _ovSetVal('ov_offset_ms', o.offset_ms || 0);
-    _ovSetVal('ov_chrono_start', o.chrono_start || '00:00:00');
-    _ovSetVal('ov_layer', o.layer || 'foreground');
-    _ovSetVal('ov_fit', o.fit || 'contain');
-    _ovSetVal('ov_opacity', o.opacity ?? 100);
-    const mp = document.getElementById('ov_media_label');
-    if (mp) mp.textContent = (o.media && o.media.path)
-        ? `${o.media.slug ? o.media.slug + '/' : ''}${o.media.path}` : '— aucune —';
-    const sub = (id, on) => { const e = document.getElementById(id); if (e) e.hidden = !on; };
-    sub('ov_text_tsl_grp', o.kind === 'text' && o.text_source === 'tsl');
-    sub('ov_chrono_grp',   o.kind === 'clock' && (o.clock_source === 'chrono' || o.clock_source === 'countdown'));
-    sub('ov_ptp_grp',      o.kind === 'clock' && o.clock_source === 'ptp');
-}
-
-function onOverlayChange() {
-    if (selectedOverlay < 0) return;
-    const o = editorParams.overlays[selectedOverlay];
-    const g = id => document.getElementById(id);
-    if (o.kind === 'text' || o.kind === 'clock') {
-        o.font = g('ov_font').value;
-        o.font_size = parseInt(g('ov_font_size').value) || 0;
-        o.align = g('ov_align').value;
-        o.color = g('ov_color').value;
-        o.bg_color = g('ov_bg_on').checked ? g('ov_bg_color').value : '';
-        o.bg_opacity = Math.max(0, Math.min(100, parseInt(g('ov_bg_opacity').value) || 100));
-        o.tally_index = parseInt(g('ov_tally_index').value) || 0;
-        o.color_on = g('ov_color_on').value;
-        o.bg_color_on = g('ov_bg_color_on').value;
-    }
-    if (o.kind === 'text') {
-        o.text = g('ov_text').value;
-        o.text_source = g('ov_text_source').value;
-        o.tsl_index = parseInt(g('ov_tsl_index').value) || 0;
-    }
-    if (o.kind === 'clock') {
-        o.clock_source = g('ov_clock_source').value;
-        o.show_hh = g('ov_show_hh').checked;
-        o.show_mm = g('ov_show_mm').checked;
-        o.show_ss = g('ov_show_ss').checked;
-        o.show_ff = g('ov_show_ff').checked;
-        o.offset_ms = parseInt(g('ov_offset_ms').value) || 0;
-        o.chrono_start = g('ov_chrono_start').value || '00:00:00';
-    }
-    if (o.kind === 'image') {
-        o.layer = g('ov_layer').value;
-        o.fit = g('ov_fit').value;
-        o.opacity = Math.max(0, Math.min(100, parseInt(g('ov_opacity').value) || 100));
-    }
-    dessiner();
-    hotApplyFull();
-}
-
-// Aperçu local pendant la saisie (pas de déploiement à chaque frappe ; le hot-apply
-// se fait au blur via onchange → onOverlayChange).
-function onOverlayTextInput() {
-    if (selectedOverlay < 0) return;
-    const o = editorParams.overlays[selectedOverlay];
-    if (o.kind !== 'text') return;
-    const e = document.getElementById('ov_text');
-    o.text = e ? e.value : o.text;
-    dessiner();
-}
-
-function onOverlayGeomChange() {
-    if (selectedOverlay < 0) return;
-    const o = editorParams.overlays[selectedOverlay];
-    const g = id => document.getElementById(id);
-    o.x = parseInt(g('ov_x').value) || 0;
-    o.y = parseInt(g('ov_y').value) || 0;
-    let nw = parseInt(g('ov_w').value) || 16;
-    let nh = parseInt(g('ov_h').value) || 16;
-    o.w = nw % 2 === 0 ? nw : nw - 1;
-    o.h = nh % 2 === 0 ? nh : nh - 1;
-    dessiner();
-    hotApplyFull();
-}
-
-function chronoAction(action) {
-    if (selectedOverlay < 0 || editorVmid === null) return;
-    const o = editorParams.overlays[selectedOverlay];
-    if (!o || o.kind !== 'clock') return;
-    if (action === 'start') o.chrono_running = true;
-    if (action === 'stop')  o.chrono_running = false;
-    fetch(`/api/containers/${editorVmid}/plugin/chrono`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ id: o.id, action })
-    }).then(() => mwFlash('Chrono : ' + action)).catch(() => {});
-}
-
-// ── Picker média (overlay image) ──
-async function openMediaPicker() {
-    if (selectedOverlay < 0) return;
-    const modal = document.getElementById('ov_media_modal');
-    if (!modal) return;
-    modal.hidden = false;
-    const grid = document.getElementById('ov_media_grid');
-    grid.innerHTML = '<p class="meta">Chargement…</p>';
-    let items = [];
-    try { items = ((await (await fetch('/api/media/library')).json()).items) || []; }
-    catch (e) { items = []; }
-    if (!items.length) {
-        grid.innerHTML = '<p class="meta">Aucune image dans le stockage média des projets.</p>';
-        return;
-    }
-    grid.innerHTML = items.map(it => {
-        const s = encodeURIComponent(it.slug), p = encodeURIComponent(it.path);
-        return `<button type="button" class="ov-media-cell" onclick="chooseMedia('${s}','${p}')" title="${it.project} — ${it.path}">
-            <img loading="lazy" src="/api/media/thumb?slug=${s}&path=${p}" alt="">
-            <span>${it.name}</span></button>`;
-    }).join('');
-}
-
-function chooseMedia(slugEnc, pathEnc) {
-    if (selectedOverlay < 0) return;
-    const o = editorParams.overlays[selectedOverlay];
-    o.media = { slug: decodeURIComponent(slugEnc), path: decodeURIComponent(pathEnc) };
-    closeMediaPicker();
-    dessiner();
-    hotApplyFull();
-}
-
-function closeMediaPicker() {
-    const modal = document.getElementById('ov_media_modal');
-    if (modal) modal.hidden = true;
 }
 
 // ─── Snap ──────────────────────────────────────────────────────
@@ -1334,7 +906,6 @@ async function deployerEditor() {
 
     const params = {
         flux_config,
-        overlays:      serializeOverlays(),
         shm_out:       editorParams.shm_out,
         out_width:     editorParams.out_width,
         out_height:    editorParams.out_height,

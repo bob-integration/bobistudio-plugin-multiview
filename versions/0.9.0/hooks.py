@@ -66,26 +66,7 @@ def before_deploy(params, context):
     #    On ne tronque JAMAIS (une entrée câblée au-delà de max_inputs survit).
     params["flux_config"] = pad_input_bank(params)
 
-    # 4. Overlays (texte/horloge/image) : objets purement visuels, non câblés. On garantit
-    #    juste un id stable et un kind (le résolveur image base64 est dans deploy.py).
-    params["overlays"] = normalize_overlays(params.get("overlays"))
-
     return params
-
-
-def normalize_overlays(ov_list):
-    """Garantit id stable + kind pour chaque overlay. Idempotent."""
-    out = []
-    for i, ov in enumerate(ov_list or []):
-        if not isinstance(ov, dict):
-            continue
-        ov = dict(ov)
-        if not ov.get("id"):
-            ov["id"] = "ov%d" % i
-        if not ov.get("kind"):
-            ov["kind"] = "text"
-        out.append(ov)
-    return out
 
 
 def pad_input_bank(params):
