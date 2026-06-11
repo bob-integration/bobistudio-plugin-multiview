@@ -1,8 +1,11 @@
 {
-  "version": "0.8.3",
+  "version": "0.8.4",
   "date": "2026-06-11",
   "changes": {
     "Nouveautés": [
+      "Ouverture du composer accélérée : la liste des sources vidéo est servie par le nouvel endpoint léger /api/sources (dérivation DB seule) au lieu de /api/home/summary — l'éditeur ne paie plus l'interrogation PTP/sondes live de la route complète (~1 s par clic d'instance quand PTP est activé)."
+    ],
+    "Nouveautés (0.8.3)": [
       "Taille du texte du label : le texte grossit désormais RÉELLEMENT avec le réglage. La police de l'overlay est rendue scalable même quand l'image Docker n'embarque pas DejaVu (repli load_default(size), Pillow ≥ 10.1) ; et l'image compute (bobi-compute) installe désormais fonts-dejavu-core (DejaVu Bold propre, profite aussi aux autres plugins compute). Auparavant, police absente → repli bitmap de taille fixe : seule la zone ombrée du bandeau grossissait.",
       "Bordure de fenêtre rendue AU-DESSUS du bandeau de texte et des pavés tally (couche dédiée blendée en dernier) — la bordure n'est plus masquée par le label ni les lampes tally. Cerne toujours le rectangle image. Application à chaud, tous styles de cadre."
     ],

@@ -135,19 +135,17 @@ async function loadAllContainers() {
     catch(e) { allContainers = []; }
 }
 
-// Sorties VIDÉO individuelles de toute la flotte, depuis la topologie (produces[]
-// structuré : un container multi-sorties — mixer PGM/CLEAN/PVW, receiver multi-flux —
-// expose chaque sortie séparément, avec son label). Bien plus fiable que de re-parser
-// la chaîne composite shm_out. Aligné sur la page Câbles (n.produces → renderPort).
+// Sorties VIDÉO individuelles de toute la flotte (produces[] structuré : un container
+// multi-sorties — mixer PGM/CLEAN/PVW, receiver multi-flux — expose chaque sortie
+// séparément, avec son label). Bien plus fiable que de re-parser la chaîne composite
+// shm_out. /api/sources = dérivation DB seule, sans le coût de /api/home/summary
+// (PTP, sondes live) — l'éditeur s'ouvre vite même quand l'hôte PTP répond lentement.
 async function loadVideoSources() {
     try {
-        const j = await (await fetch('/api/home/summary')).json();
-        const nodes = (j && j.topology && j.topology.nodes) || [];
-        videoSources = nodes.flatMap(n =>
-            (n.produces || [])
-                .filter(p => (p.kind || 'video') === 'video' && p.shm)
-                .map(p => ({ vmid: n.vmid, hostname: n.hostname || ('mxl' + n.vmid),
-                             shm: p.shm, label: p.label || '' })));
+        const srcs = await (await fetch('/api/sources?kind=video')).json();
+        videoSources = (srcs || []).map(s => ({
+            vmid: s.vmid, hostname: s.hostname || ('mxl' + s.vmid),
+            shm: s.shm, label: s.label || '' }));
     } catch(e) { videoSources = []; }
 }
 
