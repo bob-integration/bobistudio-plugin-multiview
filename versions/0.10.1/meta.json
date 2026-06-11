@@ -1,11 +1,7 @@
 {
-  "version": "0.10.2",
+  "version": "0.10.1",
   "date": "2026-06-11",
   "changes": {
-    "Nouveautés": [
-      "Taille de label PROPORTIONNELLE par fenêtre (case « Taille proportionnelle ») : le texte vaut la taille définie quand la fenêtre fait 1/4 de l'image, puis grossit/réduit avec la fenêtre — au lieu d'une taille figée seulement plafonnée. Réglage par PiP, appliqué à chaud.",
-      "Composer : zone unique « Ajouter un élément » (+ PiP · + Texte · + Horloge · + Image). Le panneau de réglages overlay est enfin séparé par type — Texte, Horloge et Image n'affichent plus que LEURS réglages (correction d'un masquage CSS inopérant : les lignes `display:flex` ignoraient l'attribut `hidden`)."
-    ],
     "Corrections (0.10.1)": [
       "Bordure de fenêtre repassée SOUS l'habillage : elle cerne l'image au-dessus de la vidéo seulement — le bandeau de texte, les pavés tally et les VU-mètres passent par-dessus (la bordure ne barre plus la zone de texte/tally d'une ligne).",
       "VU-mètre « hors image » sans déformation : l'image est désormais réduite HOMOTHÉTIQUEMENT (ratio de la fenêtre conservé, letterbox/pillarbox centré) dans la zone restante, comme pour le bandeau sous l'image — plus aucun cas d'étirement. Le VU-mètre occupe toute la hauteur de la zone (hors bandeau).",

@@ -492,15 +492,9 @@ def _label_metrics(cfg):
     """Tailles d'habillage PAR FENÊTRE, plafonnées à la hauteur du PiP : le texte ne
     dépasse jamais 30 % de la hauteur, le bandeau 40 % (45 % pour les barres hautes
     classic/stylized). Sans plafond, un label_size global énorme mangeait la fenêtre.
-    `label_proportional` (par fenêtre) : le texte vaut LABEL_SIZE quand la fenêtre fait
-    1/4 de l'image (h = OUT_HEIGHT/2), puis grossit/réduit linéairement avec la hauteur
-    (les plafonds en aval bornent toujours contre le débordement).
     Formules miroir côté éditeur : multiview.js dessiner()."""
     h = max(2, int(cfg.get("h") or 0))
-    if cfg.get("label_proportional"):
-        eff = max(6, int(round(LABEL_SIZE * (2.0 * h / OUT_HEIGHT))))
-    else:
-        eff = max(6, min(LABEL_SIZE, int(h * 0.30)))
+    eff = max(6, min(LABEL_SIZE, int(h * 0.30)))
     bar = min(max(14, int(round(eff * 2))), max(8, int(h * 0.40)))
     eff = max(6, min(eff, bar - 4))
     cbar = min(max(bar, int(round(eff * 2.5))), max(8, int(h * 0.45)))   # barre classic
@@ -1366,7 +1360,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
                 for k in ("name", "meter_position", "meter_scale"):
                     if k in b and b[k] is not None:
                         cfg[k] = str(b[k])
-                for k in ("show_label", "show_tally", "meter_inside", "hidden", "label_proportional"):
+                for k in ("show_label", "show_tally", "meter_inside", "hidden"):
                     if k in b and b[k] is not None:
                         cfg[k] = _as_bool(b[k])
                 ok = True

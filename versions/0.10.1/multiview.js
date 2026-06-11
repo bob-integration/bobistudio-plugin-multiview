@@ -277,7 +277,6 @@ function newEntry(idx, hidden) {
         color: COLORS[idx % COLORS.length],
         show_label: true,
         show_tally: false,
-        label_proportional: false,   // taille du label proportionnelle à la fenêtre
         tsl_index: 0,
         // Peak meters
         meter_channels: 0,           // 0 = désactivé ; sinon 2/4/6/8
@@ -389,7 +388,6 @@ function refreshEntryPanel() {
     document.getElementById('ed_label_source').value = f.label_source || 'hostname';
     document.getElementById('ed_show_label').checked = !!f.show_label;
     document.getElementById('ed_show_tally').checked = !!f.show_tally;
-    document.getElementById('ed_label_proportional').checked = !!f.label_proportional;
     document.getElementById('ed_tsl_index').value    = f.tsl_index || 0;
     document.getElementById('ed_x').value = f.x;
     document.getElementById('ed_y').value = f.y;
@@ -428,7 +426,6 @@ function onEntryChange() {
     f.path         = document.getElementById('ed_path').value;
     f.show_label   = document.getElementById('ed_show_label').checked;
     f.show_tally   = document.getElementById('ed_show_tally').checked;
-    f.label_proportional = document.getElementById('ed_label_proportional').checked;
     f.tsl_index    = parseInt(document.getElementById('ed_tsl_index').value) || 0;
     f.meter_channels = parseInt(document.getElementById('ed_meter_channels').value) || 0;
     f.meter_position = document.getElementById('ed_meter_position').value || 'right';
@@ -460,7 +457,7 @@ function onEntryGeomChange() {
 // Copie le format + l'apparence de la fenêtre primaire, SANS la position (x/y)
 // ni la source (path/in_w/in_h/ratio/color), puis colle dans toutes les fenêtres
 // sélectionnées en une fois.
-const COPY_FIELDS = ['w', 'h', 'label_source', 'show_label', 'show_tally', 'label_proportional', 'tsl_index',
+const COPY_FIELDS = ['w', 'h', 'label_source', 'show_label', 'show_tally', 'tsl_index',
     'meter_channels', 'meter_position', 'meter_inside', 'meter_opacity', 'meter_scale'];
 let reglagesClipboard = null;
 
@@ -535,11 +532,8 @@ function dessiner() {
         const isPrimary = i === primary;
         const barOn = f.show_label || f.show_tally;
         // Plafonds PAR FENÊTRE — formules miroir de _label_metrics (script.py) :
-        // texte ≤ 30 % de la hauteur du PiP, bandeau ≤ 40 %. En mode proportionnel,
-        // texte = labelSize quand la fenêtre fait 1/4 de l'image (h = sortie/2).
-        const effRaw     = f.label_proportional
-            ? Math.max(6, Math.round(labelSize * (2 * f.h / editorParams.out_height)))
-            : Math.max(6, Math.min(labelSize, Math.floor(f.h * 0.30)));
+        // texte ≤ 30 % de la hauteur du PiP, bandeau ≤ 40 %.
+        const effRaw     = Math.max(6, Math.min(labelSize, Math.floor(f.h * 0.30)));
         const BAR_H      = Math.min(Math.max(14, Math.round(effRaw * 2)), Math.max(8, Math.floor(f.h * 0.40)));
         const eff        = Math.max(6, Math.min(effRaw, BAR_H - 4));
         const TALLY_SIZE = Math.max(4, Math.min(Math.round(eff * 1.4), BAR_H - 2));
@@ -878,7 +872,6 @@ function hotApplyWindow(idx) {
             name:           computeDisplayName(f),
             show_label:     !!f.show_label,
             show_tally:     !!f.show_tally,
-            label_proportional: !!f.label_proportional,
             tsl_index:      f.tsl_index ?? 0,
             meter_channels: f.meter_channels ?? 0,
             meter_position: f.meter_position || 'right',
@@ -1368,7 +1361,6 @@ async function deployerEditor() {
         h: f.h % 2 === 0 ? f.h : f.h - 1,
         show_label: !!f.show_label,
         show_tally: !!f.show_tally,
-        label_proportional: !!f.label_proportional,
         tsl_index: parseInt(f.tsl_index) || 0,
         // Peak meters audio
         meter_channels: parseInt(f.meter_channels) || 0,
@@ -1553,8 +1545,7 @@ async function enregistrerLayout() {
             label_source: f.label_source || 'hostname',
             x: f.x, y: f.y, w: f.w, h: f.h,
             show_label: !!f.show_label,
-            show_tally: !!f.show_tally,
-            label_proportional: !!f.label_proportional
+            show_tally: !!f.show_tally
         }))
     };
     const r = await fetch('/api/layouts', {

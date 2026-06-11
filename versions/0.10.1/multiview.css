@@ -374,9 +374,3 @@
 }
 .mw-overlay-head strong { color: #d24cff; }
 .ov-grp { border-top: 1px dashed var(--border-soft); padding-top: var(--space-2); }
-/* `.mw-editor-row`/`.field` ont `display:flex`, qui écrase le `display:none` par défaut de
-   l'attribut [hidden] → sans ça, les groupes de réglages par type d'overlay (Texte/Horloge/
-   Image) s'affichaient TOUS à la fois. On rétablit le masquage pour ces lignes flex. */
-.mw-editor-row[hidden],
-.ov-grp[hidden],
-.mw-editor-row .field[hidden] { display: none !important; }

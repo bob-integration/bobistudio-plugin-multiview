@@ -20,12 +20,12 @@
                     <label class="field field-inline" for="ed_genlock" title="Verrouille la phase de sortie sur la grille PTP. Param structurel : un changement redéploie le container."><input type="checkbox" class="ios-toggle" id="ed_genlock"> Genlock</label>
                     <div class="field field-narrow"><label for="ed_tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
                 </div>
-                <div class="mw-source-picker" role="group" aria-label="Ajouter un élément">
-                    <span class="align-label" style="margin-right:4px">Ajouter un élément :</span>
-                    <button type="button" class="btn btn-blue" onclick="ajouterEntree()" title="Réaffiche la première entrée masquée de la banque (sa source câblée est conservée) ; affectez-lui une source dans le panneau de droite ou via la page Câbles.">+ PiP</button>
+                <div class="mw-source-picker">
+                    <button type="button" class="btn btn-blue" onclick="ajouterEntree()" title="Réaffiche la première entrée masquée de la banque (sa source câblée est conservée) ; affectez-lui une source dans le panneau de droite ou via la page Câbles.">+ Ajouter un PiP</button>
+                    <span class="align-label" style="margin-left:10px">Outils :</span>
                     <button type="button" class="btn btn-purple" onclick="ajouterOverlay('text')" title="Ajouter un champ texte (texte local ou TSL)">+ Texte</button>
                     <button type="button" class="btn btn-purple" onclick="ajouterOverlay('clock')" title="Ajouter une horloge / timecode (PTP, chrono ou décompte)">+ Horloge</button>
-                    <button type="button" class="btn btn-purple" onclick="ajouterOverlay('image')" title="Ajouter une image (logo ou fond) importée depuis l'ordinateur">+ Image</button>
+                    <button type="button" class="btn btn-purple" onclick="ajouterOverlay('image')" title="Ajouter une image (logo ou fond) depuis le stockage média">+ Image</button>
                 </div>
                 <div class="align-toolbar" role="group" aria-label="Outils d'alignement">
                     <span class="align-label">Aligner :</span>
@@ -58,7 +58,6 @@
                         <div class="field field-grow"><label for="ed_path">Source</label><select id="ed_path" onchange="onEntryChange()"></select></div>
                         <label class="field field-inline" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> Afficher le nom</label>
                         <label class="field field-inline" for="ed_show_tally"><input type="checkbox" class="ios-toggle" id="ed_show_tally" onchange="onEntryChange()"> Cases Tally</label>
-                        <label class="field field-inline" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite."><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> Taille proportionnelle</label>
                         <div class="field field-narrow"><label for="ed_tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
                         <button type="button" class="btn btn-red" onclick="supprimerEntreeSelectionnee()" title="Retire le PiP de l'image SANS couper sa source : l'entrée reste câblée et peut être réaffichée.">Retirer de l'image</button>
                     </div>
