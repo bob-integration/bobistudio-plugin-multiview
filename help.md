@@ -34,9 +34,9 @@ comme les fenêtres. Toute modification s'applique **à chaud**.
   Pour chrono/décompte, des boutons **Démarrer / Arrêter / Réinitialiser** pilotent l'horloge
   en direct.
 - **Champ image** : ajoute un **logo** au premier plan, ou un **fond** derrière toute l'image.
-  L'image est choisie dans le **stockage média** du projet (ou de tous les projets si aucun
-  n'est sélectionné) et embarquée au déploiement. Ajustement `contain` / `cover` / `stretch`
-  et opacité réglables.
+  L'image est **importée directement depuis l'ordinateur** (bouton « Importer une image… »),
+  réduite côté navigateur puis embarquée au déploiement (aucun stockage serveur). Ajustement
+  `contain` / `cover` / `stretch` et opacité réglables.
 
 > La source horloge « entrée ANC depuis SHM » est prévue dans une version ultérieure (elle
 > nécessite l'extraction du timecode en amont, côté receiver).

@@ -109,7 +109,8 @@
                     </div>
                     <!-- Image -->
                     <div class="mw-editor-row ov-grp" data-kind="image">
-                        <button type="button" class="btn btn-blue" onclick="openMediaPicker()">Choisir un média…</button>
+                        <label class="btn btn-blue" for="ov_image_file" style="cursor:pointer">Importer une image…</label>
+                        <input type="file" id="ov_image_file" accept="image/*" hidden onchange="importOverlayImage(this)">
                         <span class="meta" id="ov_media_label">— aucune —</span>
                         <div class="field"><label for="ov_layer">Plan</label><select id="ov_layer" onchange="onOverlayChange()"><option value="foreground">Logo (premier plan)</option><option value="background">Fond (derrière tout)</option></select></div>
                         <div class="field"><label for="ov_fit">Ajustement</label><select id="ov_fit" onchange="onOverlayChange()"><option value="contain">Contenir</option><option value="cover">Couvrir</option><option value="stretch">Étirer</option></select></div>
@@ -151,13 +152,4 @@
             <ul id="layout-saved-list" role="list"><li class="meta" aria-live="polite">Chargement…</li></ul>
         </section>
 
-<div id="ov_media_modal" class="ov-media-modal" hidden onclick="if(event.target===this)closeMediaPicker()">
-    <div class="ov-media-dialog" role="dialog" aria-label="Choisir un média">
-        <div class="ov-media-dialog-head">
-            <strong>Stockage média</strong>
-            <button type="button" class="btn" onclick="closeMediaPicker()">Fermer</button>
-        </div>
-        <div class="ov-media-grid" id="ov_media_grid"><p class="meta">Chargement…</p></div>
-    </div>
-</div>
 </div>

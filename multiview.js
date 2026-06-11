@@ -886,7 +886,7 @@ function newOverlay(kind) {
         clock_source: 'ptp', show_hh: true, show_mm: true, show_ss: true, show_ff: false,
         offset_ms: 0, chrono_start: '00:00:00', chrono_running: false,
         bg_color: '#000000', bg_opacity: 60 });
-    if (kind === 'image') Object.assign(o, { media: { slug: '', path: '' }, fit: 'contain', opacity: 100 });
+    if (kind === 'image') Object.assign(o, { image_b64: '', image_name: '', fit: 'contain', opacity: 100 });
     return o;
 }
 
@@ -930,24 +930,24 @@ function serializeOverlays() {
             offset_ms: parseInt(o.offset_ms) || 0,
             chrono_start: o.chrono_start || '00:00:00', chrono_running: !!o.chrono_running });
         if (o.kind === 'image') Object.assign(base, {
-            media: { slug: (o.media && o.media.slug) || '', path: (o.media && o.media.path) || '' },
+            image_b64: o.image_b64 || '', image_name: o.image_name || '',
             fit: o.fit || 'contain', opacity: clamp(o.opacity, 100) });
         return base;
     });
 }
 
 // ── Rendu des overlays sur le canvas de l'éditeur ──
-function _ovThumb(media) {
-    if (!media || !media.path) return null;
-    const key = (media.slug || '') + '|' + media.path;
-    let img = _ovThumbCache[key];
-    if (img) return img;
-    img = new Image();
+function _ovImg(o) {
+    const b64 = o.image_b64 || '';
+    if (!b64) return null;
+    const sig = b64.length + ':' + b64.slice(0, 24);
+    const c = _ovThumbCache[o.id];
+    if (c && c.sig === sig) return c.img;
+    const img = new Image();
     img.onload = () => dessiner();
     img.onerror = () => {};
-    img.src = '/api/media/thumb?slug=' + encodeURIComponent(media.slug || '') +
-              '&path=' + encodeURIComponent(media.path);
-    _ovThumbCache[key] = img;
+    img.src = 'data:image/png;base64,' + b64;
+    _ovThumbCache[o.id] = { sig, img };
     return img;
 }
 
@@ -985,7 +985,7 @@ function drawOverlayLayer(ctx, layer) {
         const sel = (i === selectedOverlay);
         ctx.save();
         if (o.kind === 'image') {
-            const img = _ovThumb(o.media);
+            const img = _ovImg(o);
             if (img && img.complete && img.naturalWidth) {
                 ctx.globalAlpha = Math.max(0.2, (o.opacity ?? 100) / 100);
                 drawImageFit(ctx, img, o);
@@ -995,7 +995,7 @@ function drawOverlayLayer(ctx, layer) {
                 ctx.fillRect(o.x, o.y, o.w, o.h); ctx.globalAlpha = 1;
                 ctx.fillStyle = '#d7c6e6'; ctx.font = '12px monospace';
                 ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                ctx.fillText((o.media && o.media.path) || '(choisir une image)', o.x + o.w / 2, o.y + o.h / 2);
+                ctx.fillText(o.image_name || '(importer une image)', o.x + o.w / 2, o.y + o.h / 2);
                 ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
             }
         } else {
@@ -1083,8 +1083,7 @@ function refreshOverlayPanel() {
     _ovSetVal('ov_fit', o.fit || 'contain');
     _ovSetVal('ov_opacity', o.opacity ?? 100);
     const mp = document.getElementById('ov_media_label');
-    if (mp) mp.textContent = (o.media && o.media.path)
-        ? `${o.media.slug ? o.media.slug + '/' : ''}${o.media.path}` : '— aucune —';
+    if (mp) mp.textContent = o.image_name || (o.image_b64 ? '(image importée)' : '— aucune —');
     const sub = (id, on) => { const e = document.getElementById(id); if (e) e.hidden = !on; };
     sub('ov_text_tsl_grp', o.kind === 'text' && o.text_source === 'tsl');
     sub('ov_chrono_grp',   o.kind === 'clock' && (o.clock_source === 'chrono' || o.clock_source === 'countdown'));
@@ -1166,41 +1165,43 @@ function chronoAction(action) {
     }).then(() => mwFlash('Chrono : ' + action)).catch(() => {});
 }
 
-// ── Picker média (overlay image) ──
-async function openMediaPicker() {
-    if (selectedOverlay < 0) return;
-    const modal = document.getElementById('ov_media_modal');
-    if (!modal) return;
-    modal.hidden = false;
-    const grid = document.getElementById('ov_media_grid');
-    grid.innerHTML = '<p class="meta">Chargement…</p>';
-    let items = [];
-    try { items = ((await (await fetch('/api/media/library')).json()).items) || []; }
-    catch (e) { items = []; }
-    if (!items.length) {
-        grid.innerHTML = '<p class="meta">Aucune image dans le stockage média des projets.</p>';
-        return;
-    }
-    grid.innerHTML = items.map(it => {
-        const s = encodeURIComponent(it.slug), p = encodeURIComponent(it.path);
-        return `<button type="button" class="ov-media-cell" onclick="chooseMedia('${s}','${p}')" title="${it.project} — ${it.path}">
-            <img loading="lazy" src="/api/media/thumb?slug=${s}&path=${p}" alt="">
-            <span>${it.name}</span></button>`;
-    }).join('');
+// ── Import d'image depuis l'ordinateur (overlay image) ──
+// Le fichier est lu et réduit côté navigateur (côté le plus long ≤ résolution de sortie),
+// puis stocké en base64 PNG dans l'overlay (autonome : pas de stockage serveur).
+function _downscaleToB64(file, maxSide, cb) {
+    const reader = new FileReader();
+    reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+            const w = img.naturalWidth, h = img.naturalHeight;
+            const scale = Math.min(1, maxSide / Math.max(w, h));
+            const cw = Math.max(1, Math.round(w * scale));
+            const ch = Math.max(1, Math.round(h * scale));
+            const cv = document.createElement('canvas');
+            cv.width = cw; cv.height = ch;
+            cv.getContext('2d').drawImage(img, 0, 0, cw, ch);
+            cb((cv.toDataURL('image/png').split(',')[1]) || '', file.name);
+        };
+        img.onerror = () => cb('', file.name);
+        img.src = reader.result;
+    };
+    reader.onerror = () => cb('', file.name);
+    reader.readAsDataURL(file);
 }
 
-function chooseMedia(slugEnc, pathEnc) {
+function importOverlayImage(input) {
     if (selectedOverlay < 0) return;
+    const file = input.files && input.files[0];
+    if (!file) return;
     const o = editorParams.overlays[selectedOverlay];
-    o.media = { slug: decodeURIComponent(slugEnc), path: decodeURIComponent(pathEnc) };
-    closeMediaPicker();
-    dessiner();
-    hotApplyFull();
-}
-
-function closeMediaPicker() {
-    const modal = document.getElementById('ov_media_modal');
-    if (modal) modal.hidden = true;
+    const maxSide = Math.max(editorParams.out_width, editorParams.out_height, 1280);
+    _downscaleToB64(file, maxSide, (b64, name) => {
+        o.image_b64 = b64;
+        o.image_name = name;
+        input.value = '';   // autorise la réimportation du même fichier
+        dessiner();
+        hotApplyFull();
+    });
 }
 
 // ─── Snap ──────────────────────────────────────────────────────
