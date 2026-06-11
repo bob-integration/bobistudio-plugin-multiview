@@ -1,8 +1,13 @@
 {
-  "version": "0.10.0",
+  "version": "0.10.1",
   "date": "2026-06-11",
   "changes": {
-    "Nouveautés": [
+    "Corrections (0.10.1)": [
+      "Bordure de fenêtre repassée SOUS l'habillage : elle cerne l'image au-dessus de la vidéo seulement — le bandeau de texte, les pavés tally et les VU-mètres passent par-dessus (la bordure ne barre plus la zone de texte/tally d'une ligne).",
+      "VU-mètre « hors image » sans déformation : l'image est désormais réduite HOMOTHÉTIQUEMENT (ratio de la fenêtre conservé, letterbox/pillarbox centré) dans la zone restante, comme pour le bandeau sous l'image — plus aucun cas d'étirement. Le VU-mètre occupe toute la hauteur de la zone (hors bandeau).",
+      "Éditeur : un PiP ajouté au-delà de la grille 2×2 n'est plus créé hors de la zone (il partait à y=720 en 720p, irrécupérable). Les nouveaux PiP se posent par-dessus, à 1/8 de la surface (≈ 35 % des dimensions), en cascade décalée avec retour au bord ; la saisie numérique x/y/largeur/hauteur est clampée à la zone de sortie."
+    ],
+    "Nouveautés (0.10.0)": [
       "Outils d'overlay non-vidéo posables sur le composer (liste `overlays`, séparée des entrées vidéo câblées) : CHAMP TEXTE (texte local ou issu du TSL ; choix de police, couleur de texte et couleur de fond, chacune avec un état alternatif « Tally On » piloté par un index TSL), CHAMP HORLOGE (affichage réglable HH/MM/SS/II ; source PTP horloge-du-jour avec offset signé, ou chrono, ou décompte — avec boutons live start/stop/reset via :8082/chrono) et CHAMP IMAGE (logo au premier plan ou fond derrière toute la vidéo, importé directement depuis l'ordinateur, réduit côté navigateur et embarqué en base64 au déploiement — aucun stockage serveur). Application À CHAUD via :8082/overlays — aucune coupure de la sortie.",
       "Polices embarquées dans l'image compute (DejaVu, Liberation, Inter, Roboto, Fira Code) pour le choix de police des overlays texte/horloge ; repli DejaVu si une police manque."
     ],

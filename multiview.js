@@ -294,6 +294,37 @@ function padBank() {
     // Au-delà de max : on garde (ne jamais détruire une entrée potentiellement câblée).
 }
 
+// Position/taille d'un NOUVEAU PiP (entrée jamais positionnée) : grille de
+// demi-fenêtres tant qu'il reste des cases entièrement DANS la zone, puis PiP
+// « cascade » posé PAR-DESSUS à 1/8 de la surface (≈ 35 % des dimensions),
+// décalé à chaque ajout. Aucune image créée hors de la zone de sortie.
+function placerNouveauPip(f) {
+    const out_w = editorParams.out_width;
+    const out_h = editorParams.out_height;
+    const win_w = Math.round(out_w / 2) & ~1;
+    const win_h = Math.round(out_h / 2) & ~1;
+    const cols  = Math.max(1, Math.floor(out_w / win_w));
+    const rows  = Math.max(1, Math.floor(out_h / win_h));
+    const nVis  = editorParams.flux_config.filter(o => o !== f && !o.hidden).length;
+    if (nVis < cols * rows) {
+        f.w = win_w; f.h = win_h;
+        f.x = (nVis % cols) * win_w;
+        f.y = Math.floor(nVis / cols) * win_h;
+        return;
+    }
+    // Grille pleine → cascade : 1/8 de la SURFACE = dimensions / √8
+    const s = 1 / Math.sqrt(8);
+    f.w = Math.round(out_w * s) & ~1;
+    f.h = Math.round(out_h * s) & ~1;
+    const step   = Math.max(16, Math.round(out_h * 0.05));
+    const maxX   = Math.max(0, out_w - f.w);
+    const maxY   = Math.max(0, out_h - f.h);
+    const perRun = Math.max(1, Math.floor(Math.min(maxX, maxY) / step));   // wrap au bord
+    const k      = (nVis - cols * rows) % perRun;
+    f.x = Math.min(maxX, (k + 1) * step) & ~1;
+    f.y = Math.min(maxY, (k + 1) * step) & ~1;
+}
+
 function ajouterEntree() {
     padBank();
     // « Ajouter un PiP » = réafficher la première entrée masquée de la banque
@@ -305,15 +336,18 @@ function ajouterEntree() {
     }
     const f = editorParams.flux_config[idx];
     f.hidden = false;
-    // Entrée jamais positionnée (défauts de la banque) → placement en grille
     const out_w = editorParams.out_width;
+    const out_h = editorParams.out_height;
     const win_w = Math.round(out_w / 2) & ~1;
-    const win_h = Math.round(editorParams.out_height / 2) & ~1;
+    const win_h = Math.round(out_h / 2) & ~1;
+    // Entrée jamais positionnée (défauts de la banque) → placement automatique
     if (!f.x && !f.y && f.w === win_w && f.h === win_h) {
-        const cols = Math.max(1, Math.floor(out_w / win_w));
-        f.x = (idx % cols) * win_w;
-        f.y = Math.floor(idx / cols) * win_h;
+        placerNouveauPip(f);
     }
+    // Jamais hors zone (y compris une géométrie mémorisée d'un ancien PiP)
+    f.w = Math.min(f.w, out_w); f.h = Math.min(f.h, out_h);
+    f.x = Math.max(0, Math.min(out_w - f.w, f.x));
+    f.y = Math.max(0, Math.min(out_h - f.h, f.y));
     selectedIdxs = [idx];
     dessiner();
     hotApplyFull();
@@ -406,13 +440,16 @@ function onEntryGeomChange() {
     const primary = primaryIdx();
     if (primary < 0) return;
     const f = editorParams.flux_config[primary];
-    f.x = parseInt(document.getElementById('ed_x').value) || 0;
-    f.y = parseInt(document.getElementById('ed_y').value) || 0;
-    let nw = parseInt(document.getElementById('ed_w').value) || 64;
-    let nh = parseInt(document.getElementById('ed_h').value) || 64;
+    const out_w = editorParams.out_width;
+    const out_h = editorParams.out_height;
+    // Clamp à la zone de sortie : aucune image ne doit exister hors zone.
+    let nw = Math.min(out_w, parseInt(document.getElementById('ed_w').value) || 64);
+    let nh = Math.min(out_h, parseInt(document.getElementById('ed_h').value) || 64);
     f.w = nw % 2 === 0 ? nw : nw - 1;
     f.h = nh % 2 === 0 ? nh : nh - 1;
-    dessiner();
+    f.x = Math.max(0, Math.min(out_w - f.w, parseInt(document.getElementById('ed_x').value) || 0));
+    f.y = Math.max(0, Math.min(out_h - f.h, parseInt(document.getElementById('ed_y').value) || 0));
+    dessiner();   // refreshEntryPanel() re-reflète les valeurs clampées dans les champs
     hotApplyWindow(primary);
 }
 

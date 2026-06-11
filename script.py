@@ -561,37 +561,41 @@ def _video_rect(cfg):
     bordure et les meters (plus de copie divergente). Renvoie un dict :
       x/y/w/h    : cellule clampée au canvas (dimensions paires) ;
       vx/vy/vw/vh: rectangle de l'IMAGE vidéo — exclut la bande VU « hors image » et
-                   le bandeau « sous l'image ». En mode « sous l'image », la largeur
-                   est réduite AU MÊME RATIO que la hauteur (pillarbox centré) : on ne
-                   déforme jamais l'image pour caser le bandeau ;
+                   le bandeau « sous l'image ». L'image est réduite HOMOTHÉTIQUEMENT
+                   (ratio de la cellule conservé) dans la zone restante et centrée
+                   (pillarbox/letterbox) : on ne déforme JAMAIS l'image, ni pour le
+                   bandeau ni pour la bande VU ;
       m          : _label_metrics(cfg) (tailles d'habillage par-fenêtre)."""
     m = _label_metrics(cfg)
     x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
     x = max(0, min(x, OUT_WIDTH - 1)); y = max(0, min(y, OUT_HEIGHT - 1))
     w = max(2, min(w, OUT_WIDTH - x)); h = max(2, min(h, OUT_HEIGHT - y))
     w -= w % 2; h -= h % 2
+    # Zone disponible : hauteur amputée du bandeau (mode « sous l'image »), largeur
+    # amputée de la bande VU « hors image ».
     bar_on = bool(cfg.get("show_label") or cfg.get("show_tally"))
-    vh = h - _bar_reserved_h(cfg, m) if (OVERLAY_BELOW and bar_on) else h
-    vh -= vh % 2
-    if vh < 2:
-        vh = h  # cellule trop petite pour un bandeau sous — fallback overlay
+    avail_h = h - _bar_reserved_h(cfg, m) if (OVERLAY_BELOW and bar_on) else h
+    if avail_h < 2:
+        avail_h = h  # cellule trop petite pour un bandeau sous — fallback overlay
     meter_n = int(cfg.get("meter_channels") or 0)
     moff = 0
     if meter_n > 0 and not cfg.get("meter_inside"):
         moff = _meter_layout(meter_n) + 4
         moff += moff % 2
-    vw = max(2, w - moff)
-    vw -= vw % 2
-    vx = x + (moff if cfg.get("meter_position") == "left" else 0)
-    if vh < h:
-        # Bandeau sous l'image : largeur ajustée au ratio d'origine (vw×h), centrée.
-        fit = max(2, int(round(vw * vh / h)))
-        fit -= fit % 2
-        vx += (vw - fit) // 2
-        vx -= vx % 2   # alignement chroma (vx//_CW)
-        vw = fit
+    avail_w = max(2, w - moff)
+    ax = x + (moff if cfg.get("meter_position") == "left" else 0)
+    # Fit homothétique du ratio de la cellule (w×h) dans la zone, centré.
+    scale = min(avail_w / w, avail_h / h)
+    vw = max(2, int(w * scale)); vw -= vw % 2
+    vh = max(2, int(h * scale)); vh -= vh % 2
+    vx = ax + (avail_w - vw) // 2
+    vx -= vx % 2   # alignement chroma (vx//_CW)
+    vy = y + (avail_h - vh) // 2
+    vy -= vy % 2   # alignement chroma (vy//_CH en 4:2:0)
     return {{"x": x, "y": y, "w": w, "h": h,
-             "vx": vx, "vy": y, "vw": vw, "vh": vh, "m": m}}
+             "vx": vx, "vy": vy, "vw": vw, "vh": vh,
+             "ah": avail_h,    # hauteur de la ZONE hors bandeau (pour les VU-mètres)
+             "m": m}}
 
 def _render_pill(d, cx, cy, r, fill, outline):
     """Pastille ronde centrée (cx, cy) de rayon r."""
@@ -775,10 +779,11 @@ def render_dynamic():
     return rgba_to_yuv(img)
 
 def render_border():
-    """Couche bordure SEULE, blendée EN DERNIER → la bordure reste visible
-    au-dessus du bandeau, des labels et des pavés tally. Cerne le rectangle image
-    (_video_rect, même géométrie que la boucle composite) selon le style courant.
-    Dépend du tally pour 'tally_border'."""
+    """Couche bordure SEULE, blendée juste APRÈS la vidéo : au-dessus de l'image
+    mais SOUS le bandeau, les labels, les pavés tally et les VU-mètres (elle ne
+    barre plus la zone de texte). Cerne le rectangle image (_video_rect, même
+    géométrie que la boucle composite) selon le style courant. Dépend du tally
+    pour 'tally_border'."""
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     for i, cfg in enumerate(FLUX_CONFIG):
@@ -824,11 +829,13 @@ def render_meters(now):
         if peaks is None:
             peaks = np.full(n, METER_MIN_DB)
             holds = np.full(n, METER_MIN_DB)
-        # Geometry du meter dans la cellule (géométrie partagée _video_rect)
+        # Geometry du meter dans la cellule (géométrie partagée _video_rect). Le meter
+        # occupe toute la hauteur de la ZONE hors bandeau (ah), pas celle de la vidéo
+        # letterboxée — la bande VU réserve sa largeur, la vidéo est réduite au ratio.
         g = _video_rect(cfg)
-        x, y, w, h, vh = g["x"], g["y"], g["w"], g["h"], g["vh"]
+        x, y, w, h = g["x"], g["y"], g["w"], g["h"]
         mw = _meter_layout(n)
-        mh = max(20, vh - 4)
+        mh = max(20, g["ah"] - 4)
         if mw >= w or mh < 20:
             continue
         inside = bool(cfg.get("meter_inside"))
@@ -1541,18 +1548,27 @@ while True:
         geom_dirty.clear()
         tally_dirty.set()   # labels protocole + pavés tally ont aussi bougé
 
-    # Blend overlay statique (bordures + noms)
-    canvas_y = blend(canvas_y, static_y,  static_a)
-    canvas_u = blend(canvas_u, static_u,  static_a2)
-    canvas_v = blend(canvas_v, static_v,  static_a2)
-
     # Re-rendu dynamique (labels protocole + tally) si l'état a changé.
     # La couche bordure dépend aussi du tally (style tally_border) et de la géo/
-    # style (geom_dirty arme tally_dirty) → on la re-bake ici en même temps.
+    # style (geom_dirty arme tally_dirty) → on la re-bake ici en même temps,
+    # AVANT son blend (la bordure est désormais la première couche d'habillage).
     if tally_dirty.is_set():
         dyn_y, dyn_u, dyn_v, dyn_a, dyn_a2 = render_dynamic()
         border_y, border_u, border_v, border_a, border_a2 = render_border()
         tally_dirty.clear()
+
+    # Bordure SOUS l'habillage : au-dessus de la vidéo seulement — le bandeau de
+    # texte, les pavés tally et les VU-mètres passent PAR-DESSUS (elle ne barre
+    # plus la zone de texte d'une ligne).
+    if border_a is not None:
+        canvas_y = blend(canvas_y, border_y, border_a)
+        canvas_u = blend(canvas_u, border_u, border_a2)
+        canvas_v = blend(canvas_v, border_v, border_a2)
+
+    # Blend overlay statique (bandeaux + noms)
+    canvas_y = blend(canvas_y, static_y,  static_a)
+    canvas_u = blend(canvas_u, static_u,  static_a2)
+    canvas_v = blend(canvas_v, static_v,  static_a2)
 
     if dyn_a is not None:
         canvas_y = blend(canvas_y, dyn_y, dyn_a)
@@ -1566,12 +1582,6 @@ while True:
         canvas_y = blend(canvas_y, m_y, m_a)
         canvas_u = blend(canvas_u, m_u, m_a2)
         canvas_v = blend(canvas_v, m_v, m_a2)
-
-    # Bordure EN DERNIER → visible par-dessus bandeau, labels et pavés tally.
-    if border_a is not None:
-        canvas_y = blend(canvas_y, border_y, border_a)
-        canvas_u = blend(canvas_u, border_u, border_a2)
-        canvas_v = blend(canvas_v, border_v, border_a2)
 
     # Overlays texte/horloge/logo (layer=foreground) : par-dessus TOUT, re-rendus chaque frame
     # (l'horloge avance en continu, le texte/couleur peut suivre le tally TSL).
