@@ -167,10 +167,42 @@ async function loadVideoSources() {
     } catch(e) { videoSources = []; }
 }
 
+// ─── Noms de colonnes TSL ────────────────────────────────────
+let _tslLabelNames = ["Hostname", "MXL", "Label 2", "Label 3", "Label 4",
+                      "Label 5", "Label 6", "Label 7", "Label 8", "Label 9"];
+
+async function _loadTslLabelNames() {
+    try {
+        const r = await fetch('/api/tsl/label_names');
+        if (r.ok) _tslLabelNames = await r.json();
+    } catch(e) {}
+    _tslPopulateSelects();
+}
+
+function _tslPopulateSelects() {
+    ['ed_label_col', 'ed_tally_l_level', 'ed_tally_r_level'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        const cur = sel.value;
+        sel.innerHTML = _tslLabelNames.map((n, i) => `<option value="${i}">${i} — ${n}</option>`).join('');
+        sel.value = cur;
+    });
+}
+
+function _tslSetSelects(labelCol, lLevel, rLevel) {
+    _tslPopulateSelects();
+    const lc = document.getElementById('ed_label_col');
+    const ll = document.getElementById('ed_tally_l_level');
+    const rl = document.getElementById('ed_tally_r_level');
+    if (lc) lc.value = String(labelCol ?? 0);
+    if (ll) ll.value = String(lLevel ?? 0);
+    if (rl) rl.value = String(rLevel ?? 1);
+}
+
 async function chargerMw(vmid) {
     let c;
     try {
-        await Promise.all([loadAllContainers(), loadVideoSources()]);
+        await Promise.all([loadAllContainers(), loadVideoSources(), _loadTslLabelNames()]);
         const r = await fetch('/api/containers/' + vmid + '/config');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         c = await r.json();
@@ -303,6 +335,9 @@ function newEntry(idx, hidden) {
         show_tally: false,
         label_proportional: false,   // taille du label proportionnelle à la fenêtre
         tsl_index: 0,
+        label_col: 0,
+        tally_l_level: 0,
+        tally_r_level: 1,
         // Peak meters
         meter_channels: 0,           // 0 = désactivé ; sinon 2/4/6/8
         meter_position: 'right',     // left | right
@@ -415,6 +450,7 @@ function refreshEntryPanel() {
     document.getElementById('ed_show_tally').checked = !!f.show_tally;
     document.getElementById('ed_label_proportional').checked = !!f.label_proportional;
     document.getElementById('ed_tsl_index').value    = f.tsl_index || 0;
+    _tslSetSelects(f.label_col ?? 0, f.tally_l_level ?? 0, f.tally_r_level ?? 1);
     document.getElementById('ed_x').value = f.x;
     document.getElementById('ed_y').value = f.y;
     document.getElementById('ed_w').value = f.w;
@@ -453,7 +489,10 @@ function onEntryChange() {
     f.show_label   = document.getElementById('ed_show_label').checked;
     f.show_tally   = document.getElementById('ed_show_tally').checked;
     f.label_proportional = document.getElementById('ed_label_proportional').checked;
-    f.tsl_index    = parseInt(document.getElementById('ed_tsl_index').value) || 0;
+    f.tsl_index      = parseInt(document.getElementById('ed_tsl_index').value) || 0;
+    f.label_col      = parseInt(document.getElementById('ed_label_col').value) || 0;
+    f.tally_l_level  = parseInt(document.getElementById('ed_tally_l_level').value) || 0;
+    f.tally_r_level  = parseInt(document.getElementById('ed_tally_r_level').value) || 1;
     f.meter_channels = parseInt(document.getElementById('ed_meter_channels').value) || 0;
     f.meter_position = document.getElementById('ed_meter_position').value || 'right';
     f.meter_inside   = document.getElementById('ed_meter_inside').value === '1';
@@ -485,6 +524,7 @@ function onEntryGeomChange() {
 // ni la source (path/in_w/in_h/ratio/color), puis colle dans toutes les fenêtres
 // sélectionnées en une fois.
 const COPY_FIELDS = ['w', 'h', 'label_source', 'show_label', 'show_tally', 'label_proportional', 'tsl_index',
+    'label_col', 'tally_l_level', 'tally_r_level',
     'meter_channels', 'meter_position', 'meter_inside', 'meter_opacity', 'meter_scale'];
 let reglagesClipboard = null;
 

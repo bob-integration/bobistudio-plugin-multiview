@@ -93,6 +93,9 @@
                 <label class="field field-inline" for="ed_show_tally"><input type="checkbox" class="ios-toggle" id="ed_show_tally" onchange="onEntryChange()"> Cases Tally</label>
                 <label class="field field-inline" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite."><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> Taille proportionnelle</label>
                 <div class="field field-narrow"><label for="ed_tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
+                <div class="field field-narrow"><label for="ed_label_col">Colonne label</label><select id="ed_label_col" onchange="onEntryChange()"></select></div>
+                <div class="field field-narrow"><label for="ed_tally_l_level">Tally L</label><select id="ed_tally_l_level" onchange="onEntryChange()"></select></div>
+                <div class="field field-narrow"><label for="ed_tally_r_level">Tally R</label><select id="ed_tally_r_level" onchange="onEntryChange()"></select></div>
                 <button type="button" class="btn btn-red" onclick="supprimerEntreeSelectionnee()" title="Retire le PiP de l'image SANS couper sa source : l'entrée reste câblée et peut être réaffichée.">Retirer de l'image</button>
             </div>
             <div class="mw-editor-row">

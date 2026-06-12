@@ -402,6 +402,10 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     tally_state[f"{{idx}}_{{slot}}"] = color
                     changed = True
+                    # Texte label optionnel (label_col depuis l'orchestrateur)
+                    text = upd.get("text")
+                    if text is not None and slot == "L":
+                        tsl_text[idx] = str(text)
                 if changed:
                     tally_dirty.set()
                 self._send_json({{"status": "ok", "updates": len(updates)}})
