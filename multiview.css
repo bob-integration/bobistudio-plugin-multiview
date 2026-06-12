@@ -1,13 +1,19 @@
-/* ─── Layout principal ────────────────────────────────────── */
-.compose-layout {
+/* ─── Layout principal : éditeur (1fr) + colonne latérale (réglages + layouts) ── */
+.mw-compose {
     display: grid;
-    grid-template-columns: 260px 1fr 260px;
+    grid-template-columns: minmax(0, 1fr) 280px;
     gap: var(--space-4);
     align-items: start;
 }
+.mw-side {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-width: 0;
+}
 
 /* Panneaux latéraux : surface unique (bg-elev), pas de carte dans carte */
-.mw-list,
+.mw-settings,
 .layout-list {
     background: var(--bg-elev);
     border: 1px solid var(--border);
@@ -15,7 +21,7 @@
     padding: var(--space-3);
     min-width: 0;
 }
-.mw-list h2,
+.mw-settings h2,
 .layout-list h2 {
     font-size: 0.95em;
     font-weight: 600;
@@ -23,33 +29,28 @@
     color: var(--text-strong);
 }
 
-.mw-list ul,
+/* Réglages de sortie : champs empilés, paires compactes sur une ligne */
+.mw-settings .row {
+    display: flex;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+.mw-settings .row:last-child { margin-bottom: 0; }
+.mw-settings .row .field { flex: 1; }
+
 .layout-list ul {
     list-style: none;
     margin: 0;
     padding: 0;
 }
-
-.mw-list li,
 .layout-list li {
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-small);
-    cursor: pointer;
     margin-bottom: var(--space-2);
     font-size: 0.9em;
     background: var(--bg-input);
     border: 1px solid var(--border-soft);
-    transition: border-color 0.12s, background 0.12s;
 }
-.mw-list li:hover,
-.layout-list li:hover { background: var(--bg-hover); }
-.mw-list li.selected  { background: var(--bg-selected); border-color: var(--accent); }
-.mw-list li:focus-visible,
-.layout-list li:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
-.mw-list .meta,
 .layout-list .meta {
     color: var(--text-muted);
     font-size: 0.78em;
@@ -57,7 +58,6 @@
 }
 
 /* Aperçus canvas : background tokenisé, pas de noir pur */
-.mw-list canvas,
 .layout-list canvas {
     display: block;
     margin-top: var(--space-2);
@@ -161,22 +161,25 @@
     margin-left: var(--space-1);
 }
 
-/* Lignes de champs */
-.mw-editor-row {
+/* Champs (éditeur + réglages latéraux) — les .ios-toggle sont exclus du style
+   input pour garder leurs proportions intrinsèques 36×20 (pas de min-height/padding). */
+.mw-editor .field,
+.mw-settings .field {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-3);
-    margin-bottom: var(--space-3);
-    align-items: flex-end;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
 }
-.mw-editor-row .field { display: flex; flex-direction: column; gap: 4px; }
-.mw-editor-row .field label {
+.mw-editor .field label,
+.mw-settings .field label {
     font-size: 0.78em;
     color: var(--text-muted);
     font-weight: 500;
 }
-.mw-editor-row .field input,
-.mw-editor-row .field select {
+.mw-editor .field input:not([type="checkbox"]),
+.mw-editor .field select,
+.mw-settings .field input:not([type="checkbox"]),
+.mw-settings .field select {
     background: var(--bg-input);
     color: var(--text);
     border: 1px solid var(--border);
@@ -185,87 +188,142 @@
     font-family: var(--font-mono);
     font-size: 0.88em;
     min-height: 32px;
+    min-width: 0;
 }
-.mw-editor-row .field input:focus-visible,
-.mw-editor-row .field select:focus-visible {
+.mw-editor .field input:focus-visible,
+.mw-editor .field select:focus-visible,
+.mw-settings .field input:focus-visible,
+.mw-settings .field select:focus-visible {
     outline: none;
     border-color: var(--accent);
     background: var(--bg);
 }
-.mw-editor-row .field-grow { flex: 1 1 280px; min-width: 240px; }
-.mw-editor-row .field-inline {
-    flex-direction: row;
+.field-inline {
+    flex-direction: row !important;
     align-items: center;
     gap: var(--space-2);
-    align-self: center;
     font-size: 0.88em;
-}
-.mw-editor-row .field-color input {
-    width: 60px;
-    padding: 0;
-    min-height: 32px;
-}
-.mw-editor-row .field-narrow input { width: 88px; }
-
-/* Toolbar d'alignement : surface tonale, pas de bordure (anti nested-card) */
-.align-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1);
-    margin-bottom: var(--space-2);
-    padding: var(--space-2);
-    background: var(--bg-input);
-    border-radius: var(--radius-small);
-    font-size: 0.82em;
-}
-.align-toolbar .btn {
-    min-width: 32px;
-    min-height: 36px;
-    padding: 4px 8px;
-}
-.align-toolbar .align-label {
-    color: var(--text-muted);
-    align-self: center;
-    margin: 0 var(--space-1) 0 var(--space-2);
-    font-size: 0.82em;
-    font-weight: 500;
-}
-.align-toolbar .align-label:first-child { margin-left: 0; }
-.align-toolbar .align-snap {
-    margin-left: auto;
-    align-self: center;
-    display: flex;
-    gap: var(--space-2);
-    align-items: center;
-    color: var(--text-muted);
     cursor: pointer;
 }
-.align-hint {
-    color: var(--text-muted);
-    font-size: 0.78em;
-    margin-bottom: var(--space-2);
-}
+.field-color input[type="color"] { width: 60px; padding: 2px; }
+.field-narrow input { width: 88px; }
 
-/* Wrapper canvas : surface noire conservée (= zone signal-less rendue),
-   pas de bordure pour ne pas créer une nième surface. */
-.mw-canvas-wrap {
-    position: relative;
-    background: var(--canvas-bg);
-    border-radius: var(--radius-small);
-    overflow: hidden;
-}
-.mw-canvas-wrap canvas { display: block; cursor: crosshair; }
-
-/* Source picker */
-.mw-source-picker {
+/* Lignes de champs de l'éditeur */
+.mw-editor-row {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-3);
     margin-bottom: var(--space-3);
     align-items: flex-end;
 }
-.mw-source-picker .field-grow { flex: 1 1 320px; min-width: 240px; }
-.mw-source-picker select { width: 100%; }
+.mw-editor-row .field-grow { flex: 1 1 280px; min-width: 240px; }
+.mw-editor-row .field-inline { align-self: center; }
+
+/* Barre d'insertion (+ PiP / + Texte / + Horloge / + Image) */
+.mw-insert {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+}
+.mw-insert .lbl {
+    font-size: 0.82em;
+    color: var(--text-muted);
+    font-weight: 500;
+    margin-right: var(--space-1);
+}
+.mw-insert .btn { margin: 0; }
+
+/* ─── Toolbar d'outils : groupes segmentés, boutons icône neutres ───
+   Un groupe = micro-label uppercase + rangée tonale (bg-input). Aucun bouton
+   coloré : la couleur reste réservée aux actions (Déployer, Retirer). */
+.mw-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-3);
+    margin-bottom: var(--space-2);
+}
+.tool-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.tool-group-label {
+    font-size: 0.62em;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding-left: 2px;
+}
+.tool-row {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-input);
+    border-radius: var(--radius-small);
+}
+.tool-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.tool-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-strong);
+}
+.tool-btn:active:not(:disabled) { filter: brightness(0.92); }
+.tool-btn:disabled { opacity: 0.35; cursor: default; }
+.tool-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+.tool-btn svg { width: 16px; height: 16px; display: block; }
+
+.mw-snap {
+    margin-left: auto;
+    align-self: center;
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    color: var(--text-muted);
+    font-size: 0.82em;
+    cursor: pointer;
+}
+.mw-hint {
+    color: var(--text-muted);
+    font-size: 0.78em;
+    margin: var(--space-1) 0 var(--space-3);
+}
+
+/* Wrapper canvas : surface noire conservée (= zone signal-less rendue),
+   pas de bordure pour ne pas créer une nième surface. fit-content : la surface
+   sombre colle exactement au canvas — pas de bande morte qui ressemblerait à de
+   la zone composable (resizeCanvas fixe la taille d'affichage en px). */
+.mw-canvas-wrap {
+    position: relative;
+    width: fit-content;
+    max-width: 100%;
+    background: var(--canvas-bg);
+    border-radius: var(--radius-small);
+    overflow: hidden;
+}
+.mw-canvas-wrap canvas {
+    display: block;
+    cursor: crosshair;
+    touch-action: none;   /* drag au doigt/stylet : pas de scroll pendant le geste */
+}
 
 /* Table des entrées : pas de bordure d'encadrement, séparée par un fond tonal léger */
 .mw-entry-table {
@@ -289,9 +347,13 @@
 
 .mw-entry-row { cursor: pointer; transition: background 0.1s; }
 .mw-entry-row:hover { background: var(--bg-hover); }
+.mw-entry-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
 .mw-entry-row.is-selected { background: var(--accent-soft); }
 /* Entrée de la banque non affichée (PiP retiré) : source câblée conservée */
-.mw-entry-row.is-hidden td { opacity: 0.45; }
+.mw-entry-row.is-hidden td { opacity: 0.6; }
 .mw-entry-row.is-hidden td:last-child { opacity: 1; }
 .mw-entry-row.is-primary {
     background: var(--bg-selected);
@@ -313,7 +375,7 @@
     color: var(--text-muted);
 }
 
-/* Panneau d'édition d'une entrée : surface tonale au lieu d'une carte
+/* Panneau d'édition (entrée ou overlay) : surface tonale au lieu d'une carte
    bordée, pour rester en cohérence "pas de carte dans carte". */
 .mw-entry-panel {
     margin-top: var(--space-3);
@@ -328,6 +390,40 @@
     padding-top: var(--space-2);
     border-top: 1px solid var(--border-soft);
 }
+
+/* ─── Overlays (texte / horloge / image) ────────────────────── */
+/* Même surface tonale que le panneau d'entrée ; l'identité overlay passe par le
+   chip de type (--overlay-accent), pas par une bande de couleur. */
+.mw-overlay-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+.mw-overlay-kind {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.72em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    /* Fallback : le token vit dans les thèmes du socle (cf. --canvas-bg) ; si
+       l'orchestrateur ne le définit pas encore, le plugin reste autonome. */
+    background: var(--overlay-accent-soft, oklch(0.74 0.11 315 / 0.14));
+    color: var(--overlay-accent, oklch(0.74 0.11 315));
+}
+.ov-grp { border-top: 1px dashed var(--border-soft); padding-top: var(--space-2); }
+
+/* `.mw-editor-row`/`.field` ont `display:flex`, qui écrase le `display:none` par défaut de
+   l'attribut [hidden] → sans ça, les groupes de réglages par type d'overlay (Texte/Horloge/
+   Image) s'affichaient TOUS à la fois. On rétablit le masquage pour ces éléments flex. */
+.mw-editor-row[hidden],
+.ov-grp[hidden],
+.mw-editor .field[hidden],
+.mw-settings .field[hidden],
+.mw-settings[hidden] { display: none !important; }
 
 /* Bandeau d'alerte local à l'éditeur, role=status — remplace les alert() natifs */
 .mw-toast {
@@ -351,32 +447,24 @@
 
 /* ─── Responsive ────────────────────────────────────────────── */
 @media (max-width: 1100px) {
-    .compose-layout {
-        grid-template-columns: 1fr;
+    .mw-compose { grid-template-columns: 1fr; }
+    .mw-side {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: start;
     }
-    .mw-list,
-    .layout-list {
-        max-height: 340px;
-        overflow-y: auto;
-    }
+    .mw-settings,
+    .layout-list { flex: 1 1 300px; }
+    .layout-list ul { max-height: 300px; overflow-y: auto; }
 }
 
 @media (max-width: 640px) {
-    .align-toolbar .align-snap { margin-left: 0; width: 100%; padding-top: var(--space-2); }
-    .mw-editor-row .field-grow { flex-basis: 100%; }
+    .mw-toolbar .mw-snap { margin-left: 0; width: 100%; padding-top: var(--space-2); }
+    .mw-editor-row .field-grow { flex-basis: 100%; min-width: 0; }
+    .mw-side { flex-direction: column; }
 }
 
-/* ─── Overlays (texte / horloge / image) ────────────────────── */
-.mw-overlay-panel { border-left: 3px solid #d24cff; }
-.mw-overlay-head {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: var(--space-2); margin-bottom: var(--space-2);
+@media (prefers-reduced-motion: reduce) {
+    .mw-toast.visible { animation: none; }
+    .tool-btn, .mw-entry-row { transition: none; }
 }
-.mw-overlay-head strong { color: #d24cff; }
-.ov-grp { border-top: 1px dashed var(--border-soft); padding-top: var(--space-2); }
-/* `.mw-editor-row`/`.field` ont `display:flex`, qui écrase le `display:none` par défaut de
-   l'attribut [hidden] → sans ça, les groupes de réglages par type d'overlay (Texte/Horloge/
-   Image) s'affichaient TOUS à la fois. On rétablit le masquage pour ces lignes flex. */
-.mw-editor-row[hidden],
-.ov-grp[hidden],
-.mw-editor-row .field[hidden] { display: none !important; }

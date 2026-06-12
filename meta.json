@@ -1,8 +1,33 @@
 {
-  "version": "0.10.2",
-  "date": "2026-06-11",
+  "version": "0.12.0",
+  "date": "2026-06-12",
   "changes": {
     "Nouveautés": [
+      "HABILLAGES DE FENÊTRE : les styles de cadre quasi invisibles (liseré gris 1 px ; bordure tally transparente hors antenne) sont remplacés par 5 vrais habillages qui RÉSERVENT leur place autour de l'image (réduction homothétique, rien n'est recouvert) — MONITEUR (bezel physique arrondi avec nom gravé et LED tally G/D, clé stylized), UMD BROADCAST (boîtier nom centré sous l'image + lampes tally carrées G/D + cadre fin, clé classic), CADRE TALLY (bordure épaisse TOUJOURS visible — grise au repos, rouge/vert/ambre en tally — avec onglet nom intégré, clé tally_border), VISEUR (équerres de viseur aux 4 coins + chip nom arrondi avec pastille d'état, nouvelle clé viewfinder) et FLAT (nom au-dessus d'un soulignement plein pleine largeur = indicateur tally, nouvelle clé flat). Clés existantes conservées : les multiviews déployés profitent du nouveau rendu au prochain déploiement, sans migration.",
+      "Épaisseur d'habillage AUTOMATIQUE : proportionnelle à la fenêtre (3 % du petit côté, bornée 3..24 px), dégradée proprement sur les très petites fenêtres (la bande nom saute avant les marges). Le réglage « Texte sous l'image » ne concerne plus que le style « Aucun » (les habillages intègrent leur propre zone nom/tally).",
+      "Aperçu FIDÈLE des habillages dans le composer : le canvas de l'éditeur dessine désormais chaque style (bezel, boîtier UMD, cadre+onglet, équerres+chip, soulignement) avec la géométrie d'image réduite exacte du rendu réel — auparavant aucun style de cadre n'était prévisualisé.",
+      "VU-mètres « hors image » alignés sur l'habillage : la bande VU se place entre la marge du cadre et l'image (plus de chevauchement avec le bezel), à la hauteur de la zone utile.",
+      "Hot-apply conservé : changer de style via le composer s'applique à chaud (/style), sans coupure de la sortie."
+    ],
+    "Nouveautés (0.11.0)": [
+      "Composer réorganisé : le canvas remonte en tête de l'éditeur (insertion + outils juste au-dessus), et les réglages de sortie (max entrées, bordure, taille texte, style de cadre, texte sous l'image, genlock, port TSL) déménagent dans un panneau latéral « Sortie & habillage » à droite, au-dessus des layouts. Le panneau n'apparaît qu'une instance chargée.",
+      "Toolbar d'outils redessinée : groupes segmentés (Aligner / Taille / Distribuer / Réglages) avec icônes SVG cohérentes et micro-labels, à la place des boutons colorés à glyphes Unicode disparates. Les boutons se désactivent selon la sélection (1 fenêtre pour aligner, 2 pour égaliser, 3 pour distribuer, presse-papiers requis pour Coller) au lieu de flasher une erreur.",
+      "Aligner / égaliser / distribuer / coller appliquent désormais À CHAUD les fenêtres modifiées (hot-apply /window), comme le drag — il ne faut plus redéployer pour voir l'effet à l'antenne.",
+      "Import / export de layouts : « Importer un fichier… » fonctionne enfin (la fonction n'avait jamais été implémentée — ReferenceError silencieuse depuis l'extraction du plugin) et chaque layout gagne un bouton « Exporter » (.json {name, config} réimportable ailleurs).",
+      "« Max entrées » redimensionne la banque immédiatement dans l'éditeur (table paddée) au lieu d'attendre le déploiement."
+    ],
+    "Corrections (0.11.0)": [
+      "Toggles iOS déformés : la règle des champs de l'éditeur (min-height 32px + padding) écrasait les proportions intrinsèques 36×20 des .ios-toggle — les cases des lignes de réglages étaient plus grosses que celles du tableau. Les checkboxes sont exclues du style des inputs.",
+      "Responsive réparé : la media query historique ciblait .compose-layout, classe morte depuis la migration vers le shell Traitements (la grille réelle était un style inline non adaptatif). La grille vit désormais dans le CSS du plugin et passe en une colonne sous 1100 px ; drag du canvas en Pointer Events (souris/stylet/doigt, touch-action none).",
+      "XSS stocké corrigé : hostname/label/shm des sources et path des entrées étaient injectés sans échappement dans le tableau et la dropdown source ; le bouton Supprimer d'un layout cassait son attribut onclick sur un nom contenant un guillemet (escapeAttr n'échappait que l'apostrophe). Échappement systématique + suppression par id.",
+      "Charte : suppression du side-stripe magenta du panneau overlay (bande border-left 3px #d24cff, bannie par DESIGN.md) au profit d'un chip de type sur le nouveau token --overlay-accent (OKLCH, décliné dans les trois thèmes côté orchestrateur, avec fallback local dans le plugin) ; couleurs canvas tokenisées (sélection = --accent au lieu du bleu GitHub #58a6ff, guides de snap = --status-warning-fg au lieu de #f97316).",
+      "Robustesse : échec de chargement d'un multiview ou des layouts signalé (plus d'éditeur silencieusement vide) ; bouton Déployer désactivé pendant le POST avec état « Déploiement… » et deploys sérialisés (un appel pendant un POST en cours est rejoué à la fin — plus de double-deploy ni de dernier changement perdu).",
+      "Performance : pendant un drag, seuls le canvas et les champs x/y/largeur/hauteur sont repeints — le tableau des entrées et la dropdown source ne sont plus reconstruits à chaque mousemove (innerHTML complet par pixel déplacé).",
+      "Accessibilité : sélection des entrées au clavier depuis le tableau (Tab + Entrée/Espace, focus visible), aria-label sur tous les boutons d'outils (les noms accessibles étaient des glyphes ⇤⇔⛶), aria-live porté par le <ul> des layouts (il était sur un <li> détruit au rendu), libellé accessible de l'éditeur corrigé (il restait « Aucun multiview sélectionné » une fois chargé).",
+      "Voix UX unifiée au vouvoiement (« Sélectionnez… », « Donnez un nom au layout. ») et messages actionnables (banque pleine, échecs réseau explicites, confirmation de suppression avec conséquence) ; classe btn-ghost inexistante remplacée.",
+      "Canvas : la surface sombre colle désormais exactement à la zone de composition (wrap fit-content + taille d'affichage calculée) — plus de bande noire morte à droite quand l'éditeur est plus large que la sortie, et les sorties hors 16:9 (verticales, carrées) sont plafonnées à ~65 % de la hauteur de fenêtre au lieu d'envahir la page."
+    ],
+    "Nouveautés (0.10.2)": [
       "Taille de label PROPORTIONNELLE par fenêtre (case « Taille proportionnelle ») : le texte vaut la taille définie quand la fenêtre fait 1/4 de l'image, puis grossit/réduit avec la fenêtre — au lieu d'une taille figée seulement plafonnée. Réglage par PiP, appliqué à chaud.",
       "Composer : zone unique « Ajouter un élément » (+ PiP · + Texte · + Horloge · + Image). Le panneau de réglages overlay est enfin séparé par type — Texte, Horloge et Image n'affichent plus que LEURS réglages (correction d'un masquage CSS inopérant : les lignes `display:flex` ignoraient l'attribut `hidden`)."
     ],

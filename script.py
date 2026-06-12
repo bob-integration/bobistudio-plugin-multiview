@@ -111,7 +111,9 @@ TALLY_TEXT_COLORS = {{
 }}
 # Tailles d'habillage (texte/bandeau/tally) calculées PAR FENÊTRE via _label_metrics()
 # (plafonnées à la hauteur du PiP) — LABEL_SIZE n'est que la taille DEMANDÉE.
-FRAME_STYLE = CONFIG.get("frame_style") or "none"  # none | classic | tally_border | stylized
+FRAME_STYLE = CONFIG.get("frame_style") or "none"  # none | classic(UMD) | tally_border | stylized(bezel) | viewfinder | flat
+# Styles d'habillage v0.12 : réservent leurs marges AUTOUR de l'image (_frame_metrics).
+_DRESS_STYLES = ("classic", "tally_border", "stylized", "viewfinder", "flat")
 
 # Couleurs de bordure épaisse selon tally dominant (styles tally_border / stylized)
 _TALLY_BORDER_RGBA = {{
@@ -133,6 +135,18 @@ _PILL_COLORS = {{
     "red":   ((220,  40,  40, 240), (255,  80,  80, 255)),
     "green": (( 40, 200,  80, 240), ( 80, 255, 120, 255)),
     "amber": ((220, 160,   0, 240), (255, 200,  40, 255)),
+}}
+
+# Habillages v0.12 : neutres « au repos » — TOUJOURS visibles (jamais transparents,
+# contrairement à l'ancien tally_border invisible hors antenne).
+_FRAME_NEUTRAL = ( 70,  70,  78, 255)   # cadre/bordure au repos
+_FLAT_NEUTRAL  = ( 90,  90,  98, 255)   # soulignement flat au repos
+# Teinte de fond (onglet tally_border) par dominante.
+_BAR_TINTS = {{
+    "off":   ( 50,  50,  56, 235),
+    "red":   (120,  20,  20, 235),
+    "green": ( 20,  90,  35, 235),
+    "amber": (120,  80,   0, 235),
 }}
 
 # ─── Peak meters (audio) ─────────────────────────────────────
@@ -520,6 +534,57 @@ def _bar_reserved_h(cfg, m):
         return m["grad_h"]
     return m["bar_h"]
 
+def _frame_metrics(cfg):
+    """Marges réservées par l'habillage (frame_style) AUTOUR de l'image — l'image est
+    réduite homothétiquement dans la zone restante (_video_rect), rien n'est recouvert.
+    Épaisseur auto : t = 3 % du petit côté de la fenêtre, bornée 3..24 px.
+    Renvoie {{t, ml, mt, mr, mb, band}} ; band = hauteur de la zone nom/tally du style.
+    Fenêtre trop petite : marges dégradées (bande puis côtés) plutôt que d'écraser
+    l'image. Formules miroir côté éditeur : multiview.js _frameMetrics()."""
+    w = max(2, int(cfg.get("w") or 0)); h = max(2, int(cfg.get("h") or 0))
+    m = _label_metrics(cfg)
+    t = max(3, min(24, int(round(min(w, h) * 0.03))))
+    show_label = bool(cfg.get("show_label"))
+    bar_on = show_label or bool(cfg.get("show_tally"))
+    band = m["bar_h"]
+    ml = mt = mr = mb = 0
+    if FRAME_STYLE == "stylized":        # Moniteur : bezel + menton nom/LED
+        bez = max(4, int(round(t * 2.2)))
+        ml = mr = mt = bez
+        mb = bez + (band if bar_on else 0)
+    elif FRAME_STYLE == "classic":       # UMD : cadre fin + boîtier sous l'image
+        f = max(2, t // 2)
+        ml = mr = mt = f
+        mb = f + ((band + max(2, t // 2)) if bar_on else 0)
+    elif FRAME_STYLE == "tally_border":  # cadre épais toujours visible + onglet nom
+        b = max(4, int(round(t * 1.5)))
+        ml = mr = mb = b
+        mt = b + (band if show_label else 0)
+    elif FRAME_STYLE == "viewfinder":    # équerres + chip nom
+        ml = mr = mb = t
+        mt = (band + 4) if show_label else t
+    elif FRAME_STYLE == "flat":          # nom + soulignement pleine largeur
+        mb = t + ((band + 2) if show_label else 0)
+    if h - mt - mb < 16:
+        mb = max(0, min(mb, h - 16 - mt))
+        if h - mt - mb < 16:
+            mt = max(0, h - 16 - mb)
+    if w - ml - mr < 16:
+        side = max(0, (w - 16) // 2)
+        ml = min(ml, side); mr = min(mr, side)
+    return {{"t": t, "ml": ml, "mt": mt, "mr": mr, "mb": mb, "band": band}}
+
+def _umd_geom(cfg, m, fm):
+    """Boîtier UMD (style classic) : rect (x0, y0, x1, y1) centré sous l'image,
+    largeur fixe ~55 % de la cellule (le texte est ajusté dedans), hauteur = band.
+    Les lampes tally G/D se posent de part et d'autre (render_dynamic)."""
+    x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
+    lamp_zone = m["tally"] + 2 * m["pad"] + 6
+    bw = max(24, min(int(w * 0.55), w - 2 * lamp_zone))
+    bx = x + (w - bw) // 2
+    by = y + h - fm["band"]
+    return bx, by, bx + bw - 1, y + h - 1
+
 def _fit_text(d, text, m, max_w):
     """Police du label, réduite si le texte déborde de max_w (sinon il bave sur les
     fenêtres voisines : l'overlay est dessiné sur le canvas complet)."""
@@ -577,30 +642,44 @@ def _video_rect(cfg):
     x = max(0, min(x, OUT_WIDTH - 1)); y = max(0, min(y, OUT_HEIGHT - 1))
     w = max(2, min(w, OUT_WIDTH - x)); h = max(2, min(h, OUT_HEIGHT - y))
     w -= w % 2; h -= h % 2
-    # Zone disponible : hauteur amputée du bandeau (mode « sous l'image »), largeur
-    # amputée de la bande VU « hors image ».
     bar_on = bool(cfg.get("show_label") or cfg.get("show_tally"))
-    avail_h = h - _bar_reserved_h(cfg, m) if (OVERLAY_BELOW and bar_on) else h
+    fm = None
+    if FRAME_STYLE in _DRESS_STYLES:
+        # Habillage v0.12 : marges réservées sur les 4 côtés (nom/tally intégrés au
+        # style) — le bandeau legacy OVERLAY_BELOW ne s'applique qu'au style 'none'.
+        fm = _frame_metrics(cfg)
+        ay = y + fm["mt"]
+        avail_h = h - fm["mt"] - fm["mb"]
+        ax0 = x + fm["ml"]
+        avail_w0 = w - fm["ml"] - fm["mr"]
+    else:
+        # 'none' : hauteur amputée du bandeau (mode « sous l'image »).
+        ay = y
+        avail_h = h - _bar_reserved_h(cfg, m) if (OVERLAY_BELOW and bar_on) else h
+        ax0 = x
+        avail_w0 = w
     if avail_h < 2:
-        avail_h = h  # cellule trop petite pour un bandeau sous — fallback overlay
+        avail_h = h; ay = y  # cellule trop petite — fallback overlay
     meter_n = int(cfg.get("meter_channels") or 0)
     moff = 0
     if meter_n > 0 and not cfg.get("meter_inside"):
         moff = _meter_layout(meter_n) + 4
         moff += moff % 2
-    avail_w = max(2, w - moff)
-    ax = x + (moff if cfg.get("meter_position") == "left" else 0)
+    avail_w = max(2, avail_w0 - moff)
+    ax = ax0 + (moff if cfg.get("meter_position") == "left" else 0)
     # Fit homothétique du ratio de la cellule (w×h) dans la zone, centré.
     scale = min(avail_w / w, avail_h / h)
     vw = max(2, int(w * scale)); vw -= vw % 2
     vh = max(2, int(h * scale)); vh -= vh % 2
     vx = ax + (avail_w - vw) // 2
     vx -= vx % 2   # alignement chroma (vx//_CW)
-    vy = y + (avail_h - vh) // 2
+    vy = ay + (avail_h - vh) // 2
     vy -= vy % 2   # alignement chroma (vy//_CH en 4:2:0)
     return {{"x": x, "y": y, "w": w, "h": h,
              "vx": vx, "vy": vy, "vw": vw, "vh": vh,
-             "ah": avail_h,    # hauteur de la ZONE hors bandeau (pour les VU-mètres)
+             "ay": ay,         # haut de la ZONE disponible (pour les VU-mètres)
+             "ah": avail_h,    # hauteur de la ZONE hors bandeau/marges (idem)
+             "fm": fm,         # marges d'habillage (None pour 'none')
              "m": m}}
 
 def _render_pill(d, cx, cy, r, fill, outline):
@@ -635,39 +714,44 @@ def render_static():
         name = cfg.get("name", "") or ""
 
         if FRAME_STYLE == "classic":
-            # Barre noire épaisse en bas + label centré. Lampes L/R en dynamique.
-            cbar = m["cbar"]
-            if bar_on:
-                bar_top = y + h - cbar
-                d.rectangle([x, bar_top, x + w, y + h], fill=(10, 10, 12, 235))
-                d.line([x, bar_top, x + w, bar_top], fill=(80, 80, 90, 255), width=1)
+            # UMD broadcast : boîtier noir centré sous l'image. Lampes G/D et texte
+            # protocole en dynamique ; cadre fin dans render_border.
+            if show_label:
+                fm = _frame_metrics(cfg)
+                bx0, by0, bx1, by1 = _umd_geom(cfg, m, fm)
+                d.rectangle([bx0, by0, bx1, by1], fill=(8, 8, 10, 255),
+                            outline=(130, 130, 138, 255))
                 if static_label:
-                    tl, tr = x + m["pad"] + m["tally"] + 6, x + w - m["pad"] - m["tally"] - 6
-                    d.text(((tl + tr) // 2, bar_top + cbar // 2), name,
-                           font=_fit_text(d, name, m, tr - tl),
+                    d.text(((bx0 + bx1) // 2, (by0 + by1) // 2), name,
+                           font=_fit_text(d, name, m, bx1 - bx0 - 2 * m["pad"]),
                            fill=(240, 240, 245, 255), anchor="mm")
-            # Cadre fin gris → couche bordure (render_border), au-dessus du bandeau.
 
         elif FRAME_STYLE == "tally_border":
-            # La bordure colorée est dynamique. Ici : juste le label sur fond translucide
-            # posé en overlay dans le bas de l'image (pas de barre dédiée).
-            if static_label:
-                lab_h = m["bar_h"]
-                _render_gradient_bar(img, x, y + h - lab_h, w, lab_h, (0, 0, 0), 0, 200)
-                d.text((x + w // 2, y + h - lab_h // 2), name,
-                       font=_fit_text(d, name, m, w - 8),
-                       fill=(245, 245, 250, 255), anchor="mm")
+            pass  # onglet nom : suit la teinte tally → render_dynamic
 
         elif FRAME_STYLE == "stylized":
-            # Dégradé bas pour l'UMD + cadre fin. Pastilles L/R en dynamique.
-            if bar_on:
-                grad_h = m["grad_h"]
-                _render_gradient_bar(img, x, y + h - grad_h, w, grad_h, (0, 0, 0), 0, 210)
-                if static_label:
-                    d.text((x + w // 2, y + h - grad_h // 2 + 2), name,
-                           font=_fit_text(d, name, m, w - 8),
-                           fill=(245, 245, 250, 255), anchor="mm")
-            # Cadre fin → couche bordure (render_border), au-dessus du bandeau.
+            # Moniteur : nom « gravé » dans le menton du bezel (corps du bezel dans
+            # render_border, LED tally en dynamique).
+            if static_label:
+                fm = _frame_metrics(cfg)
+                cx = x + w // 2
+                cy = y + h - fm["mb"] // 2 - 1
+                font = _fit_text(d, name, m, w - 2 * fm["ml"] - 4 * m["pad"])
+                d.text((cx, cy - 1), name, font=font, fill=(8, 8, 10, 255), anchor="mm")
+                d.text((cx, cy), name, font=font, fill=(168, 168, 178, 255), anchor="mm")
+
+        elif FRAME_STYLE == "viewfinder":
+            pass  # chip nom : pastille d'état tally intégrée → render_dynamic
+
+        elif FRAME_STYLE == "flat":
+            # Nom au-dessus du soulignement, aligné sur le bord gauche de l'image
+            # (le trait, coloré tally, est dans render_border).
+            if static_label:
+                g = _video_rect(cfg)
+                fm = g["fm"]
+                d.text((g["vx"] + 2, y + h - fm["t"] - 2 - fm["band"] // 2), name,
+                       font=_fit_text(d, name, m, g["vw"] - 4),
+                       fill=(235, 235, 240, 255), anchor="lm")
 
         else:  # "none" — comportement historique
             # Bordure globale → couche bordure (render_border), au-dessus du bandeau.
@@ -704,56 +788,105 @@ def render_dynamic():
         dom = _window_tally_dominant(i)
 
         if FRAME_STYLE == "classic":
-            cbar = m["cbar"]
-            bar_top = y + h - cbar
-            # Fond de barre teinté selon dominante
-            if show_tally and dom != "off":
-                tint = {{"red": (120, 20, 20, 235), "green": (20, 90, 35, 235),
-                        "amber": (120, 80, 0, 235)}}[dom]
-                d.rectangle([x, bar_top, x + w, y + h], fill=tint)
-            # Lampes carrées L/R
+            # UMD : lampes carrées G/D de part et d'autre du boîtier + texte protocole.
+            fm = _frame_metrics(cfg)
+            bx0, by0, bx1, by1 = _umd_geom(cfg, m, fm)
+            cy = (by0 + by1) // 2
             if show_tally:
-                ty = bar_top + (cbar - tally_sz) // 2
-                for st, lx in ((tally_state.get(f"{{i}}_L", "off"), x + tally_pad),
+                ty = cy - tally_sz // 2
+                for st, lx in ((tally_state.get(f"{{i}}_L", "off"),
+                                bx0 - tally_pad - 6 - tally_sz),
                                (tally_state.get(f"{{i}}_R", "off"),
-                                x + w - tally_pad - tally_sz)):
+                                bx1 + tally_pad + 6)):
                     fill = _TALLY_BORDER_RGBA.get(st, (0, 0, 0, 0))
                     if fill[3] == 0:
-                        fill = (40, 40, 44, 200)
+                        fill = (40, 40, 44, 220)
                     d.rectangle([lx, ty, lx + tally_sz, ty + tally_sz],
-                                fill=fill, outline=(220, 220, 225, 255))
-            if is_proto and proto_txt:
-                tl, tr = x + tally_pad + tally_sz + 6, x + w - tally_pad - tally_sz - 6
-                d.text(((tl + tr) // 2, bar_top + cbar // 2), proto_txt,
-                       font=_fit_text(d, proto_txt, m, tr - tl),
-                       fill=(245, 245, 250, 255), anchor="mm")
+                                fill=fill, outline=(205, 205, 212, 255))
+            if is_proto and proto_txt and show_label:
+                d.text(((bx0 + bx1) // 2, cy), proto_txt,
+                       font=_fit_text(d, proto_txt, m, bx1 - bx0 - 2 * tally_pad),
+                       fill=(240, 240, 245, 255), anchor="mm")
 
         elif FRAME_STYLE == "tally_border":
-            # La bordure colorée est tracée par render_border (couche du dessus).
-            if is_proto and proto_txt:
-                lab_h = m["bar_h"]
-                _render_gradient_bar(img, x, y + h - lab_h, w, lab_h, (0, 0, 0), 0, 200)
-                d.text((x + w // 2, y + h - lab_h // 2), proto_txt,
-                       font=_fit_text(d, proto_txt, m, w - 8),
-                       fill=_TALLY_TEXT_BY_DOMINANT[dom], anchor="mm")
+            # Onglet nom intégré sous le bord haut, teinté par la dominante tally
+            # (la bordure épaisse est tracée par render_border).
+            if show_label:
+                g = _video_rect(cfg)
+                fm = g["fm"]
+                txt = proto_txt if is_proto else (cfg.get("name", "") or "")
+                tab_y0 = g["vy"] - fm["band"]
+                tab_y1 = g["vy"] - 1
+                try:
+                    tw = int(d.textlength(txt, font=m["font"])) if txt else 0
+                except Exception:
+                    tw = 0
+                tab_w = max(24, min(g["vw"], tw + 4 * tally_pad))
+                tab_x0 = g["vx"]
+                d.rectangle([tab_x0, tab_y0, tab_x0 + tab_w - 1, tab_y1],
+                            fill=_BAR_TINTS.get(dom, _BAR_TINTS["off"]))
+                if txt:
+                    d.text((tab_x0 + 2 * tally_pad, (tab_y0 + tab_y1) // 2), txt,
+                           font=_fit_text(d, txt, m, tab_w - 4 * tally_pad),
+                           fill=(245, 245, 250, 255), anchor="lm")
 
         elif FRAME_STYLE == "stylized":
-            # Pastilles rondes PGM (gauche) / PVW (droite) en haut
+            # Moniteur : LED tally rondes G/D dans le menton + texte protocole gravé.
+            fm = _frame_metrics(cfg)
+            cy = y + h - fm["mb"] // 2 - 1
             if show_tally:
-                r = max(5, int(round(m["size"] * 0.5)))
-                cy = y + r + 6
+                r = max(3, min(max(3, fm["band"] // 3), int(round(m["size"] * 0.45))))
                 stL = tally_state.get(f"{{i}}_L", "off")
                 stR = tally_state.get(f"{{i}}_R", "off")
                 fL, oL = _PILL_COLORS.get(stL, _PILL_COLORS["off"])
                 fR, oR = _PILL_COLORS.get(stR, _PILL_COLORS["off"])
-                _render_pill(d, x + r + 6,     cy, r, fL, oL)
-                _render_pill(d, x + w - r - 6, cy, r, fR, oR)
+                _render_pill(d, x + fm["ml"] + r + 4,     cy, r, fL, oL)
+                _render_pill(d, x + w - fm["mr"] - r - 4, cy, r, fR, oR)
             if is_proto and proto_txt:
-                grad_h = m["grad_h"]
-                _render_gradient_bar(img, x, y + h - grad_h, w, grad_h, (0, 0, 0), 0, 210)
-                d.text((x + w // 2, y + h - grad_h // 2 + 2), proto_txt,
-                       font=_fit_text(d, proto_txt, m, w - 8),
+                font = _fit_text(d, proto_txt, m, w - 2 * fm["ml"] - 4 * m["pad"])
+                d.text((x + w // 2, cy - 1), proto_txt, font=font,
+                       fill=(8, 8, 10, 255), anchor="mm")
+                d.text((x + w // 2, cy), proto_txt, font=font,
                        fill=_TALLY_TEXT_BY_DOMINANT[dom], anchor="mm")
+
+        elif FRAME_STYLE == "viewfinder":
+            # Chip nom arrondi haut-gauche + pastille d'état (équerres → render_border).
+            if show_label:
+                g = _video_rect(cfg)
+                fm = g["fm"]
+                txt = proto_txt if is_proto else (cfg.get("name", "") or "")
+                chip_h = fm["band"]
+                dot_r = max(2, int(round(m["size"] * 0.3))) if show_tally else 0
+                try:
+                    tw = int(d.textlength(txt, font=m["font"])) if txt else 0
+                except Exception:
+                    tw = 0
+                chip_w = max(20, min(w - 8, tw + 4 * tally_pad
+                                     + ((dot_r * 2 + tally_pad) if dot_r else 0)))
+                cx0 = g["vx"]
+                cy0 = y + 1
+                d.rounded_rectangle([cx0, cy0, cx0 + chip_w - 1, cy0 + chip_h - 1],
+                                    radius=max(2, chip_h // 2), fill=(10, 10, 12, 215))
+                tx = cx0 + 2 * tally_pad
+                if dot_r:
+                    dot_fill = _TALLY_BORDER_RGBA[dom] if dom != "off" else (90, 90, 98, 255)
+                    d.ellipse([tx, cy0 + chip_h // 2 - dot_r,
+                               tx + 2 * dot_r, cy0 + chip_h // 2 + dot_r], fill=dot_fill)
+                    tx += 2 * dot_r + tally_pad
+                if txt:
+                    d.text((tx, cy0 + chip_h // 2), txt,
+                           font=_fit_text(d, txt, m, cx0 + chip_w - tx - 2 * tally_pad),
+                           fill=(240, 240, 245, 255), anchor="lm")
+
+        elif FRAME_STYLE == "flat":
+            # Le soulignement (couleur tally) est dans render_border ; ici seul le
+            # texte protocole (le nom statique est dans render_static).
+            if is_proto and proto_txt:
+                g = _video_rect(cfg)
+                fm = g["fm"]
+                d.text((g["vx"] + 2, y + h - fm["t"] - 2 - fm["band"] // 2), proto_txt,
+                       font=_fit_text(d, proto_txt, m, g["vw"] - 4),
+                       fill=(235, 235, 240, 255), anchor="lm")
 
         else:  # "none" — comportement historique
             bar_top = y + h - m["bar_h"]
@@ -796,19 +929,67 @@ def render_border():
         if cfg.get("hidden"):
             continue
         g = _video_rect(cfg)
-        bx, by, bw, bh = g["vx"], g["vy"], g["vw"], g["vh"]
-        if FRAME_STYLE == "classic":
-            d.rectangle([bx, by, bx + bw - 1, by + bh - 1], outline=(60, 60, 68, 255))
-        elif FRAME_STYLE == "stylized":
-            d.rectangle([bx, by, bx + bw - 1, by + bh - 1], outline=(90, 90, 100, 220))
+        x, y, w, h = g["x"], g["y"], g["w"], g["h"]
+        vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]
+        fm = g["fm"]
+        dom = _window_tally_dominant(i)
+
+        if FRAME_STYLE == "stylized":
+            # Bezel « moniteur » : corps sombre arrondi plein sur la cellule, trou
+            # percé pour l'écran (ImageDraw écrit les pixels : fill transparent =
+            # trou), lèvre interne claire autour de l'écran.
+            t = fm["t"]
+            rad = max(3, t)
+            inset = max(1, t // 2)
+            d.rounded_rectangle([x, y, x + w - 1, y + h - 1], radius=rad,
+                                fill=(46, 46, 53, 255))
+            d.rounded_rectangle([x + inset, y + inset,
+                                 x + w - 1 - inset, y + h - 1 - inset],
+                                radius=max(2, rad - inset), fill=(27, 27, 32, 255))
+            d.rectangle([vx, vy, vx + vw - 1, vy + vh - 1], fill=(0, 0, 0, 0))
+            d.rectangle([vx - 1, vy - 1, vx + vw, vy + vh], outline=(98, 98, 108, 255))
+
+        elif FRAME_STYLE == "classic":
+            # UMD : cadre fin neutre cernant l'image.
+            f = max(2, fm["t"] // 2)
+            _render_border_colored(d, vx - f, vy - f, vw + 2 * f, vh + 2 * f,
+                                   _FRAME_NEUTRAL, f)
+
         elif FRAME_STYLE == "tally_border":
-            thick = max(4, int(round(g["m"]["size"] * 0.45)))
-            _render_border_colored(d, bx, by, bw, bh,
-                                   _TALLY_BORDER_RGBA[_window_tally_dominant(i)], thick)
-        else:  # "none"
+            # Bordure épaisse TOUJOURS visible (neutre au repos), englobant l'onglet
+            # nom (zone mt - b au-dessus de l'image, cf. _frame_metrics).
+            b = fm["ml"]
+            band = max(0, fm["mt"] - b)
+            color = _TALLY_BORDER_RGBA[dom] if dom != "off" else _FRAME_NEUTRAL
+            _render_border_colored(d, vx - b, max(y, vy - band - b),
+                                   vw + 2 * b, vh + band + 2 * b, color, b)
+
+        elif FRAME_STYLE == "viewfinder":
+            # Équerres de viseur aux 4 coins (blanches au repos, couleur tally sinon).
+            bt = max(2, fm["t"] // 2)
+            gap = max(2, fm["t"] // 2)
+            color = _TALLY_BORDER_RGBA[dom] if dom != "off" else (225, 225, 232, 255)
+            arm = max(8, int(round(min(vw, vh) * 0.14)))
+            x0, y0 = vx - gap, vy - gap
+            x1, y1 = vx + vw - 1 + gap, vy + vh - 1 + gap
+            for cx, cy, sx, sy in ((x0, y0, 1, 1), (x1, y0, -1, 1),
+                                   (x0, y1, 1, -1), (x1, y1, -1, -1)):
+                ex, ey = cx + sx * arm, cy + sy * (bt - 1)
+                d.rectangle([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)],
+                            fill=color)
+                ex, ey = cx + sx * (bt - 1), cy + sy * arm
+                d.rectangle([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)],
+                            fill=color)
+
+        elif FRAME_STYLE == "flat":
+            # Soulignement plein pleine largeur, collé au bas de la cellule.
+            color = _TALLY_BORDER_RGBA[dom] if dom != "off" else _FLAT_NEUTRAL
+            d.rectangle([vx, y + h - fm["t"], vx + vw - 1, y + h - 1], fill=color)
+
+        else:  # "none" — bordure globale historique
             if BORDER_W > 0:
                 for k in range(BORDER_W):
-                    d.rectangle([bx + k, by + k, bx + bw - 1 - k, by + bh - 1 - k],
+                    d.rectangle([vx + k, vy + k, vx + vw - 1 - k, vy + vh - 1 - k],
                                 outline=BORDER_COLOR)
     return rgba_to_yuv(img)
 
@@ -845,11 +1026,16 @@ def render_meters(now):
         if mw >= w or mh < 20:
             continue
         inside = bool(cfg.get("meter_inside"))
+        # Bande VU posée DANS l'habillage (entre la marge du cadre et l'image),
+        # alignée verticalement sur la zone disponible (ay/ah).
+        fm = g.get("fm")
+        ml = fm["ml"] if fm else 0
+        mr = fm["mr"] if fm else 0
         if cfg.get("meter_position") == "left":
-            mx = x + 2
+            mx = x + ml + 2
         else:
-            mx = x + w - mw - 2
-        my = y + 2
+            mx = x + w - mr - mw - 2
+        my = g["ay"] + 2
         opacity_pct = int(cfg.get("meter_opacity") or 70)
         if not inside:
             opacity_pct = 100  # hors image = totalement opaque (zone réservée)

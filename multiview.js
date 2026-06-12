@@ -168,9 +168,16 @@ async function loadVideoSources() {
 }
 
 async function chargerMw(vmid) {
-    await Promise.all([loadAllContainers(), loadVideoSources()]);
-    const r = await fetch('/api/containers/' + vmid + '/config');
-    const c = await r.json();
+    let c;
+    try {
+        await Promise.all([loadAllContainers(), loadVideoSources()]);
+        const r = await fetch('/api/containers/' + vmid + '/config');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        c = await r.json();
+    } catch(e) {
+        mwFlash('Chargement du multiview impossible. Resélectionnez l\'instance ou vérifiez le container.');
+        return;
+    }
     let dc = null;
     try { dc = c.deploy_config ? JSON.parse(c.deploy_config) : null; } catch(e) {}
     if (!dc || dc.type !== 'multiview') {
@@ -227,7 +234,9 @@ function renderEditor(hostname) {
     document.getElementById('ed_genlock').checked       = p.genlock !== false;
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     document.getElementById('ed_snap').checked          = snapEnabled;
-    document.getElementById('ed_paste_btn').disabled    = !reglagesClipboard;
+    // Réglages de sortie (colonne latérale) : visibles dès qu'une instance est chargée
+    const settings = document.getElementById('mw-settings');
+    if (settings) settings.hidden = false;
 
     resizeCanvas();
     dessiner();
@@ -245,6 +254,14 @@ function onGlobalChange() {
     hotApplyStyle();
 }
 
+// Max entrées : redimensionne la banque localement (appliqué au prochain déploiement).
+function onMaxChange() {
+    if (!editorParams) return;
+    editorParams.max_inputs = Math.max(1, parseInt(document.getElementById('ed_max').value) || editorParams.max_inputs);
+    padBank();
+    dessiner();
+}
+
 function resizeCanvas() {
     const canvas = document.getElementById('ed_canvas');
     if (!canvas) return;
@@ -252,10 +269,17 @@ function resizeCanvas() {
     const h = editorParams.out_height;
     canvas.width  = w;
     canvas.height = h;
-    // Le canvas occupe toute la largeur de l'éditeur, conserve son ratio
-    canvas.style.width   = '100%';
-    canvas.style.height  = 'auto';
-    canvas.style.maxWidth = w + 'px'; // pas plus grand que la résolution native
+    // Taille d'affichage explicite : tient dans la largeur de l'éditeur ET dans
+    // ~65 % de la hauteur de fenêtre (sorties verticales/carrées), sans dépasser
+    // la résolution native. Le wrap (fit-content) colle au canvas : la surface
+    // sombre correspond exactement à la zone où l'on peut poser des fenêtres.
+    const wrap   = canvas.parentElement;
+    const availW = (wrap && wrap.parentElement && wrap.parentElement.clientWidth) || w;
+    const availH = Math.max(240, Math.round(window.innerHeight * 0.65));
+    const scale  = Math.min(1, availW / w, availH / h);
+    canvas.style.width  = Math.round(w * scale) + 'px';
+    canvas.style.height = 'auto';
+    canvas.style.maxWidth = '100%';
 }
 
 // ─── Banque d'entrées / PiP ──────────────────────────────────
@@ -332,7 +356,7 @@ function ajouterEntree() {
     // (sa source câblée éventuelle est conservée et réapparaît).
     const idx = editorParams.flux_config.findIndex(f => f.hidden);
     if (idx < 0) {
-        mwFlash(`Limite max_inputs = ${editorParams.max_inputs} atteinte.`);
+        mwFlash(`Banque pleine : les ${editorParams.max_inputs} entrées sont déjà à l'image (augmentez « Max entrées »).`);
         return;
     }
     const f = editorParams.flux_config[idx];
@@ -408,13 +432,13 @@ function refreshEntryPanel() {
     const opts = videoSources.map(s => {
         const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
                             : `${s.hostname} → ${s.shm}`;
-        return `<option value="/dev/shm/${s.shm}">${txt}</option>`;
+        return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
     });
     // PiP vide : option explicite « aucune source » en tête (path = '').
     opts.unshift('<option value="">— aucune source —</option>');
     // Inclure le path actuel même si introuvable dans la liste (container détruit p.ex.).
-    if (f.path && !opts.some(o => o.includes(`value="${f.path}"`))) {
-        opts.splice(1, 0, `<option value="${f.path}">${f.path}</option>`);
+    if (f.path && !videoSources.some(s => '/dev/shm/' + s.shm === f.path)) {
+        opts.splice(1, 0, `<option value="${escapeHtml(f.path)}">${escapeHtml(f.path)}</option>`);
     }
     pathSel.innerHTML = opts.join('');
     pathSel.value = f.path || '';
@@ -470,52 +494,241 @@ function mwFlash(msg) {
     t.textContent = msg;
     t.classList.add('visible');
     clearTimeout(mwFlash._t);
-    mwFlash._t = setTimeout(() => t.classList.remove('visible'), 2200);
+    mwFlash._t = setTimeout(() => t.classList.remove('visible'), 2600);
 }
 
 function copierReglagesFenetre() {
     const primary = primaryIdx();
-    if (!editorParams || primary < 0) { mwFlash('Sélectionnez une fenêtre à copier'); return; }
+    if (!editorParams || primary < 0) { mwFlash('Sélectionnez une fenêtre à copier.'); return; }
     const f = editorParams.flux_config[primary];
     reglagesClipboard = {};
     COPY_FIELDS.forEach(k => { if (f[k] !== undefined) reglagesClipboard[k] = f[k]; });
-    const btn = document.getElementById('ed_paste_btn');
-    if (btn) btn.disabled = false;
-    mwFlash('Réglages copiés (hors position) — sélectionnez les fenêtres cibles puis Coller');
+    updateToolbar();
+    mwFlash('Réglages copiés (hors position). Sélectionnez les fenêtres cibles puis Coller.');
 }
 
 function collerReglagesFenetre() {
-    if (!editorParams || !reglagesClipboard) { mwFlash('Rien à coller — copiez d\'abord une fenêtre'); return; }
-    if (selectedIdxs.length === 0) { mwFlash('Sélectionnez une ou plusieurs fenêtres cibles'); return; }
+    if (!editorParams || !reglagesClipboard) { mwFlash('Rien à coller : copiez d\'abord les réglages d\'une fenêtre.'); return; }
+    if (selectedIdxs.length === 0) { mwFlash('Sélectionnez une ou plusieurs fenêtres cibles.'); return; }
     selectedIdxs.forEach(i => {
         const f = editorParams.flux_config[i];
         if (f) Object.assign(f, reglagesClipboard);
     });
     dessiner();
-    mwFlash(`Réglages collés dans ${selectedIdxs.length} fenêtre(s)`);
+    selectedIdxs.forEach(i => hotApplyWindow(i));
+    mwFlash(`Réglages collés dans ${selectedIdxs.length} fenêtre(s).`);
 }
 
 // ─── Dessin ──────────────────────────────────────────────────
+
+// Tokens thème pour le canvas : lus une fois par dessiner() (pas à chaque frame de
+// drag). Fallbacks = valeurs du thème default si le token manque (vieil orchestrateur).
+let _tok = null;
+function _readTokens() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (name, fb) => (cs.getPropertyValue(name) || '').trim() || fb;
+    _tok = {
+        canvasBg: v('--canvas-bg', '#0d1117'),
+        grid:     v('--border-soft', '#21262d'),
+        muted:    v('--text-muted', '#8b949e'),
+        accent:   v('--accent', '#7aa2c8'),
+        warning:  v('--status-warning-fg', '#c4a667'),
+        overlay:  v('--overlay-accent', '#c49fd8'),
+    };
+    return _tok;
+}
+
+// Miroir de _frame_metrics (script.py) : marges réservées par l'habillage
+// (frame_style) autour de l'image. t = 3 % du petit côté, borné 3..24 px.
+function mwFrameMetrics(f) {
+    const w = f.w, h = f.h;
+    const labelSize = Math.max(6, editorParams.label_size || 14);
+    const effRaw = f.label_proportional
+        ? Math.max(6, Math.round(labelSize * (2 * h / editorParams.out_height)))
+        : Math.max(6, Math.min(labelSize, Math.floor(h * 0.30)));
+    const band = Math.min(Math.max(14, Math.round(effRaw * 2)), Math.max(8, Math.floor(h * 0.40)));
+    const t = Math.max(3, Math.min(24, Math.round(Math.min(w, h) * 0.03)));
+    const barOn = !!(f.show_label || f.show_tally);
+    const style = editorParams.frame_style || 'none';
+    let ml = 0, mt = 0, mr = 0, mb = 0;
+    if (style === 'stylized') {              // Moniteur : bezel + menton nom/LED
+        const bez = Math.max(4, Math.round(t * 2.2));
+        ml = mr = mt = bez;
+        mb = bez + (barOn ? band : 0);
+    } else if (style === 'classic') {        // UMD : cadre fin + boîtier sous l'image
+        const fr = Math.max(2, Math.floor(t / 2));
+        ml = mr = mt = fr;
+        mb = fr + (barOn ? band + Math.max(2, Math.floor(t / 2)) : 0);
+    } else if (style === 'tally_border') {   // cadre épais + onglet nom
+        const b = Math.max(4, Math.round(t * 1.5));
+        ml = mr = mb = b;
+        mt = b + (f.show_label ? band : 0);
+    } else if (style === 'viewfinder') {     // équerres + chip nom
+        ml = mr = mb = t;
+        mt = f.show_label ? band + 4 : t;
+    } else if (style === 'flat') {           // nom + soulignement
+        mb = t + (f.show_label ? band + 2 : 0);
+    }
+    if (h - mt - mb < 16) {
+        mb = Math.max(0, Math.min(mb, h - 16 - mt));
+        if (h - mt - mb < 16) mt = Math.max(0, h - 16 - mb);
+    }
+    if (w - ml - mr < 16) {
+        const side = Math.max(0, Math.floor((w - 16) / 2));
+        ml = Math.min(ml, side); mr = Math.min(mr, side);
+    }
+    return { t, ml, mt, mr, mb, band };
+}
+
+function _roundRectPath(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    else ctx.rect(x, y, w, h);
+}
+
+// Corps du bezel « Moniteur » : dessiné AVANT le rectangle vidéo factice
+// (les autres habillages n'occupent que les marges → dessinés après).
+function drawDressingBack(ctx, f, fm, style) {
+    if (style !== 'stylized') return;
+    const rad = Math.max(3, fm.t);
+    const inset = Math.max(1, Math.floor(fm.t / 2));
+    ctx.save();
+    ctx.fillStyle = '#2e2e35';
+    _roundRectPath(ctx, f.x, f.y, f.w, f.h, rad);
+    ctx.fill();
+    ctx.fillStyle = '#1b1b20';
+    _roundRectPath(ctx, f.x + inset, f.y + inset, f.w - 2 * inset, f.h - 2 * inset,
+                   Math.max(2, rad - inset));
+    ctx.fill();
+    ctx.restore();
+}
+
+// Habillage schématique (état tally « repos ») — miroir visuel de
+// render_border / render_static / render_dynamic (script.py).
+function drawDressing(ctx, f, fm, style, vx, vy, vw, vh, eff) {
+    const x = f.x, y = f.y, w = f.w, h = f.h;
+    const name = computeDisplayName(f);
+    ctx.save();
+    ctx.font = `bold ${eff}px monospace`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    if (style === 'stylized') {
+        ctx.strokeStyle = '#62626a'; ctx.lineWidth = 1;
+        ctx.strokeRect(vx - 0.5, vy - 0.5, vw + 1, vh + 1);
+        const cy = y + h - fm.mb / 2;
+        if (f.show_label) {
+            ctx.fillStyle = '#a8a8b2'; ctx.textAlign = 'center';
+            ctx.fillText(name, x + w / 2, cy);
+        }
+        if (f.show_tally) {
+            const r = Math.max(3, Math.min(Math.max(3, Math.floor(fm.band / 3)),
+                                           Math.round(eff * 0.45)));
+            ctx.fillStyle = '#3a3a40';
+            [x + fm.ml + r + 4, x + w - fm.mr - r - 4].forEach(cx => {
+                ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+            });
+        }
+
+    } else if (style === 'classic') {
+        const fr = Math.max(2, Math.floor(fm.t / 2));
+        ctx.strokeStyle = '#46464e'; ctx.lineWidth = fr;
+        ctx.strokeRect(vx - fr / 2, vy - fr / 2, vw + fr, vh + fr);
+        if (f.show_label || f.show_tally) {
+            const bw = Math.max(24, Math.min(Math.floor(w * 0.55), w - 60));
+            const bx = x + (w - bw) / 2;
+            const by = y + h - fm.band;
+            if (f.show_label) {
+                ctx.fillStyle = '#08080a'; ctx.fillRect(bx, by, bw, fm.band - 1);
+                ctx.strokeStyle = '#82828a'; ctx.lineWidth = 1;
+                ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, fm.band - 2);
+                ctx.fillStyle = '#f0f0f5'; ctx.textAlign = 'center';
+                ctx.fillText(name, bx + bw / 2, by + fm.band / 2);
+            }
+            if (f.show_tally) {
+                const sz = Math.max(4, Math.round(eff * 1.4));
+                const ty = by + (fm.band - sz) / 2;
+                ctx.fillStyle = '#28282c'; ctx.strokeStyle = '#cdcdd4'; ctx.lineWidth = 1;
+                ctx.fillRect(bx - 6 - sz, ty, sz, sz); ctx.strokeRect(bx - 6 - sz, ty, sz, sz);
+                ctx.fillRect(bx + bw + 6, ty, sz, sz); ctx.strokeRect(bx + bw + 6, ty, sz, sz);
+            }
+        }
+
+    } else if (style === 'tally_border') {
+        const b = fm.ml;
+        const band = Math.max(0, fm.mt - b);
+        ctx.strokeStyle = '#46464e'; ctx.lineWidth = b;
+        ctx.strokeRect(vx - b / 2, vy - band - b / 2, vw + b, vh + band + b);
+        if (f.show_label) {
+            const tabW = Math.max(24, Math.min(vw, ctx.measureText(name).width + 16));
+            ctx.fillStyle = '#323238';
+            ctx.fillRect(vx, vy - band, tabW, band);
+            ctx.fillStyle = '#f5f5fa';
+            ctx.fillText(name, vx + 6, vy - band / 2);
+        }
+
+    } else if (style === 'viewfinder') {
+        const bt = Math.max(2, Math.floor(fm.t / 2));
+        const gap = bt;
+        const arm = Math.max(8, Math.round(Math.min(vw, vh) * 0.14));
+        ctx.fillStyle = '#e1e1e8';
+        const x0 = vx - gap, y0 = vy - gap, x1 = vx + vw + gap, y1 = vy + vh + gap;
+        [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]
+            .forEach(([cx, cy, sx, sy]) => {
+                ctx.fillRect(Math.min(cx, cx + sx * arm), Math.min(cy, cy + sy * bt), arm, bt);
+                ctx.fillRect(Math.min(cx, cx + sx * bt), Math.min(cy, cy + sy * arm), bt, arm);
+            });
+        if (f.show_label) {
+            const dotR = f.show_tally ? Math.max(2, Math.round(eff * 0.3)) : 0;
+            const chipH = fm.band;
+            const chipW = Math.max(20, Math.min(w - 8,
+                ctx.measureText(name).width + 16 + (dotR ? dotR * 2 + 4 : 0)));
+            ctx.fillStyle = 'rgba(10,10,12,0.85)';
+            _roundRectPath(ctx, vx, y + 1, chipW, chipH, chipH / 2);
+            ctx.fill();
+            let tx = vx + 8;
+            if (dotR) {
+                ctx.fillStyle = '#5a5a62';
+                ctx.beginPath(); ctx.arc(tx + dotR, y + 1 + chipH / 2, dotR, 0, Math.PI * 2); ctx.fill();
+                tx += dotR * 2 + 4;
+            }
+            ctx.fillStyle = '#f0f0f5';
+            ctx.fillText(name, tx, y + 1 + chipH / 2);
+        }
+
+    } else if (style === 'flat') {
+        ctx.fillStyle = '#5a5a62';
+        ctx.fillRect(vx, y + h - fm.t, vw, fm.t);
+        if (f.show_label) {
+            ctx.fillStyle = '#ebebf0';
+            ctx.fillText(name, vx + 2, y + h - fm.t - 2 - fm.band / 2);
+        }
+    }
+    ctx.restore();
+}
 
 function dessiner() {
     renderEntryTable();
     refreshEntryPanel();
     refreshOverlayPanel();
+    updateToolbar();
+    _readTokens();
+    drawCanvas();
+}
 
+// Peinture du canvas seule : appelée à chaque frame de drag — le DOM (table,
+// panneaux, dropdown source) n'est resynchronisé qu'aux changements de sélection.
+function drawCanvas() {
     const canvas = document.getElementById('ed_canvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
+    const t = _tok || _readTokens();
 
-    const _dcs = getComputedStyle(document.documentElement);
-    const canvasBg   = _dcs.getPropertyValue('--canvas-bg').trim()   || '#0d1117';
-    const gridColor  = _dcs.getPropertyValue('--border-soft').trim() || '#21262d';
-    const mutedColor = _dcs.getPropertyValue('--text-muted').trim()  || '#8b949e';
-
-    ctx.fillStyle = canvasBg;
+    ctx.fillStyle = t.canvasBg;
     ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = gridColor;
+    ctx.strokeStyle = t.grid;
     ctx.lineWidth = 1;
     for (let x = 0; x < w; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
     for (let y = 0; y < h; y += 64) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
@@ -544,31 +757,53 @@ function dessiner() {
         const eff        = Math.max(6, Math.min(effRaw, BAR_H - 4));
         const TALLY_SIZE = Math.max(4, Math.min(Math.round(eff * 1.4), BAR_H - 2));
         const TALLY_PAD  = Math.max(2, Math.round(eff * 0.35));
-        const videoH = (overlayBelow && barOn) ? Math.max(2, f.h - BAR_H) : f.h;
-        // Bandeau sous l'image : largeur réduite au même ratio (pillarbox centré,
-        // pas d'étirement) — même géométrie que _video_rect (script.py).
-        const videoW = videoH < f.h ? Math.max(2, Math.round(f.w * videoH / f.h)) : f.w;
-        const videoX = f.x + Math.floor((f.w - videoW) / 2);
+        // Habillage (frame_style) : marges réservées AUTOUR de l'image — miroir de
+        // _frame_metrics/_video_rect (script.py). Le bandeau legacy (overlay_below)
+        // ne s'applique qu'au style 'none'.
+        const style = editorParams.frame_style || 'none';
+        const fm = style !== 'none' ? mwFrameMetrics(f) : null;
+        let videoX, videoY, videoW, videoH;
+        if (fm) {
+            const availW = Math.max(2, f.w - fm.ml - fm.mr);
+            const availH = Math.max(2, f.h - fm.mt - fm.mb);
+            const sc = Math.min(availW / f.w, availH / f.h);
+            videoW = Math.max(2, Math.round(f.w * sc));
+            videoH = Math.max(2, Math.round(f.h * sc));
+            videoX = f.x + fm.ml + Math.floor((availW - videoW) / 2);
+            videoY = f.y + fm.mt + Math.floor((availH - videoH) / 2);
+        } else {
+            videoY = f.y;
+            videoH = (overlayBelow && barOn) ? Math.max(2, f.h - BAR_H) : f.h;
+            // Bandeau sous l'image : largeur réduite au même ratio (pillarbox centré,
+            // pas d'étirement) — même géométrie que _video_rect (script.py).
+            videoW = videoH < f.h ? Math.max(2, Math.round(f.w * videoH / f.h)) : f.w;
+            videoX = f.x + Math.floor((f.w - videoW) / 2);
+        }
+
+        if (fm) drawDressingBack(ctx, f, fm, style);
 
         ctx.globalAlpha = sel ? 0.8 : 0.4;
         ctx.fillStyle   = f.color;
-        ctx.fillRect(videoX, f.y, videoW, videoH);
+        ctx.fillRect(videoX, videoY, videoW, videoH);
         ctx.globalAlpha = 1;
 
-        if (borderW > 0) {
+        if (!fm && borderW > 0) {
             ctx.strokeStyle = borderColor;
             ctx.lineWidth   = borderW;
             ctx.strokeRect(f.x + borderW/2, f.y + borderW/2,
                            f.w - borderW, f.h - borderW);
         }
 
-        ctx.strokeStyle = isPrimary ? '#ffffff' : (sel ? '#58a6ff' : f.color);
+        ctx.strokeStyle = isPrimary ? '#ffffff' : (sel ? t.accent : f.color);
         ctx.lineWidth   = sel ? 2 : 1;
         ctx.setLineDash(isPrimary ? [6, 4] : (sel ? [3, 3] : []));
         ctx.strokeRect(f.x, f.y, f.w, f.h);
         ctx.setLineDash([]);
 
-        if (barOn) {
+        if (fm) {
+            // Habillage v0.12 : aperçu schématique fidèle (cadre/bezel/UMD/chip/trait).
+            drawDressing(ctx, f, fm, style, videoX, videoY, videoW, videoH, eff);
+        } else if (barOn) {
             const barTop = f.y + f.h - BAR_H;
             ctx.fillStyle = 'rgba(0,0,0,0.7)';
             ctx.fillRect(f.x, barTop, f.w, BAR_H);
@@ -609,11 +844,11 @@ function dessiner() {
             const meterH = videoH - 4;
             let mx;
             if (f.meter_position === 'left') {
-                mx = f.x + 2;
+                mx = f.x + (fm ? fm.ml : 0) + 2;
             } else {
-                mx = f.x + f.w - meterW - 2;
+                mx = f.x + f.w - (fm ? fm.mr : 0) - meterW - 2;
             }
-            const my = f.y + 2;
+            const my = videoY + 2;
             const alpha = f.meter_inside ? (f.meter_opacity / 100) : 0.95;
             // Fond du meter
             ctx.fillStyle = `rgba(0,0,0,${alpha})`;
@@ -642,12 +877,12 @@ function dessiner() {
         // Badge numéro (centre du slot)
         const badgeR = Math.min(28, Math.max(14, Math.min(f.w, f.h) / 6));
         const cx = f.x + f.w / 2;
-        const cy = f.y + (videoH) / 2;
-        ctx.fillStyle = isPrimary ? '#ffffff' : (sel ? '#58a6ff' : f.color);
+        const cy = videoY + videoH / 2;
+        ctx.fillStyle = isPrimary ? '#ffffff' : (sel ? t.accent : f.color);
         ctx.beginPath();
         ctx.arc(cx, cy, badgeR, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#0d1117';
+        ctx.fillStyle = t.canvasBg;
         ctx.font = `bold ${Math.round(badgeR * 1.1)}px monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -655,9 +890,9 @@ function dessiner() {
         ctx.textAlign = 'start';
         ctx.textBaseline = 'alphabetic';
 
-        ctx.fillStyle = mutedColor;
+        ctx.fillStyle = t.muted;
         ctx.font = '11px monospace';
-        ctx.fillText(`${f.w}×${f.h}`, f.x + 4, f.y + 14);
+        ctx.fillText(`${f.w}×${f.h}`, videoX + 4, videoY + 14);
 
         if (isPrimary) {
             ctx.fillStyle = '#ffffff';
@@ -671,7 +906,7 @@ function dessiner() {
 
     // Lignes guides de snap (pendant le drag)
     if (dragMode && snapGuides.length) {
-        ctx.strokeStyle = '#f97316';
+        ctx.strokeStyle = t.warning;
         ctx.lineWidth   = 1;
         ctx.setLineDash([4, 4]);
         snapGuides.forEach(g => {
@@ -683,7 +918,7 @@ function dessiner() {
         ctx.setLineDash([]);
     }
 
-    ctx.fillStyle = mutedColor;
+    ctx.fillStyle = t.muted;
     ctx.font = '11px monospace';
     ctx.fillText(`${w} × ${h}`, 8, h - 8);
 }
@@ -697,10 +932,10 @@ function renderEntryTable() {
         const isP = i === primary;
         const cls = (isP ? 'is-primary' : (sel ? 'is-selected' : '')) + (f.hidden ? ' is-hidden' : '');
         return `
-        <tr class="mw-entry-row ${cls}" onclick="selectEntry(${i}, event)">
+        <tr class="mw-entry-row ${cls}" tabindex="0" onclick="selectEntry(${i}, event)" onkeydown="entryRowKey(event, ${i})">
             <td><span class="mw-entry-color" style="background:${f.color}"></span>${i + 1}</td>
-            <td>${sourceHostname(f) || '—'}</td>
-            <td class="mw-entry-path">${f.path}</td>
+            <td>${escapeHtml(sourceHostname(f)) || '—'}</td>
+            <td class="mw-entry-path">${escapeHtml(f.path)}</td>
             <td>${f.hidden ? '—' : `${f.x}, ${f.y}`}</td>
             <td>${f.hidden ? '—' : `${f.w}×${f.h}`}</td>
             <td><input type="checkbox" class="ios-toggle" ${f.hidden ? '' : 'checked'}
@@ -727,6 +962,11 @@ function getCanvasPos(e) {
 }
 
 function canvasMouseDown(e) {
+    // Pointer Events : capture du geste (souris, stylet ou doigt) jusqu'au relâchement.
+    if (e.pointerId !== undefined && e.target.setPointerCapture) {
+        try { e.target.setPointerCapture(e.pointerId); } catch(_) {}
+    }
+    e.preventDefault();
     const pos = getCanvasPos(e);
     // 1. Overlays de premier plan (au-dessus de la vidéo)
     let hit = hitOverlay(pos, 'foreground');
@@ -832,7 +1072,8 @@ function canvasMouseMove(e) {
         f.w = nw % 2 === 0 ? nw : nw - 1;
         f.h = nh % 2 === 0 ? nh : nh - 1;
     }
-    dessiner();
+    drawCanvas();
+    syncGeomFields();
 }
 
 function overlayMouseMove(e) {
@@ -850,7 +1091,8 @@ function overlayMouseMove(e) {
         o.w = nw % 2 === 0 ? nw : nw - 1;
         o.h = nh % 2 === 0 ? nh : nh - 1;
     }
-    dessiner();
+    drawCanvas();
+    syncGeomFields();
 }
 
 function canvasMouseUp() {
@@ -861,6 +1103,41 @@ function canvasMouseUp() {
     }
     dragMode = null; snapGuides = []; dessiner();
     selectedIdxs.forEach(idx => hotApplyWindow(idx));
+}
+
+// Pendant un drag : ne resynchronise que les champs géométrie (pas de rebuild DOM).
+function syncGeomFields() {
+    if (dragOverlay && selectedOverlay >= 0) {
+        const o = editorParams.overlays[selectedOverlay];
+        if (!o) return;
+        _ovSetVal('ov_x', o.x); _ovSetVal('ov_y', o.y);
+        _ovSetVal('ov_w', o.w); _ovSetVal('ov_h', o.h);
+        return;
+    }
+    const p = primaryIdx();
+    if (p < 0) return;
+    const f = editorParams.flux_config[p];
+    [['ed_x', f.x], ['ed_y', f.y], ['ed_w', f.w], ['ed_h', f.h]].forEach(([id, v]) => {
+        const e = document.getElementById(id);
+        if (e) e.value = v;
+    });
+}
+
+// Boutons d'outils : actifs selon le nombre de fenêtres sélectionnées (data-min).
+function updateToolbar() {
+    const n = selectedIdxs.length;
+    document.querySelectorAll('#mw-toolbar .tool-btn[data-min]').forEach(b => {
+        b.disabled = n < parseInt(b.dataset.min);
+    });
+    const paste = document.getElementById('ed_paste_btn');
+    if (paste) paste.disabled = !reglagesClipboard || n === 0;
+}
+
+// Sélection d'une entrée au clavier depuis le tableau (Entrée / Espace).
+function entryRowKey(ev, i) {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    ev.preventDefault();
+    selectEntry(i, ev);
 }
 
 function hotApplyWindow(idx) {
@@ -1023,6 +1300,7 @@ function drawImageFit(ctx, img, o) {
 }
 
 function drawOverlayLayer(ctx, layer) {
+    const t = _tok || _readTokens();
     (editorParams.overlays || []).forEach((o, i) => {
         const isBg = (o.kind === 'image' && o.layer === 'background');
         if (layer === 'background' ? !isBg : isBg) return;
@@ -1035,9 +1313,9 @@ function drawOverlayLayer(ctx, layer) {
                 drawImageFit(ctx, img, o);
                 ctx.globalAlpha = 1;
             } else {
-                ctx.globalAlpha = 0.45; ctx.fillStyle = '#3a2f44';
+                ctx.globalAlpha = 0.22; ctx.fillStyle = t.overlay;
                 ctx.fillRect(o.x, o.y, o.w, o.h); ctx.globalAlpha = 1;
-                ctx.fillStyle = '#d7c6e6'; ctx.font = '12px monospace';
+                ctx.fillStyle = t.overlay; ctx.font = '12px monospace';
                 ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
                 ctx.fillText(o.image_name || '(importer une image)', o.x + o.w / 2, o.y + o.h / 2);
                 ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
@@ -1061,12 +1339,12 @@ function drawOverlayLayer(ctx, layer) {
             ctx.restore();
             ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
         }
-        ctx.strokeStyle = sel ? '#ffffff' : '#d24cff';
+        ctx.strokeStyle = sel ? '#ffffff' : t.overlay;
         ctx.lineWidth = sel ? 2 : 1;
         ctx.setLineDash(sel ? [6, 4] : [4, 3]);
         ctx.strokeRect(o.x, o.y, o.w, o.h);
         ctx.setLineDash([]);
-        ctx.fillStyle = '#d24cff'; ctx.font = '10px monospace';
+        ctx.fillStyle = t.overlay; ctx.font = '10px monospace';
         ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
         ctx.fillText(o.kind + (isBg ? ' (fond)' : ''), o.x + 3, o.y + 11);
         if (sel) {
@@ -1206,7 +1484,10 @@ function chronoAction(action) {
     fetch(`/api/containers/${editorVmid}/plugin/chrono`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ id: o.id, action })
-    }).then(() => mwFlash('Chrono : ' + action)).catch(() => {});
+    }).then(() => {
+        const lbl = ({start: 'démarré', stop: 'arrêté', reset: 'réinitialisé'})[action] || action;
+        mwFlash('Chrono ' + lbl + '.');
+    }).catch(() => mwFlash('Chrono injoignable (script arrêté ?).'));
 }
 
 // ── Import d'image depuis l'ordinateur (overlay image) ──
@@ -1343,6 +1624,10 @@ function computeSnapResize(idx, x, y, w, h, ratio) {
 
 async function deployerEditor() {
     if (editorVmid === null) return;
+    // Sérialise les déploiements : un appel pendant un POST en cours est rejoué à la
+    // fin (jamais deux deploys concurrents, jamais un dernier changement perdu).
+    if (deployerEditor._busy) { deployerEditor._pending = true; return; }
+    deployerEditor._busy = true;
 
     // Lit les champs globaux au cas où ils n'auraient pas déclenché onchange
     editorParams.max_inputs    = parseInt(document.getElementById('ed_max').value) || editorParams.max_inputs;
@@ -1394,18 +1679,29 @@ async function deployerEditor() {
         tsl_port:      editorParams.tsl_port ?? 4801
     };
 
-    const r = await fetch('/api/containers/' + editorVmid + '/deploy', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({type: 'multiview', params, path: '/opt/script/main.py'})
-    });
-    if (r.ok) {
-        const btns = document.querySelectorAll('#mw-editor .btn-orange');
-        btns.forEach(b => { b.textContent = 'Déployé'; setTimeout(() => b.textContent = 'Déployer', 1500); });
+    const btn = document.getElementById('ed_deploy_btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Déploiement…'; }
+    let r = null;
+    try {
+        r = await fetch('/api/containers/' + editorVmid + '/deploy', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({type: 'multiview', params, path: '/opt/script/main.py'})
+        });
+    } catch(e) {}
+    if (btn) { btn.disabled = false; btn.textContent = 'Déployer'; }
+    if (r && r.ok) {
+        if (btn) {
+            btn.textContent = 'Déployé ✓';
+            clearTimeout(deployerEditor._t);
+            deployerEditor._t = setTimeout(() => { btn.textContent = 'Déployer'; }, 1500);
+        }
         // Refresh la sidebar générique (badge version + mini-aperçu) après déploiement
         if (window.tpLoadInstances) setTimeout(window.tpLoadInstances, 800);
     } else {
-        mwFlash('Erreur déploiement');
+        mwFlash('Échec du déploiement : la composition affichée n\'a pas été appliquée.');
     }
+    deployerEditor._busy = false;
+    if (deployerEditor._pending) { deployerEditor._pending = false; deployerEditor(); }
 }
 
 // ─── Outils d'alignement ─────────────────────────────────────
@@ -1439,11 +1735,12 @@ function aligner(mode) {
         f.y = Math.max(0, Math.min(out_h - f.h, f.y));
     });
     dessiner();
+    selectedIdxs.forEach(i => hotApplyWindow(i));
 }
 
 function matchSize(mode) {
     if (!editorParams || selectedIdxs.length < 2) {
-        mwFlash('Sélectionne au moins 2 fenêtres (la dernière sert de référence).');
+        mwFlash('Sélectionnez au moins 2 fenêtres (la dernière sert de référence).');
         return;
     }
     const fc = editorParams.flux_config;
@@ -1463,11 +1760,12 @@ function matchSize(mode) {
         }
     });
     dessiner();
+    selectedIdxs.forEach(i => hotApplyWindow(i));
 }
 
 function distribuer(axis) {
     if (!editorParams || selectedIdxs.length < 3) {
-        mwFlash('Sélectionne au moins 3 fenêtres pour distribuer.');
+        mwFlash('Sélectionnez au moins 3 fenêtres pour distribuer.');
         return;
     }
     const fc = editorParams.flux_config;
@@ -1486,6 +1784,7 @@ function distribuer(axis) {
         items.forEach((it, k) => { it.f.y = Math.round(y0 + step * k); });
     }
     dessiner();
+    selectedIdxs.forEach(i => hotApplyWindow(i));
 }
 
 // ─── Layouts (presets) ───────────────────────────────────────
@@ -1493,24 +1792,30 @@ function distribuer(axis) {
 let savedLayouts = [];
 
 async function rafraichirListeLayouts() {
+    const ul = document.getElementById('layout-saved-list');
     try {
         const r = await fetch('/api/layouts');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
         savedLayouts = await r.json();
-    } catch(e) { savedLayouts = []; }
-    const ul = document.getElementById('layout-saved-list');
+    } catch(e) {
+        savedLayouts = [];
+        if (ul) ul.innerHTML = '<li class="meta">Layouts indisponibles (erreur réseau).</li>';
+        return;
+    }
     if (!ul) return;
     if (savedLayouts.length === 0) {
-        ul.innerHTML = '<li class="meta">Aucun layout enregistré.</li>';
+        ul.innerHTML = '<li class="meta">Aucun layout enregistré. Composez un multiview puis « Enregistrer l\'éditeur actuel ».</li>';
         return;
     }
     ul.innerHTML = savedLayouts.map(l => `
         <li>
             <div><b>${escapeHtml(l.name)}</b></div>
-            <div class="meta">${l.created_at || ''} — ${(l.config.flux_config || []).length} entrées</div>
+            <div class="meta">${escapeHtml(l.created_at || '')} · ${(l.config.flux_config || []).length} entrées</div>
             <canvas data-layout-preview="${l.id}"></canvas>
             <div class="actions">
                 <button class="btn btn-blue" onclick="appliquerLayout(${l.id})">Appliquer</button>
-                <button class="btn btn-red"  onclick="supprimerLayout(${l.id}, '${escapeAttr(l.name)}')">Suppr</button>
+                <button class="btn" onclick="exporterLayout(${l.id})" title="Télécharger ce layout en .json (réimportable sur un autre orchestrateur)">Exporter</button>
+                <button class="btn btn-red" onclick="supprimerLayout(${l.id})">Supprimer</button>
             </div>
         </li>`).join('');
     savedLayouts.forEach(l => {
@@ -1524,16 +1829,13 @@ function escapeHtml(s) {
         '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
     }[c]));
 }
-function escapeAttr(s) {
-    return String(s || '').replace(/'/g, "\\'");
-}
 
 async function enregistrerLayout() {
     const nameEl = document.getElementById('layout-save-name');
     const name = (nameEl.value || '').trim();
-    if (!name) { mwFlash('Donne un nom au layout.'); return; }
+    if (!name) { mwFlash('Donnez un nom au layout.'); return; }
     if (!editorParams) {
-        mwFlash('Sélectionne d\'abord un multiview à éditer.');
+        mwFlash('Sélectionnez d\'abord un multiview à éditer.');
         return;
     }
     // Sérialise la config courante (sans champs internes color/ratio)
@@ -1557,21 +1859,25 @@ async function enregistrerLayout() {
             label_proportional: !!f.label_proportional
         }))
     };
-    const r = await fetch('/api/layouts', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name, config})
-    });
-    if (r.ok) {
+    let r = null;
+    try {
+        r = await fetch('/api/layouts', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, config})
+        });
+    } catch(e) {}
+    if (r && r.ok) {
         nameEl.value = '';
+        mwFlash(`Layout « ${name} » enregistré.`);
         rafraichirListeLayouts();
     } else {
-        mwFlash('Erreur enregistrement layout');
+        mwFlash('Enregistrement du layout impossible.');
     }
 }
 
 function appliquerLayout(lid) {
     if (!editorParams) {
-        mwFlash('Sélectionne d\'abord un multiview à éditer.');
+        mwFlash('Sélectionnez d\'abord un multiview à éditer.');
         return;
     }
     const l = savedLayouts.find(x => x.id === lid);
@@ -1612,10 +1918,64 @@ function appliquerLayout(lid) {
     deployerEditor();
 }
 
-async function supprimerLayout(lid, name) {
-    if (!confirm(`Supprimer le layout "${name}" ?`)) return;
-    const r = await fetch('/api/layouts/' + lid, {method: 'DELETE'});
-    if (r.ok) rafraichirListeLayouts();
+async function supprimerLayout(lid) {
+    const l = savedLayouts.find(x => x.id === lid);
+    if (!confirm(`Supprimer le layout « ${l ? l.name : lid} » ? Cette action est définitive.`)) return;
+    let r = null;
+    try { r = await fetch('/api/layouts/' + lid, {method: 'DELETE'}); } catch(e) {}
+    if (r && r.ok) rafraichirListeLayouts();
+    else mwFlash('Suppression du layout impossible.');
+}
+
+// ─── Import / export de layouts (fichier .json {name, config}) ──
+
+function importerLayout() {
+    const inp = document.getElementById('layout-import-input');
+    if (inp) inp.click();
+}
+
+function onImportLayoutFile(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onerror = () => { input.value = ''; mwFlash('Lecture du fichier impossible.'); };
+    reader.onload = async () => {
+        input.value = '';   // autorise la réimportation du même fichier
+        let data = null;
+        try { data = JSON.parse(reader.result); } catch(e) {}
+        const config = data && data.config;
+        const name = ((data && data.name) || file.name.replace(/\.json$/i, '')).trim();
+        if (!config || !Array.isArray(config.flux_config)) {
+            mwFlash('Fichier invalide : layout multiview attendu ({name, config}).');
+            return;
+        }
+        let r = null;
+        try {
+            r = await fetch('/api/layouts', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name, config})
+            });
+        } catch(e) {}
+        if (r && r.ok) {
+            mwFlash(`Layout « ${name} » importé.`);
+            rafraichirListeLayouts();
+        } else {
+            mwFlash('Import du layout impossible.');
+        }
+    };
+    reader.readAsText(file);
+}
+
+function exporterLayout(lid) {
+    const l = savedLayouts.find(x => x.id === lid);
+    if (!l) return;
+    const blob = new Blob([JSON.stringify({name: l.name, config: l.config}, null, 2)],
+                          {type: 'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (l.name || 'layout').replace(/[^\w.à-üÀ-Ü-]+/g, '_') + '.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
 }
 
 // Le montage est piloté par le shell générique Traitements (tpLoadInstances → tpMount →
