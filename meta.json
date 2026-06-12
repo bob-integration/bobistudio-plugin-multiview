@@ -1,8 +1,15 @@
 {
-  "version": "0.13.0",
+  "version": "0.14.0",
   "date": "2026-06-12",
   "changes": {
     "Nouveautés": [
+      "« NO SIGNAL » : quand la source d'une fenêtre est absente (shm manquant, entrée non câblée, erreur de lecture), la fenêtre affiche un panneau NO SIGNAL (fond gris sombre + texte centré) au lieu d'un noir muet indistinguable d'une vidéo noire légitime. Activé par défaut, désactivable (réglage « NO SIGNAL si source absente », hot-apply via /style).",
+      "Détection d'image FIGÉE : badge FREEZE ambre en haut à droite de la fenêtre quand le frame_index de la source n'avance plus depuis N secondes (réglage « Détection freeze », défaut 2 s, 0 = off, hot-apply). Suivi par entrée quasi gratuit (le header shm était déjà lu chaque frame pour la latence) ; rendu via une couche « info » cachée par signature — le coût PIL n'est payé qu'aux transitions d'état, pas par frame.",
+      "FORMAT SOURCE par fenêtre (mode ingénierie) : chip discret en bas à droite de l'image affichant le format DÉCLARÉ de la source en notation broadcast (ex. 1920×1080p25, 29.97 fractionnaire géré). Le format vient du câblage : l'orchestrateur résout in_fps/in_scan depuis le producteur du shm (_shm_fmt, étendu avec la cadence) aux mêmes points que in_w/in_h — zéro mesure côté script, info rafraîchie à chaque déploiement/hot-apply/recâblage. Désactivé par défaut (réglage « Format source par fenêtre », hot-apply).",
+      "MODÈLES DE GRILLE dans le composer : sélecteur « Modèles » dans la toolbar (1×1, 2×2, 3×3, 4×4, 1+5, 1+7, 2+8) qui applique la géométrie aux fenêtres de la banque dans l'ordre des indices — sources/labels/meters/tally conservés, surplus de banque masqué (source câblée préservée), application à chaud via /reconfigure (pas de coupure). Bords de grille partagés arrondis pairs : pas de trous ni de chevauchements.",
+      "i18n du composer : toute l'UI (control.html + messages runtime de multiview.js) est enrobée via le catalogue plugin.multiview.* (fr/en, ~185 clés) sur le modèle du plugin streamer — data-i18n/-title/-aria/-ph appliqués au montage, T() pour les chaînes construites en JS. Les textes incrustés DANS la vidéo (NO SIGNAL, FREEZE, chip format) restent en anglais broadcast, non traduits."
+    ],
+    "Nouveautés (0.13.0)": [
       "HORLOGE source ANC : nouvelle source de timecode pour l'outil Horloge — affiche le TIMECODE EMBARQUÉ (SMPTE ST 12M / RP188-ATC) d'une source 2110 reçue, choisie via un sélecteur d'entrée vidéo (« Source du timecode »). Le timecode est lu IN-BAND depuis le flux ANC (2110-40) de la source — dérivé du shm vidéo comme le sont déjà les VU-mètres audio — et décodé côté multiview (aucune modification du moteur de réception ni de l'en-tête vidéo). Drop-frame géré (séparateur ';'). Affiche '--:--:--:--' si la source n'a pas d'ANC/timecode (générateur, ffmpeg). Design aligné sur le SDK MXL (l'ancillaire = flux de données séparé) → survit à la future migration MXL sans réécriture."
     ],
     "Nouveautés (0.12.0)": [

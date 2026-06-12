@@ -1,3 +1,18 @@
+// ─── i18n ─────────────────────────────────────────────────────
+// Catalogue plugin.multiview.* (plugins/multiview/i18n/<lang>.json, fusionné par
+// app/i18n.py ; préfixe `plugin.` exposé côté JS par js_catalog → window.t()).
+const T = (k) => (window.t ? window.t(k) : k);
+
+// Traduit le HTML statique du composer (injecté par le shell Traitements) :
+// data-i18n (textContent), data-i18n-title, data-i18n-aria, data-i18n-ph.
+function mwApplyI18n(root) {
+    const r = root || document;
+    r.querySelectorAll('[data-i18n]').forEach(n => { n.textContent = T(n.dataset.i18n); });
+    r.querySelectorAll('[data-i18n-title]').forEach(n => { n.title = T(n.dataset.i18nTitle); });
+    r.querySelectorAll('[data-i18n-aria]').forEach(n => { n.setAttribute('aria-label', T(n.dataset.i18nAria)); });
+    r.querySelectorAll('[data-i18n-ph]').forEach(n => { n.placeholder = T(n.dataset.i18nPh); });
+}
+
 // ─── État global ──────────────────────────────────────────────
 
 let allContainers = [];
@@ -207,13 +222,13 @@ async function chargerMw(vmid) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         c = await r.json();
     } catch(e) {
-        mwFlash('Chargement du multiview impossible. Resélectionnez l\'instance ou vérifiez le container.');
+        mwFlash(T('plugin.multiview.flash_load_failed'));
         return;
     }
     let dc = null;
     try { dc = c.deploy_config ? JSON.parse(c.deploy_config) : null; } catch(e) {}
     if (!dc || dc.type !== 'multiview') {
-        mwFlash('Container sans config multiview.');
+        mwFlash(T('plugin.multiview.flash_not_multiview'));
         return;
     }
     editorVmid   = vmid;
@@ -227,6 +242,9 @@ async function chargerMw(vmid) {
         overlay_below: false,
         label_size: 14,
         frame_style: 'none',
+        show_no_signal: true,
+        freeze_detect_s: 2,
+        show_format: false,
         max_inputs: 4,
         genlock: true,
         tsl_port: 4801,
@@ -263,6 +281,9 @@ function renderEditor(hostname) {
     document.getElementById('ed_label_size').value      = p.label_size || 14;
     document.getElementById('ed_frame_style').value     = p.frame_style || 'none';
     document.getElementById('ed_overlay_below').checked = !!p.overlay_below;
+    document.getElementById('ed_show_no_signal').checked = p.show_no_signal !== false;
+    document.getElementById('ed_freeze_detect').value    = p.freeze_detect_s ?? 2;
+    document.getElementById('ed_show_format').checked    = !!p.show_format;
     document.getElementById('ed_genlock').checked       = p.genlock !== false;
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     document.getElementById('ed_snap').checked          = snapEnabled;
@@ -282,6 +303,9 @@ function onGlobalChange() {
     editorParams.overlay_below = document.getElementById('ed_overlay_below').checked;
     editorParams.label_size    = Math.max(6, parseInt(document.getElementById('ed_label_size').value) || 14);
     { const fs = document.getElementById('ed_frame_style'); if (fs) editorParams.frame_style = fs.value; }
+    editorParams.show_no_signal  = document.getElementById('ed_show_no_signal').checked;
+    editorParams.freeze_detect_s = Math.max(0, parseFloat(document.getElementById('ed_freeze_detect').value) || 0);
+    editorParams.show_format     = document.getElementById('ed_show_format').checked;
     dessiner();
     hotApplyStyle();
 }
@@ -391,7 +415,7 @@ function ajouterEntree() {
     // (sa source câblée éventuelle est conservée et réapparaît).
     const idx = editorParams.flux_config.findIndex(f => f.hidden);
     if (idx < 0) {
-        mwFlash(`Banque pleine : les ${editorParams.max_inputs} entrées sont déjà à l'image (augmentez « Max entrées »).`);
+        mwFlash(T('plugin.multiview.flash_bank_full').replace('{n}', editorParams.max_inputs));
         return;
     }
     const f = editorParams.flux_config[idx];
@@ -471,7 +495,7 @@ function refreshEntryPanel() {
         return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
     });
     // PiP vide : option explicite « aucune source » en tête (path = '').
-    opts.unshift('<option value="">— aucune source —</option>');
+    opts.unshift('<option value="">' + escapeHtml(T('plugin.multiview.no_source_option')) + '</option>');
     // Inclure le path actuel même si introuvable dans la liste (container détruit p.ex.).
     if (f.path && !videoSources.some(s => '/dev/shm/' + s.shm === f.path)) {
         opts.splice(1, 0, `<option value="${escapeHtml(f.path)}">${escapeHtml(f.path)}</option>`);
@@ -539,24 +563,24 @@ function mwFlash(msg) {
 
 function copierReglagesFenetre() {
     const primary = primaryIdx();
-    if (!editorParams || primary < 0) { mwFlash('Sélectionnez une fenêtre à copier.'); return; }
+    if (!editorParams || primary < 0) { mwFlash(T('plugin.multiview.flash_select_copy')); return; }
     const f = editorParams.flux_config[primary];
     reglagesClipboard = {};
     COPY_FIELDS.forEach(k => { if (f[k] !== undefined) reglagesClipboard[k] = f[k]; });
     updateToolbar();
-    mwFlash('Réglages copiés (hors position). Sélectionnez les fenêtres cibles puis Coller.');
+    mwFlash(T('plugin.multiview.flash_copied'));
 }
 
 function collerReglagesFenetre() {
-    if (!editorParams || !reglagesClipboard) { mwFlash('Rien à coller : copiez d\'abord les réglages d\'une fenêtre.'); return; }
-    if (selectedIdxs.length === 0) { mwFlash('Sélectionnez une ou plusieurs fenêtres cibles.'); return; }
+    if (!editorParams || !reglagesClipboard) { mwFlash(T('plugin.multiview.flash_nothing_to_paste')); return; }
+    if (selectedIdxs.length === 0) { mwFlash(T('plugin.multiview.flash_select_targets')); return; }
     selectedIdxs.forEach(i => {
         const f = editorParams.flux_config[i];
         if (f) Object.assign(f, reglagesClipboard);
     });
     dessiner();
     selectedIdxs.forEach(i => hotApplyWindow(i));
-    mwFlash(`Réglages collés dans ${selectedIdxs.length} fenêtre(s).`);
+    mwFlash(T('plugin.multiview.flash_pasted').replace('{n}', selectedIdxs.length));
 }
 
 // ─── Dessin ──────────────────────────────────────────────────
@@ -980,7 +1004,7 @@ function renderEntryTable() {
             <td>${f.hidden ? '—' : `${f.w}×${f.h}`}</td>
             <td><input type="checkbox" class="ios-toggle" ${f.hidden ? '' : 'checked'}
                 onclick="event.stopPropagation(); toggleEntryHidden(${i}, this.checked)"
-                title="Afficher / retirer ce PiP de l'image — la source reste câblée"></td>
+                title="${escapeHtml(T('plugin.multiview.row_toggle_title'))}"></td>
         </tr>`;
     }).join('');
 }
@@ -1221,6 +1245,9 @@ function hotApplyStyle() {
             overlay_below: editorParams.overlay_below,
             label_size:    editorParams.label_size,
             frame_style:   editorParams.frame_style || 'none',
+            show_no_signal:  editorParams.show_no_signal !== false,
+            freeze_detect_s: editorParams.freeze_detect_s ?? 2,
+            show_format:     !!editorParams.show_format,
         })
     }).catch(() => {});
 }
@@ -1418,7 +1445,7 @@ function refreshOverlayPanel() {
     const o = editorParams.overlays[selectedOverlay];
     panel.hidden = false;
     const ttl = document.getElementById('ov_title');
-    if (ttl) ttl.textContent = ({text: 'Champ texte', clock: 'Champ horloge', image: 'Champ image'})[o.kind] || 'Overlay';
+    if (ttl) ttl.textContent = ({text: T('plugin.multiview.ov_kind_text'), clock: T('plugin.multiview.ov_kind_clock'), image: T('plugin.multiview.ov_kind_image')})[o.kind] || T('plugin.multiview.overlay');
     panel.querySelectorAll('.ov-grp').forEach(g => {
         const kinds = (g.dataset.kind || '').split(',').filter(Boolean);
         g.hidden = kinds.length > 0 && !kinds.includes(o.kind);
@@ -1450,7 +1477,7 @@ function refreshOverlayPanel() {
     _ovSetVal('ov_fit', o.fit || 'contain');
     _ovSetVal('ov_opacity', o.opacity ?? 100);
     const mp = document.getElementById('ov_media_label');
-    if (mp) mp.textContent = o.image_name || (o.image_b64 ? '(image importée)' : '— aucune —');
+    if (mp) mp.textContent = o.image_name || (o.image_b64 ? T('plugin.multiview.image_imported') : T('plugin.multiview.no_media'));
     const sub = (id, on) => { const e = document.getElementById(id); if (e) e.hidden = !on; };
     sub('ov_text_tsl_grp', o.kind === 'text' && o.text_source === 'tsl');
     sub('ov_chrono_grp',   o.kind === 'clock' && (o.clock_source === 'chrono' || o.clock_source === 'countdown'));
@@ -1463,10 +1490,10 @@ function _ovFillTcSources(selected) {
     const sel = document.getElementById('ov_tc_source');
     if (!sel) return;
     const opts = (editorParams.flux_config || []).map((f, i) => {
-        const nm = computeDisplayName(f) || sourceHostname(f) || ('entrée ' + (i + 1));
+        const nm = computeDisplayName(f) || sourceHostname(f) || T('plugin.multiview.entry_n').replace('{n}', i + 1);
         return `<option value="${i}">#${i + 1} ${escapeHtml(nm)}</option>`;
     });
-    sel.innerHTML = opts.join('') || '<option value="0">— aucune entrée —</option>';
+    sel.innerHTML = opts.join('') || ('<option value="0">' + escapeHtml(T('plugin.multiview.no_entry_option')) + '</option>');
     sel.value = String(selected ?? 0);
 }
 
@@ -1544,9 +1571,11 @@ function chronoAction(action) {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ id: o.id, action })
     }).then(() => {
-        const lbl = ({start: 'démarré', stop: 'arrêté', reset: 'réinitialisé'})[action] || action;
-        mwFlash('Chrono ' + lbl + '.');
-    }).catch(() => mwFlash('Chrono injoignable (script arrêté ?).'));
+        const lbl = ({start: T('plugin.multiview.flash_chrono_start'),
+                      stop: T('plugin.multiview.flash_chrono_stop'),
+                      reset: T('plugin.multiview.flash_chrono_reset')})[action] || action;
+        mwFlash(lbl);
+    }).catch(() => mwFlash(T('plugin.multiview.flash_chrono_unreachable')));
 }
 
 // ── Import d'image depuis l'ordinateur (overlay image) ──
@@ -1695,6 +1724,9 @@ async function deployerEditor() {
     editorParams.overlay_below = document.getElementById('ed_overlay_below').checked;
     editorParams.label_size    = Math.max(6, parseInt(document.getElementById('ed_label_size').value) || 14);
     { const fs = document.getElementById('ed_frame_style'); if (fs) editorParams.frame_style = fs.value; }
+    editorParams.show_no_signal  = document.getElementById('ed_show_no_signal').checked;
+    editorParams.freeze_detect_s = Math.max(0, parseFloat(document.getElementById('ed_freeze_detect').value) || 0);
+    editorParams.show_format     = document.getElementById('ed_show_format').checked;
     editorParams.genlock = document.getElementById('ed_genlock').checked;
     const tslPortEl = document.getElementById('ed_tsl_port');
     if (tslPortEl) editorParams.tsl_port = parseInt(tslPortEl.value) || 0;
@@ -1733,13 +1765,16 @@ async function deployerEditor() {
         overlay_below: editorParams.overlay_below,
         label_size:    editorParams.label_size,
         frame_style:   editorParams.frame_style || 'none',
+        show_no_signal:  editorParams.show_no_signal !== false,
+        freeze_detect_s: editorParams.freeze_detect_s ?? 2,
+        show_format:     !!editorParams.show_format,
         max_inputs:    editorParams.max_inputs,
         genlock:       editorParams.genlock,
         tsl_port:      editorParams.tsl_port ?? 4801
     };
 
     const btn = document.getElementById('ed_deploy_btn');
-    if (btn) { btn.disabled = true; btn.textContent = 'Déploiement…'; }
+    if (btn) { btn.disabled = true; btn.textContent = T('plugin.multiview.deploying'); }
     let r = null;
     try {
         r = await fetch('/api/containers/' + editorVmid + '/deploy', {
@@ -1747,17 +1782,17 @@ async function deployerEditor() {
             body: JSON.stringify({type: 'multiview', params, path: '/opt/script/main.py'})
         });
     } catch(e) {}
-    if (btn) { btn.disabled = false; btn.textContent = 'Déployer'; }
+    if (btn) { btn.disabled = false; btn.textContent = T('plugin.multiview.deploy'); }
     if (r && r.ok) {
         if (btn) {
-            btn.textContent = 'Déployé ✓';
+            btn.textContent = T('plugin.multiview.deployed');
             clearTimeout(deployerEditor._t);
-            deployerEditor._t = setTimeout(() => { btn.textContent = 'Déployer'; }, 1500);
+            deployerEditor._t = setTimeout(() => { btn.textContent = T('plugin.multiview.deploy'); }, 1500);
         }
         // Refresh la sidebar générique (badge version + mini-aperçu) après déploiement
         if (window.tpLoadInstances) setTimeout(window.tpLoadInstances, 800);
     } else {
-        mwFlash('Échec du déploiement : la composition affichée n\'a pas été appliquée.');
+        mwFlash(T('plugin.multiview.flash_deploy_failed'));
     }
     deployerEditor._busy = false;
     if (deployerEditor._pending) { deployerEditor._pending = false; deployerEditor(); }
@@ -1799,7 +1834,7 @@ function aligner(mode) {
 
 function matchSize(mode) {
     if (!editorParams || selectedIdxs.length < 2) {
-        mwFlash('Sélectionnez au moins 2 fenêtres (la dernière sert de référence).');
+        mwFlash(T('plugin.multiview.flash_select2'));
         return;
     }
     const fc = editorParams.flux_config;
@@ -1824,7 +1859,7 @@ function matchSize(mode) {
 
 function distribuer(axis) {
     if (!editorParams || selectedIdxs.length < 3) {
-        mwFlash('Sélectionnez au moins 3 fenêtres pour distribuer.');
+        mwFlash(T('plugin.multiview.flash_select3'));
         return;
     }
     const fc = editorParams.flux_config;
@@ -1846,6 +1881,63 @@ function distribuer(axis) {
     selectedIdxs.forEach(i => hotApplyWindow(i));
 }
 
+// ─── Modèles de grille (templates) ───────────────────────────
+// Géométries prédéfinies appliquées aux fenêtres de la banque DANS L'ORDRE des
+// indices (sources/labels/meters/tsl conservés, comme appliquerLayout) ; le
+// surplus de banque est masqué (source câblée préservée). Cellules en coordonnées
+// de grille [c0, r0, c1, r1] sur une base cols×rows.
+
+function _gridCells(n) {
+    const cells = [];
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) cells.push([c, r, c + 1, r + 1]);
+    return {cols: n, rows: n, cells};
+}
+
+const MW_TEMPLATES = {
+    '1x1': _gridCells(1),
+    '2x2': _gridCells(2),
+    '3x3': _gridCells(3),
+    '4x4': _gridCells(4),
+    '1+5': {cols: 3, rows: 3, cells: [
+        [0,0,2,2], [2,0,3,1], [2,1,3,2], [0,2,1,3], [1,2,2,3], [2,2,3,3]]},
+    '1+7': {cols: 4, rows: 4, cells: [
+        [0,0,3,3], [3,0,4,1], [3,1,4,2], [3,2,4,3], [0,3,1,4], [1,3,2,4], [2,3,3,4], [3,3,4,4]]},
+    '2+8': {cols: 4, rows: 4, cells: [
+        [0,0,2,2], [2,0,4,2],
+        [0,2,1,3], [1,2,2,3], [2,2,3,3], [3,2,4,3],
+        [0,3,1,4], [1,3,2,4], [2,3,3,4], [3,3,4,4]]},
+};
+
+function appliquerTemplate(key) {
+    const tpl = MW_TEMPLATES[key];
+    if (!tpl || !editorParams) return;
+    padBank();
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    // Bords de grille partagés, arrondis pairs : pas de trous ni de chevauchements,
+    // dimensions paires garanties (alignement chroma, même contrainte que deployerEditor).
+    const ex = c => (c >= tpl.cols) ? (ow & ~1) : (Math.round(ow * c / tpl.cols) & ~1);
+    const ey = r => (r >= tpl.rows) ? (oh & ~1) : (Math.round(oh * r / tpl.rows) & ~1);
+    const fc = editorParams.flux_config || [];
+    const n = Math.min(tpl.cells.length, fc.length);
+    for (let i = 0; i < fc.length; i++) {
+        if (i < n) {
+            const [c0, r0, c1, r1] = tpl.cells[i];
+            fc[i].x = ex(c0); fc[i].y = ey(r0);
+            fc[i].w = ex(c1) - ex(c0); fc[i].h = ey(r1) - ey(r0);
+            fc[i].hidden = false;
+        } else {
+            fc[i].hidden = true;   // hors image, source câblée conservée
+        }
+    }
+    if (tpl.cells.length > fc.length) {
+        mwFlash(T('plugin.multiview.flash_template_short').replace('{name}', key).replace('{n}', n));
+    }
+    selectedIdxs = [];
+    selectedOverlay = -1;
+    dessiner();
+    hotApplyFull();   // /reconfigure atomique à chaud (géométrie + hidden de toute la banque)
+}
+
 // ─── Layouts (presets) ───────────────────────────────────────
 
 let savedLayouts = [];
@@ -1858,23 +1950,23 @@ async function rafraichirListeLayouts() {
         savedLayouts = await r.json();
     } catch(e) {
         savedLayouts = [];
-        if (ul) ul.innerHTML = '<li class="meta">Layouts indisponibles (erreur réseau).</li>';
+        if (ul) ul.innerHTML = '<li class="meta">' + escapeHtml(T('plugin.multiview.layouts_unavailable')) + '</li>';
         return;
     }
     if (!ul) return;
     if (savedLayouts.length === 0) {
-        ul.innerHTML = '<li class="meta">Aucun layout enregistré. Composez un multiview puis « Enregistrer l\'éditeur actuel ».</li>';
+        ul.innerHTML = '<li class="meta">' + escapeHtml(T('plugin.multiview.layouts_empty')) + '</li>';
         return;
     }
     ul.innerHTML = savedLayouts.map(l => `
         <li>
             <div><b>${escapeHtml(l.name)}</b></div>
-            <div class="meta">${escapeHtml(l.created_at || '')} · ${(l.config.flux_config || []).length} entrées</div>
+            <div class="meta">${escapeHtml(l.created_at || '')} · ${(l.config.flux_config || []).length} ${escapeHtml(T('plugin.multiview.entries'))}</div>
             <canvas data-layout-preview="${l.id}"></canvas>
             <div class="actions">
-                <button class="btn btn-blue" onclick="appliquerLayout(${l.id})">Appliquer</button>
-                <button class="btn" onclick="exporterLayout(${l.id})" title="Télécharger ce layout en .json (réimportable sur un autre orchestrateur)">Exporter</button>
-                <button class="btn btn-red" onclick="supprimerLayout(${l.id})">Supprimer</button>
+                <button class="btn btn-blue" onclick="appliquerLayout(${l.id})">${escapeHtml(T('plugin.multiview.apply'))}</button>
+                <button class="btn" onclick="exporterLayout(${l.id})" title="${escapeHtml(T('plugin.multiview.export_title'))}">${escapeHtml(T('plugin.multiview.export'))}</button>
+                <button class="btn btn-red" onclick="supprimerLayout(${l.id})">${escapeHtml(T('plugin.multiview.delete'))}</button>
             </div>
         </li>`).join('');
     savedLayouts.forEach(l => {
@@ -1892,9 +1984,9 @@ function escapeHtml(s) {
 async function enregistrerLayout() {
     const nameEl = document.getElementById('layout-save-name');
     const name = (nameEl.value || '').trim();
-    if (!name) { mwFlash('Donnez un nom au layout.'); return; }
+    if (!name) { mwFlash(T('plugin.multiview.flash_layout_name')); return; }
     if (!editorParams) {
-        mwFlash('Sélectionnez d\'abord un multiview à éditer.');
+        mwFlash(T('plugin.multiview.flash_select_mv_first'));
         return;
     }
     // Sérialise la config courante (sans champs internes color/ratio)
@@ -1927,16 +2019,16 @@ async function enregistrerLayout() {
     } catch(e) {}
     if (r && r.ok) {
         nameEl.value = '';
-        mwFlash(`Layout « ${name} » enregistré.`);
+        mwFlash(T('plugin.multiview.flash_layout_saved').replace('{name}', name));
         rafraichirListeLayouts();
     } else {
-        mwFlash('Enregistrement du layout impossible.');
+        mwFlash(T('plugin.multiview.flash_layout_save_failed'));
     }
 }
 
 function appliquerLayout(lid) {
     if (!editorParams) {
-        mwFlash('Sélectionnez d\'abord un multiview à éditer.');
+        mwFlash(T('plugin.multiview.flash_select_mv_first'));
         return;
     }
     const l = savedLayouts.find(x => x.id === lid);
@@ -1979,11 +2071,11 @@ function appliquerLayout(lid) {
 
 async function supprimerLayout(lid) {
     const l = savedLayouts.find(x => x.id === lid);
-    if (!confirm(`Supprimer le layout « ${l ? l.name : lid} » ? Cette action est définitive.`)) return;
+    if (!confirm(T('plugin.multiview.confirm_delete_layout').replace('{name}', l ? l.name : lid))) return;
     let r = null;
     try { r = await fetch('/api/layouts/' + lid, {method: 'DELETE'}); } catch(e) {}
     if (r && r.ok) rafraichirListeLayouts();
-    else mwFlash('Suppression du layout impossible.');
+    else mwFlash(T('plugin.multiview.flash_layout_delete_failed'));
 }
 
 // ─── Import / export de layouts (fichier .json {name, config}) ──
@@ -1997,7 +2089,7 @@ function onImportLayoutFile(input) {
     const file = input.files && input.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onerror = () => { input.value = ''; mwFlash('Lecture du fichier impossible.'); };
+    reader.onerror = () => { input.value = ''; mwFlash(T('plugin.multiview.flash_file_read_failed')); };
     reader.onload = async () => {
         input.value = '';   // autorise la réimportation du même fichier
         let data = null;
@@ -2005,7 +2097,7 @@ function onImportLayoutFile(input) {
         const config = data && data.config;
         const name = ((data && data.name) || file.name.replace(/\.json$/i, '')).trim();
         if (!config || !Array.isArray(config.flux_config)) {
-            mwFlash('Fichier invalide : layout multiview attendu ({name, config}).');
+            mwFlash(T('plugin.multiview.flash_invalid_layout_file'));
             return;
         }
         let r = null;
@@ -2016,10 +2108,10 @@ function onImportLayoutFile(input) {
             });
         } catch(e) {}
         if (r && r.ok) {
-            mwFlash(`Layout « ${name} » importé.`);
+            mwFlash(T('plugin.multiview.flash_layout_imported').replace('{name}', name));
             rafraichirListeLayouts();
         } else {
-            mwFlash('Import du layout impossible.');
+            mwFlash(T('plugin.multiview.flash_layout_import_failed'));
         }
     };
     reader.readAsText(file);

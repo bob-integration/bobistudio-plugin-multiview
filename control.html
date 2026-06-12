@@ -1,217 +1,244 @@
 <div class="mw-compose">
-<section class="mw-editor empty" id="mw-editor" aria-label="Éditeur de composition multiview">
+<section class="mw-editor empty" id="mw-editor" aria-label="Éditeur de composition multiview" data-i18n-aria="plugin.multiview.editor_aria">
     <div class="mw-toast" id="mw-toast" role="status" aria-live="polite"></div>
     <div id="mw-editor-empty">
-        <h2 class="empty-state-title" id="mw-editor-title">Aucun multiview sélectionné</h2>
-        <p class="empty-state-msg">Choisissez un multiview à gauche pour éditer sa composition.</p>
+        <h2 class="empty-state-title" id="mw-editor-title" data-i18n="plugin.multiview.no_selection_title">Aucun multiview sélectionné</h2>
+        <p class="empty-state-msg" data-i18n="plugin.multiview.no_selection_msg">Choisissez un multiview à gauche pour éditer sa composition.</p>
     </div>
     <div id="mw-editor-form" hidden>
         <header class="mw-editor-head">
             <h2 id="mw-editor-title-h"><span id="ed_hostname">—</span> <span class="meta">#<span id="ed_vmid">—</span></span></h2>
-            <button type="button" class="btn btn-orange" id="ed_deploy_btn" onclick="deployerEditor()">Déployer</button>
+            <button type="button" class="btn btn-orange" id="ed_deploy_btn" onclick="deployerEditor()" data-i18n="plugin.multiview.deploy">Déployer</button>
         </header>
-        <div class="mw-insert" role="group" aria-label="Ajouter un élément">
-            <span class="lbl">Ajouter :</span>
-            <button type="button" class="btn" onclick="ajouterEntree()" title="Réaffiche la première entrée masquée de la banque (sa source câblée est conservée) ; affectez-lui une source dans le panneau ci-dessous ou via la page Câbles.">+ PiP</button>
-            <button type="button" class="btn" onclick="ajouterOverlay('text')" title="Ajouter un champ texte (texte local ou TSL)">+ Texte</button>
-            <button type="button" class="btn" onclick="ajouterOverlay('clock')" title="Ajouter une horloge / timecode (PTP, chrono ou décompte)">+ Horloge</button>
-            <button type="button" class="btn" onclick="ajouterOverlay('image')" title="Ajouter une image (logo ou fond) importée depuis l'ordinateur">+ Image</button>
+        <div class="mw-insert" role="group" aria-label="Ajouter un élément" data-i18n-aria="plugin.multiview.add_aria">
+            <span class="lbl" data-i18n="plugin.multiview.add_label">Ajouter :</span>
+            <button type="button" class="btn" onclick="ajouterEntree()" data-i18n="plugin.multiview.add_pip" data-i18n-title="plugin.multiview.add_pip_title" title="Réaffiche la première entrée masquée de la banque (sa source câblée est conservée) ; affectez-lui une source dans le panneau ci-dessous ou via la page Câbles.">+ PiP</button>
+            <button type="button" class="btn" onclick="ajouterOverlay('text')" data-i18n="plugin.multiview.add_text" data-i18n-title="plugin.multiview.add_text_title" title="Ajouter un champ texte (texte local ou TSL)">+ Texte</button>
+            <button type="button" class="btn" onclick="ajouterOverlay('clock')" data-i18n="plugin.multiview.add_clock" data-i18n-title="plugin.multiview.add_clock_title" title="Ajouter une horloge / timecode (PTP, chrono ou décompte)">+ Horloge</button>
+            <button type="button" class="btn" onclick="ajouterOverlay('image')" data-i18n="plugin.multiview.add_image" data-i18n-title="plugin.multiview.add_image_title" title="Ajouter une image (logo ou fond) importée depuis l'ordinateur">+ Image</button>
         </div>
-        <div class="mw-toolbar" id="mw-toolbar" role="toolbar" aria-label="Outils de disposition">
+        <div class="mw-toolbar" id="mw-toolbar" role="toolbar" aria-label="Outils de disposition" data-i18n-aria="plugin.multiview.tools_aria">
             <div class="tool-group">
-                <span class="tool-group-label" aria-hidden="true">Aligner</span>
-                <div class="tool-row" role="group" aria-label="Aligner">
-                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('left')" aria-label="Aligner à gauche" title="Aligner à gauche">
+                <span class="tool-group-label" aria-hidden="true" data-i18n="plugin.multiview.group_align">Aligner</span>
+                <div class="tool-row" role="group" aria-label="Aligner" data-i18n-aria="plugin.multiview.group_align">
+                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('left')" aria-label="Aligner à gauche" title="Aligner à gauche" data-i18n-aria="plugin.multiview.align_left" data-i18n-title="plugin.multiview.align_left">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="1.6" height="14" rx="0.8"/><rect x="4" y="3" width="9.5" height="3.6" rx="1"/><rect x="4" y="9.4" width="6" height="3.6" rx="1"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('hcenter')" aria-label="Centrer horizontalement" title="Centrer horizontalement">
+                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('hcenter')" aria-label="Centrer horizontalement" title="Centrer horizontalement" data-i18n-aria="plugin.multiview.align_hcenter" data-i18n-title="plugin.multiview.align_hcenter">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2" y="3" width="12" height="3.6" rx="1"/><rect x="4" y="9.4" width="8" height="3.6" rx="1"/><rect x="7.2" y="1" width="1.6" height="14" rx="0.8"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('right')" aria-label="Aligner à droite" title="Aligner à droite">
+                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('right')" aria-label="Aligner à droite" title="Aligner à droite" data-i18n-aria="plugin.multiview.align_right" data-i18n-title="plugin.multiview.align_right">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="13.4" y="1" width="1.6" height="14" rx="0.8"/><rect x="2.5" y="3" width="9.5" height="3.6" rx="1"/><rect x="6" y="9.4" width="6" height="3.6" rx="1"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('top')" aria-label="Aligner en haut" title="Aligner en haut">
+                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('top')" aria-label="Aligner en haut" title="Aligner en haut" data-i18n-aria="plugin.multiview.align_top" data-i18n-title="plugin.multiview.align_top">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="14" height="1.6" rx="0.8"/><rect x="3" y="4" width="3.6" height="9.5" rx="1"/><rect x="9.4" y="4" width="3.6" height="6" rx="1"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('vcenter')" aria-label="Centrer verticalement" title="Centrer verticalement">
+                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('vcenter')" aria-label="Centrer verticalement" title="Centrer verticalement" data-i18n-aria="plugin.multiview.align_vcenter" data-i18n-title="plugin.multiview.align_vcenter">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="3.6" height="12" rx="1"/><rect x="9.4" y="4" width="3.6" height="8" rx="1"/><rect x="1" y="7.2" width="14" height="1.6" rx="0.8"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('bottom')" aria-label="Aligner en bas" title="Aligner en bas">
+                    <button type="button" class="tool-btn" data-min="1" onclick="aligner('bottom')" aria-label="Aligner en bas" title="Aligner en bas" data-i18n-aria="plugin.multiview.align_bottom" data-i18n-title="plugin.multiview.align_bottom">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="13.4" width="14" height="1.6" rx="0.8"/><rect x="3" y="2.5" width="3.6" height="9.5" rx="1"/><rect x="9.4" y="6" width="3.6" height="6" rx="1"/></svg>
                     </button>
                 </div>
             </div>
             <div class="tool-group">
-                <span class="tool-group-label" aria-hidden="true">Taille</span>
-                <div class="tool-row" role="group" aria-label="Égaliser les tailles">
-                    <button type="button" class="tool-btn" data-min="2" onclick="matchSize('w')" aria-label="Même largeur que la référence" title="Même largeur que la référence">
+                <span class="tool-group-label" aria-hidden="true" data-i18n="plugin.multiview.group_size">Taille</span>
+                <div class="tool-row" role="group" aria-label="Égaliser les tailles" data-i18n-aria="plugin.multiview.group_size_aria">
+                    <button type="button" class="tool-btn" data-min="2" onclick="matchSize('w')" aria-label="Même largeur que la référence" title="Même largeur que la référence" data-i18n-aria="plugin.multiview.size_w" data-i18n-title="plugin.multiview.size_w">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="10" height="4.5" rx="1"/><rect x="3" y="9.5" width="10" height="4.5" rx="1" fill-opacity="0.55"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" data-min="2" onclick="matchSize('h')" aria-label="Même hauteur que la référence" title="Même hauteur que la référence">
+                    <button type="button" class="tool-btn" data-min="2" onclick="matchSize('h')" aria-label="Même hauteur que la référence" title="Même hauteur que la référence" data-i18n-aria="plugin.multiview.size_h" data-i18n-title="plugin.multiview.size_h">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2" y="3" width="4.5" height="10" rx="1"/><rect x="9.5" y="3" width="4.5" height="10" rx="1" fill-opacity="0.55"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" data-min="2" onclick="matchSize('both')" aria-label="Même taille que la référence" title="Même taille que la référence">
+                    <button type="button" class="tool-btn" data-min="2" onclick="matchSize('both')" aria-label="Même taille que la référence" title="Même taille que la référence" data-i18n-aria="plugin.multiview.size_both" data-i18n-title="plugin.multiview.size_both">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1.5" y="1.5" width="8" height="8" rx="1" fill-opacity="0.55"/><rect x="6.5" y="6.5" width="8" height="8" rx="1"/></svg>
                     </button>
                 </div>
             </div>
             <div class="tool-group">
-                <span class="tool-group-label" aria-hidden="true">Distribuer</span>
-                <div class="tool-row" role="group" aria-label="Distribuer">
-                    <button type="button" class="tool-btn" data-min="3" onclick="distribuer('h')" aria-label="Distribuer horizontalement" title="Distribuer horizontalement (3 fenêtres minimum)">
+                <span class="tool-group-label" aria-hidden="true" data-i18n="plugin.multiview.group_distribute">Distribuer</span>
+                <div class="tool-row" role="group" aria-label="Distribuer" data-i18n-aria="plugin.multiview.group_distribute">
+                    <button type="button" class="tool-btn" data-min="3" onclick="distribuer('h')" aria-label="Distribuer horizontalement" title="Distribuer horizontalement (3 fenêtres minimum)" data-i18n-aria="plugin.multiview.distribute_h" data-i18n-title="plugin.multiview.distribute_h_title">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="1.6" height="14" rx="0.8"/><rect x="13.4" y="1" width="1.6" height="14" rx="0.8"/><rect x="6" y="4" width="4" height="8" rx="1"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" data-min="3" onclick="distribuer('v')" aria-label="Distribuer verticalement" title="Distribuer verticalement (3 fenêtres minimum)">
+                    <button type="button" class="tool-btn" data-min="3" onclick="distribuer('v')" aria-label="Distribuer verticalement" title="Distribuer verticalement (3 fenêtres minimum)" data-i18n-aria="plugin.multiview.distribute_v" data-i18n-title="plugin.multiview.distribute_v_title">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="14" height="1.6" rx="0.8"/><rect x="1" y="13.4" width="14" height="1.6" rx="0.8"/><rect x="4" y="6" width="8" height="4" rx="1"/></svg>
                     </button>
                 </div>
             </div>
             <div class="tool-group">
-                <span class="tool-group-label" aria-hidden="true">Réglages</span>
-                <div class="tool-row" role="group" aria-label="Copier / coller les réglages de fenêtre">
-                    <button type="button" class="tool-btn" data-min="1" onclick="copierReglagesFenetre()" aria-label="Copier les réglages de la fenêtre" title="Copier les réglages de la fenêtre (hors position et source)">
+                <span class="tool-group-label" aria-hidden="true" data-i18n="plugin.multiview.group_templates">Modèles</span>
+                <div class="tool-row" role="group" aria-label="Appliquer un modèle de grille" data-i18n-aria="plugin.multiview.group_templates_aria">
+                    <select id="ed_template" class="tool-select" aria-label="Modèle de grille"
+                            title="Applique une grille prédéfinie aux fenêtres de la banque (sources conservées)"
+                            data-i18n-aria="plugin.multiview.template_aria" data-i18n-title="plugin.multiview.template_title"
+                            onchange="appliquerTemplate(this.value); this.value='';">
+                        <option value="" data-i18n="plugin.multiview.template_placeholder">Grille…</option>
+                        <option value="1x1" data-i18n="plugin.multiview.template_1x1">1×1 plein écran</option>
+                        <option value="2x2">2×2</option>
+                        <option value="3x3">3×3</option>
+                        <option value="4x4">4×4</option>
+                        <option value="1+5">1+5</option>
+                        <option value="1+7">1+7</option>
+                        <option value="2+8">2+8</option>
+                    </select>
+                </div>
+            </div>
+            <div class="tool-group">
+                <span class="tool-group-label" aria-hidden="true" data-i18n="plugin.multiview.group_settings">Réglages</span>
+                <div class="tool-row" role="group" aria-label="Copier / coller les réglages de fenêtre" data-i18n-aria="plugin.multiview.group_settings_aria">
+                    <button type="button" class="tool-btn" data-min="1" onclick="copierReglagesFenetre()" aria-label="Copier les réglages de la fenêtre" title="Copier les réglages de la fenêtre (hors position et source)" data-i18n-aria="plugin.multiview.copy_settings_aria" data-i18n-title="plugin.multiview.copy_settings_title">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="5.5" y="1.5" width="9" height="9" rx="1.5" fill-opacity="0.45"/><rect x="1.5" y="5.5" width="9" height="9" rx="1.5"/></svg>
                     </button>
-                    <button type="button" class="tool-btn" id="ed_paste_btn" onclick="collerReglagesFenetre()" disabled aria-label="Coller les réglages dans la sélection" title="Coller les réglages dans les fenêtres sélectionnées">
+                    <button type="button" class="tool-btn" id="ed_paste_btn" onclick="collerReglagesFenetre()" disabled aria-label="Coller les réglages dans la sélection" title="Coller les réglages dans les fenêtres sélectionnées" data-i18n-aria="plugin.multiview.paste_settings_aria" data-i18n-title="plugin.multiview.paste_settings_title">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="12" rx="1.5" fill-opacity="0.45"/><rect x="5.5" y="1" width="5" height="3" rx="1"/><rect x="5" y="6.5" width="6" height="6" rx="1"/></svg>
                     </button>
                 </div>
             </div>
-            <label class="mw-snap" for="ed_snap"><input type="checkbox" class="ios-toggle" id="ed_snap" onchange="snapEnabled=this.checked"> Snap magnétique</label>
+            <label class="mw-snap" for="ed_snap"><input type="checkbox" class="ios-toggle" id="ed_snap" onchange="snapEnabled=this.checked"> <span data-i18n="plugin.multiview.snap">Snap magnétique</span></label>
         </div>
         <div class="mw-canvas-wrap">
-            <canvas id="ed_canvas" aria-label="Aperçu de la composition multiview"
+            <canvas id="ed_canvas" aria-label="Aperçu de la composition multiview" data-i18n-aria="plugin.multiview.canvas_aria"
                     onpointerdown="canvasMouseDown(event)" onpointermove="canvasMouseMove(event)"
                     onpointerup="canvasMouseUp(event)" onpointercancel="canvasMouseUp(event)"></canvas>
         </div>
-        <p class="mw-hint">Maj + clic pour multi-sélectionner. Référence = dernière sélectionnée (cadre blanc).</p>
+        <p class="mw-hint" data-i18n="plugin.multiview.hint">Maj + clic pour multi-sélectionner. Référence = dernière sélectionnée (cadre blanc).</p>
         <div id="ed_entry_panel" class="mw-entry-panel" hidden>
             <div class="mw-editor-row">
-                <div class="field"><label for="ed_label_source">Nom affiché</label><select id="ed_label_source" onchange="onEntryChange()"><option value="hostname">Nom de la source</option><option value="mxl_path">Chemin MXL</option><option value="protocol">Protocole (TSL 5.0)</option></select></div>
-                <div class="field field-grow"><label for="ed_path">Source</label><select id="ed_path" onchange="onEntryChange()"></select></div>
-                <label class="field field-inline" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> Afficher le nom</label>
-                <label class="field field-inline" for="ed_show_tally"><input type="checkbox" class="ios-toggle" id="ed_show_tally" onchange="onEntryChange()"> Cases Tally</label>
-                <label class="field field-inline" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite."><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> Taille proportionnelle</label>
-                <div class="field field-narrow"><label for="ed_tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
-                <div class="field field-narrow"><label for="ed_label_col">Colonne label</label><select id="ed_label_col" onchange="onEntryChange()"></select></div>
-                <div class="field field-narrow"><label for="ed_tally_l_level">Tally L</label><select id="ed_tally_l_level" onchange="onEntryChange()"></select></div>
-                <div class="field field-narrow"><label for="ed_tally_r_level">Tally R</label><select id="ed_tally_r_level" onchange="onEntryChange()"></select></div>
-                <button type="button" class="btn btn-red" onclick="supprimerEntreeSelectionnee()" title="Retire le PiP de l'image SANS couper sa source : l'entrée reste câblée et peut être réaffichée.">Retirer de l'image</button>
+                <div class="field"><label for="ed_label_source" data-i18n="plugin.multiview.label_source">Nom affiché</label><select id="ed_label_source" onchange="onEntryChange()"><option value="hostname" data-i18n="plugin.multiview.ls_hostname">Nom de la source</option><option value="mxl_path" data-i18n="plugin.multiview.ls_mxl_path">Chemin MXL</option><option value="protocol" data-i18n="plugin.multiview.ls_protocol">Protocole (TSL 5.0)</option></select></div>
+                <div class="field field-grow"><label for="ed_path" data-i18n="plugin.multiview.source">Source</label><select id="ed_path" onchange="onEntryChange()"></select></div>
+                <label class="field field-inline" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.show_label">Afficher le nom</span></label>
+                <label class="field field-inline" for="ed_show_tally"><input type="checkbox" class="ios-toggle" id="ed_show_tally" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.show_tally">Cases Tally</span></label>
+                <label class="field field-inline" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite." data-i18n-title="plugin.multiview.label_proportional_title"><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.label_proportional">Taille proportionnelle</span></label>
+                <div class="field field-narrow"><label for="ed_tsl_index" data-i18n="plugin.multiview.tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
+                <div class="field field-narrow"><label for="ed_label_col" data-i18n="plugin.multiview.label_col">Colonne label</label><select id="ed_label_col" onchange="onEntryChange()"></select></div>
+                <div class="field field-narrow"><label for="ed_tally_l_level" data-i18n="plugin.multiview.tally_l">Tally L</label><select id="ed_tally_l_level" onchange="onEntryChange()"></select></div>
+                <div class="field field-narrow"><label for="ed_tally_r_level" data-i18n="plugin.multiview.tally_r">Tally R</label><select id="ed_tally_r_level" onchange="onEntryChange()"></select></div>
+                <button type="button" class="btn btn-red" onclick="supprimerEntreeSelectionnee()" title="Retire le PiP de l'image SANS couper sa source : l'entrée reste câblée et peut être réaffichée." data-i18n="plugin.multiview.remove_pip" data-i18n-title="plugin.multiview.remove_pip_title">Retirer de l'image</button>
             </div>
             <div class="mw-editor-row">
                 <div class="field field-narrow"><label for="ed_x">X</label><input type="number" id="ed_x" onchange="onEntryGeomChange()"></div>
                 <div class="field field-narrow"><label for="ed_y">Y</label><input type="number" id="ed_y" onchange="onEntryGeomChange()"></div>
-                <div class="field field-narrow"><label for="ed_w">Largeur</label><input type="number" id="ed_w" onchange="onEntryGeomChange()"></div>
-                <div class="field field-narrow"><label for="ed_h">Hauteur</label><input type="number" id="ed_h" onchange="onEntryGeomChange()"></div>
+                <div class="field field-narrow"><label for="ed_w" data-i18n="plugin.multiview.width">Largeur</label><input type="number" id="ed_w" onchange="onEntryGeomChange()"></div>
+                <div class="field field-narrow"><label for="ed_h" data-i18n="plugin.multiview.height">Hauteur</label><input type="number" id="ed_h" onchange="onEntryGeomChange()"></div>
             </div>
             <div class="mw-editor-row mw-editor-row-divider">
-                <div class="field"><label for="ed_meter_channels">Peak meter</label><select id="ed_meter_channels" onchange="onEntryChange()"><option value="0">Désactivé</option><option value="2">2 ch</option><option value="4">4 ch</option><option value="6">6 ch</option><option value="8">8 ch</option></select></div>
-                <div class="field"><label for="ed_meter_position">Position</label><select id="ed_meter_position" onchange="onEntryChange()"><option value="right">Droite</option><option value="left">Gauche</option></select></div>
-                <div class="field"><label for="ed_meter_inside">Placement</label><select id="ed_meter_inside" onchange="onEntryChange()"><option value="0">Hors image</option><option value="1">Dans l'image</option></select></div>
-                <div class="field field-narrow"><label for="ed_meter_opacity">Opacité</label><input type="number" id="ed_meter_opacity" min="10" max="100" onchange="onEntryChange()"></div>
-                <div class="field"><label for="ed_meter_scale">Graduation</label><select id="ed_meter_scale" onchange="onEntryChange()"><option value="dbfs">dBFS</option><option value="ppm">EBU PPM</option></select></div>
+                <div class="field"><label for="ed_meter_channels" data-i18n="plugin.multiview.meter">Peak meter</label><select id="ed_meter_channels" onchange="onEntryChange()"><option value="0" data-i18n="plugin.multiview.meter_off">Désactivé</option><option value="2">2 ch</option><option value="4">4 ch</option><option value="6">6 ch</option><option value="8">8 ch</option></select></div>
+                <div class="field"><label for="ed_meter_position" data-i18n="plugin.multiview.position">Position</label><select id="ed_meter_position" onchange="onEntryChange()"><option value="right" data-i18n="plugin.multiview.right">Droite</option><option value="left" data-i18n="plugin.multiview.left">Gauche</option></select></div>
+                <div class="field"><label for="ed_meter_inside" data-i18n="plugin.multiview.placement">Placement</label><select id="ed_meter_inside" onchange="onEntryChange()"><option value="0" data-i18n="plugin.multiview.outside">Hors image</option><option value="1" data-i18n="plugin.multiview.inside">Dans l'image</option></select></div>
+                <div class="field field-narrow"><label for="ed_meter_opacity" data-i18n="plugin.multiview.opacity">Opacité</label><input type="number" id="ed_meter_opacity" min="10" max="100" onchange="onEntryChange()"></div>
+                <div class="field"><label for="ed_meter_scale" data-i18n="plugin.multiview.scale">Graduation</label><select id="ed_meter_scale" onchange="onEntryChange()"><option value="dbfs">dBFS</option><option value="ppm">EBU PPM</option></select></div>
             </div>
         </div>
         <div id="ed_overlay_panel" class="mw-entry-panel" hidden>
             <div class="mw-overlay-head">
-                <span class="mw-overlay-kind" id="ov_title">Overlay</span>
-                <button type="button" class="btn btn-red" onclick="supprimerOverlay()" title="Supprimer cet overlay">Supprimer</button>
+                <span class="mw-overlay-kind" id="ov_title" data-i18n="plugin.multiview.overlay">Overlay</span>
+                <button type="button" class="btn btn-red" onclick="supprimerOverlay()" title="Supprimer cet overlay" data-i18n="plugin.multiview.delete" data-i18n-title="plugin.multiview.delete_overlay_title">Supprimer</button>
             </div>
             <div class="mw-editor-row">
                 <div class="field field-narrow"><label for="ov_x">X</label><input type="number" id="ov_x" onchange="onOverlayGeomChange()"></div>
                 <div class="field field-narrow"><label for="ov_y">Y</label><input type="number" id="ov_y" onchange="onOverlayGeomChange()"></div>
-                <div class="field field-narrow"><label for="ov_w">Largeur</label><input type="number" id="ov_w" onchange="onOverlayGeomChange()"></div>
-                <div class="field field-narrow"><label for="ov_h">Hauteur</label><input type="number" id="ov_h" onchange="onOverlayGeomChange()"></div>
+                <div class="field field-narrow"><label for="ov_w" data-i18n="plugin.multiview.width">Largeur</label><input type="number" id="ov_w" onchange="onOverlayGeomChange()"></div>
+                <div class="field field-narrow"><label for="ov_h" data-i18n="plugin.multiview.height">Hauteur</label><input type="number" id="ov_h" onchange="onOverlayGeomChange()"></div>
             </div>
             <!-- Texte -->
             <div class="mw-editor-row ov-grp" data-kind="text">
-                <div class="field field-grow"><label for="ov_text">Texte</label><input type="text" id="ov_text" onchange="onOverlayChange()" oninput="onOverlayTextInput()"></div>
-                <div class="field"><label for="ov_text_source">Source</label><select id="ov_text_source" onchange="onOverlayChange()"><option value="local">Texte local</option><option value="tsl">TSL</option></select></div>
-                <div class="field field-narrow" id="ov_text_tsl_grp"><label for="ov_tsl_index">Index TSL</label><input type="number" id="ov_tsl_index" min="0" max="65535" onchange="onOverlayChange()"></div>
+                <div class="field field-grow"><label for="ov_text" data-i18n="plugin.multiview.text">Texte</label><input type="text" id="ov_text" onchange="onOverlayChange()" oninput="onOverlayTextInput()"></div>
+                <div class="field"><label for="ov_text_source" data-i18n="plugin.multiview.source">Source</label><select id="ov_text_source" onchange="onOverlayChange()"><option value="local" data-i18n="plugin.multiview.text_source_local">Texte local</option><option value="tsl">TSL</option></select></div>
+                <div class="field field-narrow" id="ov_text_tsl_grp"><label for="ov_tsl_index" data-i18n="plugin.multiview.tsl_index_short">Index TSL</label><input type="number" id="ov_tsl_index" min="0" max="65535" onchange="onOverlayChange()"></div>
             </div>
             <!-- Horloge -->
             <div class="mw-editor-row ov-grp" data-kind="clock">
-                <div class="field"><label for="ov_clock_source">Source</label><select id="ov_clock_source" onchange="onOverlayChange()"><option value="ptp">PTP (horloge du jour)</option><option value="chrono">Chrono</option><option value="countdown">Décompte</option><option value="anc">ANC (timecode source)</option></select></div>
+                <div class="field"><label for="ov_clock_source" data-i18n="plugin.multiview.source">Source</label><select id="ov_clock_source" onchange="onOverlayChange()"><option value="ptp" data-i18n="plugin.multiview.clock_ptp">PTP (horloge du jour)</option><option value="chrono" data-i18n="plugin.multiview.clock_chrono">Chrono</option><option value="countdown" data-i18n="plugin.multiview.clock_countdown">Décompte</option><option value="anc" data-i18n="plugin.multiview.clock_anc">ANC (timecode source)</option></select></div>
                 <label class="field field-inline" for="ov_show_hh"><input type="checkbox" class="ios-toggle" id="ov_show_hh" onchange="onOverlayChange()"> HH</label>
                 <label class="field field-inline" for="ov_show_mm"><input type="checkbox" class="ios-toggle" id="ov_show_mm" onchange="onOverlayChange()"> MM</label>
                 <label class="field field-inline" for="ov_show_ss"><input type="checkbox" class="ios-toggle" id="ov_show_ss" onchange="onOverlayChange()"> SS</label>
-                <label class="field field-inline" for="ov_show_ff"><input type="checkbox" class="ios-toggle" id="ov_show_ff" onchange="onOverlayChange()"> II</label>
-                <div class="field field-narrow" id="ov_ptp_grp"><label for="ov_offset_ms">Offset (ms)</label><input type="number" id="ov_offset_ms" onchange="onOverlayChange()"></div>
-                <div class="field" id="ov_anc_grp"><label for="ov_tc_source">Source du timecode</label><select id="ov_tc_source" onchange="onOverlayChange()"></select></div>
+                <label class="field field-inline" for="ov_show_ff"><input type="checkbox" class="ios-toggle" id="ov_show_ff" onchange="onOverlayChange()"> <span data-i18n="plugin.multiview.ff">II</span></label>
+                <div class="field field-narrow" id="ov_ptp_grp"><label for="ov_offset_ms" data-i18n="plugin.multiview.offset_ms">Offset (ms)</label><input type="number" id="ov_offset_ms" onchange="onOverlayChange()"></div>
+                <div class="field" id="ov_anc_grp"><label for="ov_tc_source" data-i18n="plugin.multiview.tc_source">Source du timecode</label><select id="ov_tc_source" onchange="onOverlayChange()"></select></div>
             </div>
             <div class="mw-editor-row" id="ov_chrono_grp" hidden>
-                <div class="field field-narrow"><label for="ov_chrono_start">Départ (HH:MM:SS)</label><input type="text" id="ov_chrono_start" placeholder="00:00:00" onchange="onOverlayChange()"></div>
-                <button type="button" class="btn btn-green" onclick="chronoAction('start')">▶ Démarrer</button>
-                <button type="button" class="btn" onclick="chronoAction('stop')">⏸ Arrêter</button>
-                <button type="button" class="btn" onclick="chronoAction('reset')">⟲ Réinitialiser</button>
+                <div class="field field-narrow"><label for="ov_chrono_start" data-i18n="plugin.multiview.chrono_start_lbl">Départ (HH:MM:SS)</label><input type="text" id="ov_chrono_start" placeholder="00:00:00" onchange="onOverlayChange()"></div>
+                <button type="button" class="btn btn-green" onclick="chronoAction('start')" data-i18n="plugin.multiview.chrono_btn_start">▶ Démarrer</button>
+                <button type="button" class="btn" onclick="chronoAction('stop')" data-i18n="plugin.multiview.chrono_btn_stop">⏸ Arrêter</button>
+                <button type="button" class="btn" onclick="chronoAction('reset')" data-i18n="plugin.multiview.chrono_btn_reset">⟲ Réinitialiser</button>
             </div>
             <!-- Image -->
             <div class="mw-editor-row ov-grp" data-kind="image">
-                <label class="btn" for="ov_image_file" style="cursor:pointer">Importer une image…</label>
+                <label class="btn" for="ov_image_file" style="cursor:pointer" data-i18n="plugin.multiview.import_image">Importer une image…</label>
                 <input type="file" id="ov_image_file" accept="image/*" hidden onchange="importOverlayImage(this)">
-                <span class="meta" id="ov_media_label">— aucune —</span>
-                <div class="field"><label for="ov_layer">Plan</label><select id="ov_layer" onchange="onOverlayChange()"><option value="foreground">Logo (premier plan)</option><option value="background">Fond (derrière tout)</option></select></div>
-                <div class="field"><label for="ov_fit">Ajustement</label><select id="ov_fit" onchange="onOverlayChange()"><option value="contain">Contenir</option><option value="cover">Couvrir</option><option value="stretch">Étirer</option></select></div>
-                <div class="field field-narrow"><label for="ov_opacity">Opacité</label><input type="number" id="ov_opacity" min="0" max="100" onchange="onOverlayChange()"></div>
+                <span class="meta" id="ov_media_label" data-i18n="plugin.multiview.no_media">— aucune —</span>
+                <div class="field"><label for="ov_layer" data-i18n="plugin.multiview.layer">Plan</label><select id="ov_layer" onchange="onOverlayChange()"><option value="foreground" data-i18n="plugin.multiview.layer_fg">Logo (premier plan)</option><option value="background" data-i18n="plugin.multiview.layer_bg">Fond (derrière tout)</option></select></div>
+                <div class="field"><label for="ov_fit" data-i18n="plugin.multiview.fit">Ajustement</label><select id="ov_fit" onchange="onOverlayChange()"><option value="contain" data-i18n="plugin.multiview.fit_contain">Contenir</option><option value="cover" data-i18n="plugin.multiview.fit_cover">Couvrir</option><option value="stretch" data-i18n="plugin.multiview.fit_stretch">Étirer</option></select></div>
+                <div class="field field-narrow"><label for="ov_opacity" data-i18n="plugin.multiview.opacity">Opacité</label><input type="number" id="ov_opacity" min="0" max="100" onchange="onOverlayChange()"></div>
             </div>
             <!-- Apparence texte/horloge -->
             <div class="mw-editor-row ov-grp" data-kind="text,clock">
-                <div class="field"><label for="ov_font">Police</label><select id="ov_font" onchange="onOverlayChange()"></select></div>
-                <div class="field field-narrow"><label for="ov_font_size">Taille (0=auto)</label><input type="number" id="ov_font_size" min="0" max="400" onchange="onOverlayChange()"></div>
-                <div class="field"><label for="ov_align">Alignement</label><select id="ov_align" onchange="onOverlayChange()"><option value="left">Gauche</option><option value="center">Centre</option><option value="right">Droite</option></select></div>
-                <div class="field field-color"><label for="ov_color">Couleur texte</label><input type="color" id="ov_color" onchange="onOverlayChange()"></div>
-                <label class="field field-inline" for="ov_bg_on"><input type="checkbox" class="ios-toggle" id="ov_bg_on" onchange="onOverlayChange()"> Fond</label>
-                <div class="field field-color"><label for="ov_bg_color">Couleur fond</label><input type="color" id="ov_bg_color" onchange="onOverlayChange()"></div>
-                <div class="field field-narrow"><label for="ov_bg_opacity">Opacité fond</label><input type="number" id="ov_bg_opacity" min="0" max="100" onchange="onOverlayChange()"></div>
+                <div class="field"><label for="ov_font" data-i18n="plugin.multiview.font">Police</label><select id="ov_font" onchange="onOverlayChange()"></select></div>
+                <div class="field field-narrow"><label for="ov_font_size" data-i18n="plugin.multiview.font_size">Taille (0=auto)</label><input type="number" id="ov_font_size" min="0" max="400" onchange="onOverlayChange()"></div>
+                <div class="field"><label for="ov_align" data-i18n="plugin.multiview.align">Alignement</label><select id="ov_align" onchange="onOverlayChange()"><option value="left" data-i18n="plugin.multiview.left">Gauche</option><option value="center" data-i18n="plugin.multiview.center">Centre</option><option value="right" data-i18n="plugin.multiview.right">Droite</option></select></div>
+                <div class="field field-color"><label for="ov_color" data-i18n="plugin.multiview.text_color">Couleur texte</label><input type="color" id="ov_color" onchange="onOverlayChange()"></div>
+                <label class="field field-inline" for="ov_bg_on"><input type="checkbox" class="ios-toggle" id="ov_bg_on" onchange="onOverlayChange()"> <span data-i18n="plugin.multiview.bg">Fond</span></label>
+                <div class="field field-color"><label for="ov_bg_color" data-i18n="plugin.multiview.bg_color">Couleur fond</label><input type="color" id="ov_bg_color" onchange="onOverlayChange()"></div>
+                <div class="field field-narrow"><label for="ov_bg_opacity" data-i18n="plugin.multiview.bg_opacity">Opacité fond</label><input type="number" id="ov_bg_opacity" min="0" max="100" onchange="onOverlayChange()"></div>
             </div>
             <div class="mw-editor-row ov-grp" data-kind="text,clock">
-                <div class="field field-narrow"><label for="ov_tally_index">Tally On — index TSL (0=off)</label><input type="number" id="ov_tally_index" min="0" max="65535" onchange="onOverlayChange()"></div>
-                <div class="field field-color"><label for="ov_color_on">Texte (Tally On)</label><input type="color" id="ov_color_on" onchange="onOverlayChange()"></div>
-                <div class="field field-color"><label for="ov_bg_color_on">Fond (Tally On)</label><input type="color" id="ov_bg_color_on" onchange="onOverlayChange()"></div>
+                <div class="field field-narrow"><label for="ov_tally_index" data-i18n="plugin.multiview.tally_on_index">Tally On — index TSL (0=off)</label><input type="number" id="ov_tally_index" min="0" max="65535" onchange="onOverlayChange()"></div>
+                <div class="field field-color"><label for="ov_color_on" data-i18n="plugin.multiview.text_tally_on">Texte (Tally On)</label><input type="color" id="ov_color_on" onchange="onOverlayChange()"></div>
+                <div class="field field-color"><label for="ov_bg_color_on" data-i18n="plugin.multiview.bg_tally_on">Fond (Tally On)</label><input type="color" id="ov_bg_color_on" onchange="onOverlayChange()"></div>
             </div>
         </div>
-        <table class="mw-entry-table" aria-label="Entrées de la composition">
-            <thead><tr><th class="w40" scope="col">#</th><th scope="col">Nom</th><th scope="col">Source SHM</th><th class="w90" scope="col">Position</th><th class="w90" scope="col">Taille</th><th class="w90" scope="col" title="Une entrée masquée garde sa source câblée">À l'image</th></tr></thead>
+        <table class="mw-entry-table" aria-label="Entrées de la composition" data-i18n-aria="plugin.multiview.entries_aria">
+            <thead><tr><th class="w40" scope="col">#</th><th scope="col" data-i18n="plugin.multiview.col_name">Nom</th><th scope="col" data-i18n="plugin.multiview.col_source">Source SHM</th><th class="w90" scope="col" data-i18n="plugin.multiview.position">Position</th><th class="w90" scope="col" data-i18n="plugin.multiview.group_size">Taille</th><th class="w90" scope="col" title="Une entrée masquée garde sa source câblée" data-i18n="plugin.multiview.col_visible" data-i18n-title="plugin.multiview.col_visible_title">À l'image</th></tr></thead>
             <tbody id="ed_tbody"></tbody>
         </table>
     </div>
 </section>
 <aside class="mw-side">
     <section class="mw-settings" id="mw-settings" aria-labelledby="mw-settings-title" hidden>
-        <h2 id="mw-settings-title">Sortie &amp; habillage</h2>
+        <h2 id="mw-settings-title" data-i18n="plugin.multiview.settings_title">Sortie &amp; habillage</h2>
         <div class="row">
-            <div class="field"><label for="ed_max">Max entrées</label><input type="number" id="ed_max" min="1" max="32" onchange="onMaxChange()"></div>
-            <div class="field"><label for="ed_label_size">Taille texte (px)</label><input type="number" id="ed_label_size" min="6" max="80" onchange="onGlobalChange()"></div>
+            <div class="field"><label for="ed_max" data-i18n="plugin.multiview.max_inputs">Max entrées</label><input type="number" id="ed_max" min="1" max="32" onchange="onMaxChange()"></div>
+            <div class="field"><label for="ed_label_size" data-i18n="plugin.multiview.label_size">Taille texte (px)</label><input type="number" id="ed_label_size" min="6" max="80" onchange="onGlobalChange()"></div>
         </div>
         <div class="row">
-            <div class="field"><label for="ed_border_w">Bordure (px)</label><input type="number" id="ed_border_w" min="0" max="30" onchange="onGlobalChange()"></div>
-            <div class="field field-color"><label for="ed_border_color">Couleur bordure</label><input type="color" id="ed_border_color" onchange="onGlobalChange()"></div>
+            <div class="field"><label for="ed_border_w" data-i18n="plugin.multiview.border_px">Bordure (px)</label><input type="number" id="ed_border_w" min="0" max="30" onchange="onGlobalChange()"></div>
+            <div class="field field-color"><label for="ed_border_color" data-i18n="plugin.multiview.border_color">Couleur bordure</label><input type="color" id="ed_border_color" onchange="onGlobalChange()"></div>
         </div>
         <div class="row">
-            <div class="field"><label for="ed_frame_style">Style de cadre</label><select id="ed_frame_style" onchange="onGlobalChange()"><option value="none">Aucun (bordure simple)</option><option value="stylized">Moniteur (bezel)</option><option value="classic">UMD broadcast</option><option value="tally_border">Cadre tally</option><option value="viewfinder">Viseur (coins)</option><option value="flat">Flat (soulignement)</option></select></div>
+            <div class="field"><label for="ed_frame_style" data-i18n="plugin.multiview.frame_style">Style de cadre</label><select id="ed_frame_style" onchange="onGlobalChange()"><option value="none" data-i18n="plugin.multiview.fs_none">Aucun (bordure simple)</option><option value="stylized" data-i18n="plugin.multiview.fs_stylized">Moniteur (bezel)</option><option value="classic" data-i18n="plugin.multiview.fs_classic">UMD broadcast</option><option value="tally_border" data-i18n="plugin.multiview.fs_tally">Cadre tally</option><option value="viewfinder" data-i18n="plugin.multiview.fs_viewfinder">Viseur (coins)</option><option value="flat" data-i18n="plugin.multiview.fs_flat">Flat (soulignement)</option></select></div>
         </div>
         <div class="row">
-            <label class="field field-inline" for="ed_overlay_below"><input type="checkbox" class="ios-toggle" id="ed_overlay_below" onchange="onGlobalChange()"> Texte sous l'image</label>
+            <label class="field field-inline" for="ed_overlay_below"><input type="checkbox" class="ios-toggle" id="ed_overlay_below" onchange="onGlobalChange()"> <span data-i18n="plugin.multiview.overlay_below">Texte sous l'image</span></label>
         </div>
         <div class="row">
-            <label class="field field-inline" for="ed_genlock" title="Verrouille la phase de sortie sur la grille PTP. Param structurel : un changement redéploie le container."><input type="checkbox" class="ios-toggle" id="ed_genlock"> Genlock</label>
+            <label class="field field-inline" for="ed_show_no_signal" title="Affiche un panneau NO SIGNAL dans la fenêtre quand sa source est absente" data-i18n-title="plugin.multiview.show_no_signal_title"><input type="checkbox" class="ios-toggle" id="ed_show_no_signal" onchange="onGlobalChange()"> <span data-i18n="plugin.multiview.show_no_signal">« NO SIGNAL » si source absente</span></label>
         </div>
         <div class="row">
-            <div class="field"><label for="ed_tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
+            <div class="field"><label for="ed_freeze_detect" title="Badge FREEZE quand l'image source n'avance plus depuis N secondes" data-i18n="plugin.multiview.freeze_detect" data-i18n-title="plugin.multiview.freeze_detect_title">Détection freeze (s, 0 = off)</label><input type="number" id="ed_freeze_detect" min="0" max="30" step="0.5" onchange="onGlobalChange()"></div>
+        </div>
+        <div class="row">
+            <label class="field field-inline" for="ed_show_format" title="Chip discret en bas à droite de chaque fenêtre : format déclaré de la source (ex. 1920×1080p25)" data-i18n-title="plugin.multiview.show_format_title"><input type="checkbox" class="ios-toggle" id="ed_show_format" onchange="onGlobalChange()"> <span data-i18n="plugin.multiview.show_format">Format source par fenêtre</span></label>
+        </div>
+        <div class="row">
+            <label class="field field-inline" for="ed_genlock" title="Verrouille la phase de sortie sur la grille PTP. Param structurel : un changement redéploie le container." data-i18n-title="plugin.multiview.genlock_title"><input type="checkbox" class="ios-toggle" id="ed_genlock"> Genlock</label>
+        </div>
+        <div class="row">
+            <div class="field"><label for="ed_tsl_port" data-i18n="plugin.multiview.tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
         </div>
     </section>
     <section class="layout-list" aria-labelledby="layout-list-title">
-        <h2 id="layout-list-title">Layouts enregistrés</h2>
+        <h2 id="layout-list-title" data-i18n="plugin.multiview.layouts_title">Layouts enregistrés</h2>
         <div class="save-layout-form">
-            <label for="layout-save-name">Nom du layout</label>
-            <input type="text" id="layout-save-name" placeholder="ex. 2×2 mosaïque…" autocomplete="off">
-            <button type="button" class="btn btn-green" onclick="enregistrerLayout()">Enregistrer l'éditeur actuel</button>
+            <label for="layout-save-name" data-i18n="plugin.multiview.layout_name">Nom du layout</label>
+            <input type="text" id="layout-save-name" placeholder="ex. 2×2 mosaïque…" autocomplete="off" data-i18n-ph="plugin.multiview.layout_name_ph">
+            <button type="button" class="btn btn-green" onclick="enregistrerLayout()" data-i18n="plugin.multiview.save_layout">Enregistrer l'éditeur actuel</button>
         </div>
         <div class="save-layout-form">
-            <button type="button" class="btn" onclick="importerLayout()">Importer un fichier…</button>
+            <button type="button" class="btn" onclick="importerLayout()" data-i18n="plugin.multiview.import_layout">Importer un fichier…</button>
             <input type="file" id="layout-import-input" accept=".json" hidden onchange="onImportLayoutFile(this)">
         </div>
-        <ul id="layout-saved-list" role="list" aria-live="polite"><li class="meta">Chargement…</li></ul>
+        <ul id="layout-saved-list" role="list" aria-live="polite"><li class="meta" data-i18n="plugin.multiview.loading">Chargement…</li></ul>
     </section>
 </aside>
 </div>

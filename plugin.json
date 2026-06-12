@@ -10,7 +10,7 @@
   },
   "skaarhoj": {"mode": "multiview", "desc_i18n": "settings.js.skh_desc_multiview"},
   "deploy_order": 1,
-  "version": "0.13.0",
+  "version": "0.14.0",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
@@ -41,7 +41,10 @@
     "label_size": 14,
     "tsl_port": 0,
     "max_inputs": 4,
-    "frame_style": "none"
+    "frame_style": "none",
+    "show_no_signal": true,
+    "freeze_detect_s": 2.0,
+    "show_format": false
   },
   "config_schema": [
     {
@@ -113,6 +116,26 @@
           "label": "Flat (soulignement)"
         }
       ]
+    },
+    {
+      "key": "show_no_signal",
+      "type": "bool",
+      "label": "Afficher « NO SIGNAL » quand la source manque",
+      "default": true
+    },
+    {
+      "key": "freeze_detect_s",
+      "type": "number",
+      "label": "Détection image figée (s, 0 = off)",
+      "min": 0,
+      "max": 30,
+      "default": 2
+    },
+    {
+      "key": "show_format",
+      "type": "bool",
+      "label": "Afficher le format source par fenêtre",
+      "default": false
     },
     {
       "key": "tsl_port",

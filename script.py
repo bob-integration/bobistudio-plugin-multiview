@@ -42,6 +42,12 @@ OVERLAY_BELOW = _as_bool(CONFIG.get("overlay_below"))   # bandeau sous l'image v
 LABEL_SIZE    = int(CONFIG.get("label_size") or 14)     # taille du texte du label (px)
 TSL_PORT      = int(CONFIG.get("tsl_port") or 0)        # port TCP TSL 5.0 (0 = désactivé)
 TSL_REMOTE    = _as_bool(CONFIG.get("tsl_remote"))      # True = TSL géré par l'orchestrateur (désactive le serveur local)
+SHOW_NO_SIGNAL = _as_bool(CONFIG.get("show_no_signal", True))  # placeholder « NO SIGNAL » quand la source manque
+try:
+    FREEZE_DETECT_S = max(0.0, float(CONFIG.get("freeze_detect_s", 2.0)))  # s sans avance du frame_index → badge FREEZE (0 = off)
+except (TypeError, ValueError):
+    FREEZE_DETECT_S = 2.0
+SHOW_FORMAT   = _as_bool(CONFIG.get("show_format"))     # chip format déclaré par fenêtre (mode ingénierie)
 
 # Chroma uniforme du pipeline (entrées ET sortie ont le même layout ; défaut 4:2:2).
 CHROMA = str(CONFIG.get("chroma") or "422")
@@ -1048,6 +1054,69 @@ def render_meters(now):
     return rgba_to_yuv(img)
 
 
+# ─── Couche « info » : NO SIGNAL / FREEZE / format source ────────────────────
+# Cachée par signature (statuts + textes) : le coût PIL n'est payé qu'aux
+# transitions d'état, pas par frame. Posée SOUS l'habillage (bordure, labels et
+# meters passent par-dessus), dans le rectangle IMAGE de chaque fenêtre.
+
+def _fmt_chip_txt(cfg, src):
+    """« 1920×1080p25 » — format DÉCLARÉ par le câblage (in_w/in_h/in_scan/in_fps,
+    résolus par l'orchestrateur depuis le producteur du shm). Repli : dims réelles
+    du mmap, sans cadence, si le producteur est inconnu en DB."""
+    w = int(cfg.get("in_w") or 0); h = int(cfg.get("in_h") or 0)
+    if not (w and h) and src is not None:
+        w, h = src["in_w"], src["in_h"]
+    if not (w and h):
+        return ""
+    fps = cfg.get("in_fps")
+    if not fps:
+        return f"{{w}}×{{h}}"
+    n, d = _rate_nd(fps)
+    fps_txt = str(n) if d == 1 else str(round(n / d, 2))
+    scan = "i" if str(cfg.get("in_scan") or "p").startswith("i") else "p"
+    return f"{{w}}×{{h}}{{scan}}{{fps_txt}}"
+
+def render_info(statuses):
+    """Layer RGBA plein canvas : placeholders NO SIGNAL, badges FREEZE, chips format.
+    `statuses` = [(idx, statut, fmt_txt)] — exactement la signature qui a déclenché le bake."""
+    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    for i, status, fmt_txt in statuses:
+        if i >= len(FLUX_CONFIG):
+            continue
+        g = _video_rect(FLUX_CONFIG[i])
+        vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]
+        if status == "nosignal":
+            # Fond gris sombre : distingue « pas de source » d'une vidéo noire légitime.
+            d.rectangle([vx, vy, vx + vw - 1, vy + vh - 1], fill=(22, 24, 28, 255))
+            fnt = _font(max(10, min(48, vh // 8)))
+            d.text((vx + vw // 2, vy + vh // 2), "NO SIGNAL",
+                   font=fnt, fill=(150, 153, 160, 255), anchor="mm")
+            continue   # pas de chip format sans source
+        if status == "freeze":
+            fnt = _font(max(8, min(20, vh // 12)))
+            pad = max(3, vh // 80)
+            tb = d.textbbox((0, 0), "FREEZE", font=fnt)
+            bw, bh = (tb[2] - tb[0]) + 2 * pad, (tb[3] - tb[1]) + 2 * pad
+            bx, by = vx + vw - bw - 4, vy + 4
+            d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=3, fill=(214, 132, 0, 235))
+            d.text((bx + bw // 2, by + bh // 2 + 1), "FREEZE",
+                   font=fnt, fill=(24, 18, 6, 255), anchor="mm")
+        if fmt_txt:
+            fnt = _font(max(8, min(14, vh // 14)))
+            pad = max(2, vh // 120)
+            tb = d.textbbox((0, 0), fmt_txt, font=fnt)
+            cw, ch = (tb[2] - tb[0]) + 2 * pad + 2, (tb[3] - tb[1]) + 2 * pad
+            cx, cy = vx + vw - cw - 3, vy + vh - ch - 3
+            d.rounded_rectangle([cx, cy, cx + cw, cy + ch], radius=2, fill=(0, 0, 0, 170))
+            d.text((cx + cw // 2, cy + ch // 2 + 1), fmt_txt,
+                   font=fnt, fill=(210, 212, 218, 255), anchor="mm")
+    return rgba_to_yuv(img)
+
+_info_sig = None      # signature de la couche info bakée (None = re-bake forcé)
+_info_layer = None
+
+
 # ─── Serveur TSL 5.0 (TCP) ───────────────────────────────────
 # Chaque entrée dans le flux TCP (format observé) :
 #   SOM(2=0xFE02) + VER(1) + FLAGS(1) + SCREEN(2LE) + INDEX(2LE)
@@ -1571,6 +1640,7 @@ state_lock = threading.Lock()
 geom_dirty = threading.Event()
 mv_state = {{"inputs": [cfg.get("path", "") for cfg in FLUX_CONFIG]}}
 sources = [None] * len(FLUX_CONFIG)
+_in_track = {{}}  # i → {{"path", "fi", "t"}} : dernier avancement du frame_index source (détection freeze)
 
 def ensure_input(i):
     with state_lock:
@@ -1659,10 +1729,12 @@ class MvControlHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": ok}}).encode())
     def _do_style(self):
-        # Params globaux visuels : border_w, border_color, overlay_below, label_size, frame_style.
+        # Params globaux visuels : border_w, border_color, overlay_below, label_size,
+        # frame_style, show_no_signal, freeze_detect_s, show_format.
         b = self._json()
         with state_lock:
             global BORDER_W, BORDER_COLOR, OVERLAY_BELOW, LABEL_SIZE, FRAME_STYLE
+            global SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_FORMAT
             if "border_w" in b:
                 try: BORDER_W = max(0, int(b["border_w"]))
                 except (TypeError, ValueError): pass
@@ -1677,6 +1749,13 @@ class MvControlHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError): pass
             if "frame_style" in b:
                 FRAME_STYLE = str(b["frame_style"])
+            if "show_no_signal" in b:
+                SHOW_NO_SIGNAL = _as_bool(b["show_no_signal"])
+            if "freeze_detect_s" in b:
+                try: FREEZE_DETECT_S = max(0.0, float(b["freeze_detect_s"]))
+                except (TypeError, ValueError): pass
+            if "show_format" in b:
+                SHOW_FORMAT = _as_bool(b["show_format"])
             geom_dirty.set()
             tally_dirty.set()
         self.send_response(200)
@@ -1695,6 +1774,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
             FLUX_CONFIG[:] = new_fc
             mv_state["inputs"][:] = [cfg.get("path", "") for cfg in new_fc]
             sources[:] = [None] * len(new_fc)
+            _in_track.clear()
             geom_dirty.set()
             tally_dirty.set()
         self.send_response(200)
@@ -1772,6 +1852,7 @@ while True:
     canvas_u = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
     canvas_v = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
     ts_in_per_input = {{}}  # path → ts_in_ns, rempli par les lectures réussies
+    _statuses = []          # (idx, statut, chip format) → signature de la couche info
 
     with state_lock:
         _fc = list(FLUX_CONFIG)   # snapshot stable pour cette frame
@@ -1798,6 +1879,8 @@ while True:
 
         if src is None:
             canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
+            if SHOW_NO_SIGNAL:
+                _statuses.append((i, "nosignal", ""))
             continue
 
         try:
@@ -1808,6 +1891,17 @@ while True:
             frame_size = src["frame_size"]
             fi, ts_in = struct.unpack("QQ", bytes(shm[0:16]))
             ts_in_per_input[src.get("path", cfg["path"])] = ts_in
+            # Suivi freeze : t = dernier instant où le frame_index source a avancé.
+            tr = _in_track.get(i)
+            if tr is None or tr.get("path") != src["path"]:
+                tr = {{"path": src["path"], "fi": fi, "t": now}}
+                _in_track[i] = tr
+            elif fi != tr["fi"]:
+                tr["fi"] = fi; tr["t"] = now
+            _st = "freeze" if (FREEZE_DETECT_S > 0 and now - tr["t"] > FREEZE_DETECT_S) else ""
+            _chip = _fmt_chip_txt(cfg, src) if SHOW_FORMAT else ""
+            if _st or _chip:
+                _statuses.append((i, _st, _chip))
             slot   = fi % RING_SIZE
             offset = HEADER_SIZE + slot * frame_size
 
@@ -1829,6 +1923,8 @@ while True:
             canvas_v[vy//_CH:vy//_CH+vh//_CH,      video_x//_CW:video_x//_CW+video_w//_CW]   = dst_v
         except Exception:
             canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
+            if SHOW_NO_SIGNAL:
+                _statuses.append((i, "nosignal", ""))
 
     # Géométrie modifiée à chaud (:8082/window) → re-baker la couche statique
     if geom_dirty.is_set():
@@ -1836,6 +1932,7 @@ while True:
             static_y, static_u, static_v, static_a, static_a2 = render_static()
         geom_dirty.clear()
         tally_dirty.set()   # labels protocole + pavés tally ont aussi bougé
+        _info_sig = None    # les rects vidéo ont pu bouger → re-baker la couche info
 
     # Re-rendu dynamique (labels protocole + tally) si l'état a changé.
     # La couche bordure dépend aussi du tally (style tally_border) et de la géo/
@@ -1845,6 +1942,19 @@ while True:
         dyn_y, dyn_u, dyn_v, dyn_a, dyn_a2 = render_dynamic()
         border_y, border_u, border_v, border_a, border_a2 = render_border()
         tally_dirty.clear()
+
+    # Couche info (NO SIGNAL / FREEZE / chip format) : re-bakée seulement quand la
+    # signature change (transition d'état, recâblage, géométrie) — SOUS l'habillage.
+    _sig = tuple(_statuses)
+    if _sig != _info_sig:
+        with state_lock:
+            _info_layer = render_info(_statuses) if _statuses else None
+        _info_sig = _sig
+    if _info_layer is not None:
+        _iy, _iu, _iv, _ia, _ia2 = _info_layer
+        canvas_y = blend(canvas_y, _iy, _ia)
+        canvas_u = blend(canvas_u, _iu, _ia2)
+        canvas_v = blend(canvas_v, _iv, _ia2)
 
     # Bordure SOUS l'habillage : au-dessus de la vidéo seulement — le bandeau de
     # texte, les pavés tally et les VU-mètres passent PAR-DESSUS (elle ne barre

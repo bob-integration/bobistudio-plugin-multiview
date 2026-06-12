@@ -14,6 +14,8 @@ window.MXLPlugins.multiview = {
     // (liste + mini-aperçu + badge version) est gérée par le shell via listPreview ci-dessous.
     mount(el, vmid, ctx) {
         // multiview.js déjà chargé par le shell → appel direct.
+        // i18n : traduit le HTML statique injecté (data-i18n*) avant le premier rendu.
+        if (typeof mwApplyI18n === 'function') mwApplyI18n(el);
         if (vmid != null && typeof chargerMw === 'function') chargerMw(vmid);
         if (typeof rafraichirListeLayouts === 'function') rafraichirListeLayouts();
         window.addEventListener('resize', this._onResize);
