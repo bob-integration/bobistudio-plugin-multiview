@@ -1,11 +1,8 @@
 {
-  "version": "0.13.0",
+  "version": "0.12.0",
   "date": "2026-06-12",
   "changes": {
     "Nouveautés": [
-      "HORLOGE source ANC : nouvelle source de timecode pour l'outil Horloge — affiche le TIMECODE EMBARQUÉ (SMPTE ST 12M / RP188-ATC) d'une source 2110 reçue, choisie via un sélecteur d'entrée vidéo (« Source du timecode »). Le timecode est lu IN-BAND depuis le flux ANC (2110-40) de la source — dérivé du shm vidéo comme le sont déjà les VU-mètres audio — et décodé côté multiview (aucune modification du moteur de réception ni de l'en-tête vidéo). Drop-frame géré (séparateur ';'). Affiche '--:--:--:--' si la source n'a pas d'ANC/timecode (générateur, ffmpeg). Design aligné sur le SDK MXL (l'ancillaire = flux de données séparé) → survit à la future migration MXL sans réécriture."
-    ],
-    "Nouveautés (0.12.0)": [
       "HABILLAGES DE FENÊTRE : les styles de cadre quasi invisibles (liseré gris 1 px ; bordure tally transparente hors antenne) sont remplacés par 5 vrais habillages qui RÉSERVENT leur place autour de l'image (réduction homothétique, rien n'est recouvert) — MONITEUR (bezel physique arrondi avec nom gravé et LED tally G/D, clé stylized), UMD BROADCAST (boîtier nom centré sous l'image + lampes tally carrées G/D + cadre fin, clé classic), CADRE TALLY (bordure épaisse TOUJOURS visible — grise au repos, rouge/vert/ambre en tally — avec onglet nom intégré, clé tally_border), VISEUR (équerres de viseur aux 4 coins + chip nom arrondi avec pastille d'état, nouvelle clé viewfinder) et FLAT (nom au-dessus d'un soulignement plein pleine largeur = indicateur tally, nouvelle clé flat). Clés existantes conservées : les multiviews déployés profitent du nouveau rendu au prochain déploiement, sans migration.",
       "Épaisseur d'habillage AUTOMATIQUE : proportionnelle à la fenêtre (3 % du petit côté, bornée 3..24 px), dégradée proprement sur les très petites fenêtres (la bande nom saute avant les marges). Le réglage « Texte sous l'image » ne concerne plus que le style « Aucun » (les habillages intègrent leur propre zone nom/tally).",
       "Aperçu FIDÈLE des habillages dans le composer : le canvas de l'éditeur dessine désormais chaque style (bezel, boîtier UMD, cadre+onglet, équerres+chip, soulignement) avec la géométrie d'image réduite exacte du rendu réel — auparavant aucun style de cadre n'était prévisualisé.",

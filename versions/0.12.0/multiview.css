@@ -1,0 +1,470 @@
+/* ─── Layout principal : éditeur (1fr) + colonne latérale (réglages + layouts) ── */
+.mw-compose {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: var(--space-4);
+    align-items: start;
+}
+.mw-side {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+/* Panneaux latéraux : surface unique (bg-elev), pas de carte dans carte */
+.mw-settings,
+.layout-list {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    min-width: 0;
+}
+.mw-settings h2,
+.layout-list h2 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin: 0 0 var(--space-3) 0;
+    color: var(--text-strong);
+}
+
+/* Réglages de sortie : champs empilés, paires compactes sur une ligne */
+.mw-settings .row {
+    display: flex;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+.mw-settings .row:last-child { margin-bottom: 0; }
+.mw-settings .row .field { flex: 1; }
+
+.layout-list ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.layout-list li {
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-small);
+    margin-bottom: var(--space-2);
+    font-size: 0.9em;
+    background: var(--bg-input);
+    border: 1px solid var(--border-soft);
+}
+.layout-list .meta {
+    color: var(--text-muted);
+    font-size: 0.78em;
+    margin-top: 2px;
+}
+
+/* Aperçus canvas : background tokenisé, pas de noir pur */
+.layout-list canvas {
+    display: block;
+    margin-top: var(--space-2);
+    background: var(--canvas-bg);
+    border: 1px solid var(--border);
+    width: 100%;
+    height: auto;
+    border-radius: var(--radius-small);
+}
+
+/* Actions sur les layouts enregistrés : touch-friendly */
+.layout-list .actions {
+    display: flex;
+    gap: var(--space-1);
+    margin-top: var(--space-2);
+}
+.layout-list .actions .btn {
+    flex: 1;
+    padding: 6px var(--space-2);
+    font-size: 0.78em;
+    margin: 0;
+    min-height: 36px;
+}
+
+/* Forme d'enregistrement d'un layout : input puis bouton, séparés par une fine bordure */
+.save-layout-form {
+    margin-bottom: var(--space-3);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid var(--border-soft);
+}
+.save-layout-form + .save-layout-form {
+    border-bottom: none;
+}
+.save-layout-form label {
+    display: block;
+    font-size: 0.78em;
+    color: var(--text-muted);
+    margin-bottom: var(--space-1);
+    font-weight: 500;
+}
+.save-layout-form input[type="text"] {
+    width: 100%;
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 9px;
+    border-radius: var(--radius-small);
+    margin-bottom: var(--space-2);
+    font-family: var(--font-base);
+    font-size: 0.88em;
+}
+.save-layout-form .btn { width: 100%; margin: 0; }
+
+/* ─── Éditeur (panneau central) ─────────────────────────────── */
+.mw-editor {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-4);
+    min-width: 0;
+}
+.mw-editor.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    min-height: 240px;
+    text-align: center;
+    gap: var(--space-2);
+}
+.mw-editor.empty .empty-state-title {
+    color: var(--text-strong);
+    font-size: 1em;
+    font-weight: 600;
+    margin: 0;
+}
+.mw-editor.empty .empty-state-msg {
+    margin: 0;
+    max-width: 38ch;
+    font-size: 0.9em;
+}
+
+/* En-tête éditeur */
+.mw-editor-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+}
+.mw-editor-head h2 {
+    margin: 0;
+    font-size: 1em;
+    font-weight: 600;
+    color: var(--text-strong);
+}
+.mw-editor-head .meta {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: var(--space-1);
+}
+
+/* Champs (éditeur + réglages latéraux) — les .ios-toggle sont exclus du style
+   input pour garder leurs proportions intrinsèques 36×20 (pas de min-height/padding). */
+.mw-editor .field,
+.mw-settings .field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+.mw-editor .field label,
+.mw-settings .field label {
+    font-size: 0.78em;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+.mw-editor .field input:not([type="checkbox"]),
+.mw-editor .field select,
+.mw-settings .field input:not([type="checkbox"]),
+.mw-settings .field select {
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 9px;
+    border-radius: var(--radius-small);
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    min-height: 32px;
+    min-width: 0;
+}
+.mw-editor .field input:focus-visible,
+.mw-editor .field select:focus-visible,
+.mw-settings .field input:focus-visible,
+.mw-settings .field select:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--bg);
+}
+.field-inline {
+    flex-direction: row !important;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: 0.88em;
+    cursor: pointer;
+}
+.field-color input[type="color"] { width: 60px; padding: 2px; }
+.field-narrow input { width: 88px; }
+
+/* Lignes de champs de l'éditeur */
+.mw-editor-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+    align-items: flex-end;
+}
+.mw-editor-row .field-grow { flex: 1 1 280px; min-width: 240px; }
+.mw-editor-row .field-inline { align-self: center; }
+
+/* Barre d'insertion (+ PiP / + Texte / + Horloge / + Image) */
+.mw-insert {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+}
+.mw-insert .lbl {
+    font-size: 0.82em;
+    color: var(--text-muted);
+    font-weight: 500;
+    margin-right: var(--space-1);
+}
+.mw-insert .btn { margin: 0; }
+
+/* ─── Toolbar d'outils : groupes segmentés, boutons icône neutres ───
+   Un groupe = micro-label uppercase + rangée tonale (bg-input). Aucun bouton
+   coloré : la couleur reste réservée aux actions (Déployer, Retirer). */
+.mw-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-3);
+    margin-bottom: var(--space-2);
+}
+.tool-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.tool-group-label {
+    font-size: 0.62em;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding-left: 2px;
+}
+.tool-row {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-input);
+    border-radius: var(--radius-small);
+}
+.tool-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.tool-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-strong);
+}
+.tool-btn:active:not(:disabled) { filter: brightness(0.92); }
+.tool-btn:disabled { opacity: 0.35; cursor: default; }
+.tool-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+.tool-btn svg { width: 16px; height: 16px; display: block; }
+
+.mw-snap {
+    margin-left: auto;
+    align-self: center;
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
+    color: var(--text-muted);
+    font-size: 0.82em;
+    cursor: pointer;
+}
+.mw-hint {
+    color: var(--text-muted);
+    font-size: 0.78em;
+    margin: var(--space-1) 0 var(--space-3);
+}
+
+/* Wrapper canvas : surface noire conservée (= zone signal-less rendue),
+   pas de bordure pour ne pas créer une nième surface. fit-content : la surface
+   sombre colle exactement au canvas — pas de bande morte qui ressemblerait à de
+   la zone composable (resizeCanvas fixe la taille d'affichage en px). */
+.mw-canvas-wrap {
+    position: relative;
+    width: fit-content;
+    max-width: 100%;
+    background: var(--canvas-bg);
+    border-radius: var(--radius-small);
+    overflow: hidden;
+}
+.mw-canvas-wrap canvas {
+    display: block;
+    cursor: crosshair;
+    touch-action: none;   /* drag au doigt/stylet : pas de scroll pendant le geste */
+}
+
+/* Table des entrées : pas de bordure d'encadrement, séparée par un fond tonal léger */
+.mw-entry-table {
+    margin-top: var(--space-3);
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.9em;
+}
+.mw-entry-table thead tr {
+    color: var(--text-muted);
+    text-align: left;
+}
+.mw-entry-table th,
+.mw-entry-table td {
+    padding: 6px var(--space-2);
+    border-bottom: 1px solid var(--border-soft);
+}
+.mw-entry-table th { border-bottom-color: var(--border); }
+.mw-entry-table th.w40 { width: 40px; }
+.mw-entry-table th.w90 { width: 90px; }
+
+.mw-entry-row { cursor: pointer; transition: background 0.1s; }
+.mw-entry-row:hover { background: var(--bg-hover); }
+.mw-entry-row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+.mw-entry-row.is-selected { background: var(--accent-soft); }
+/* Entrée de la banque non affichée (PiP retiré) : source câblée conservée */
+.mw-entry-row.is-hidden td { opacity: 0.6; }
+.mw-entry-row.is-hidden td:last-child { opacity: 1; }
+.mw-entry-row.is-primary {
+    background: var(--bg-selected);
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+.mw-entry-row.is-primary td:first-child { font-weight: 600; color: var(--accent); }
+.mw-entry-color {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+    border: 1px solid var(--border-soft);
+    background: var(--swatch, var(--text-muted));
+}
+.mw-entry-path {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+}
+
+/* Panneau d'édition (entrée ou overlay) : surface tonale au lieu d'une carte
+   bordée, pour rester en cohérence "pas de carte dans carte". */
+.mw-entry-panel {
+    margin-top: var(--space-3);
+    padding: var(--space-3);
+    background: var(--bg-input);
+    border-radius: var(--radius-small);
+}
+.mw-entry-panel .mw-editor-row { margin-bottom: var(--space-2); }
+.mw-entry-panel .mw-editor-row:last-child { margin-bottom: 0; }
+.mw-entry-panel .mw-editor-row-divider {
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--border-soft);
+}
+
+/* ─── Overlays (texte / horloge / image) ────────────────────── */
+/* Même surface tonale que le panneau d'entrée ; l'identité overlay passe par le
+   chip de type (--overlay-accent), pas par une bande de couleur. */
+.mw-overlay-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+.mw-overlay-kind {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.72em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    /* Fallback : le token vit dans les thèmes du socle (cf. --canvas-bg) ; si
+       l'orchestrateur ne le définit pas encore, le plugin reste autonome. */
+    background: var(--overlay-accent-soft, oklch(0.74 0.11 315 / 0.14));
+    color: var(--overlay-accent, oklch(0.74 0.11 315));
+}
+.ov-grp { border-top: 1px dashed var(--border-soft); padding-top: var(--space-2); }
+
+/* `.mw-editor-row`/`.field` ont `display:flex`, qui écrase le `display:none` par défaut de
+   l'attribut [hidden] → sans ça, les groupes de réglages par type d'overlay (Texte/Horloge/
+   Image) s'affichaient TOUS à la fois. On rétablit le masquage pour ces éléments flex. */
+.mw-editor-row[hidden],
+.ov-grp[hidden],
+.mw-editor .field[hidden],
+.mw-settings .field[hidden],
+.mw-settings[hidden] { display: none !important; }
+
+/* Bandeau d'alerte local à l'éditeur, role=status — remplace les alert() natifs */
+.mw-toast {
+    position: sticky;
+    top: 8px;
+    z-index: 10;
+    margin-bottom: var(--space-3);
+    padding: 8px var(--space-3);
+    border-radius: var(--radius-small);
+    background: var(--status-warning-bg);
+    color: var(--status-warning-fg);
+    border: 1px solid var(--status-warning-fg);
+    font-size: 0.88em;
+    display: none;
+}
+.mw-toast.visible { display: block; animation: mw-toast-in 220ms cubic-bezier(.22,1,.36,1); }
+@keyframes mw-toast-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* ─── Responsive ────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+    .mw-compose { grid-template-columns: 1fr; }
+    .mw-side {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: start;
+    }
+    .mw-settings,
+    .layout-list { flex: 1 1 300px; }
+    .layout-list ul { max-height: 300px; overflow-y: auto; }
+}
+
+@media (max-width: 640px) {
+    .mw-toolbar .mw-snap { margin-left: 0; width: 100%; padding-top: var(--space-2); }
+    .mw-editor-row .field-grow { flex-basis: 100%; min-width: 0; }
+    .mw-side { flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mw-toast.visible { animation: none; }
+    .tool-btn, .mw-entry-row { transition: none; }
+}

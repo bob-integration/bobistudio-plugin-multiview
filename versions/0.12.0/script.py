@@ -1365,106 +1365,8 @@ def _chrono_elapsed(ov, now):
         base += now - st["since"]
     return base
 
-# ── Horloge source ANC : timecode embarqué (RP188/ATC) lu du flux ANC (2110-40) ──
-# MXL-aligné : l'ANC est un FLUX DE DONNÉES séparé (futur ST 2038), pas un champ de l'en-tête
-# vidéo. On dérive le shm ANC de l'entrée vidéo (miroir des VU-mètres) et on décode le RP188
-# côté consommateur. Format du slot écrit par mtl_rx.c data_rx_thread :
-#   [u32 meta_num][u32 udw_fill][anc_meta_rec×meta_num][udw octets] ; anc_meta_rec = 8×uint16 (16 o).
-ANC_SLOT     = 8192
-ANC_RING     = 8
-ANC_HDR      = 64
-ANC_TOTAL    = ANC_HDR + ANC_RING * ANC_SLOT
-ANC_META_REC = 16
-anc_states = {{}}   # flux_idx → {{"for_path", "state": {{shm_f, shm, path}}|None}}
-
-def _derive_anc_shm_path(video_path):
-    """`/dev/shm/mtl_0` → `/dev/shm/mtl_anc_0` (miroir 2110_io hooks._derive_anc_shm)."""
-    m = re.match(r"(/dev/shm/.+?)_(\d+)$", video_path)
-    if m:
-        return f"{{m.group(1)}}_anc_{{m.group(2)}}"
-    return None
-
-def _open_anc_state(video_path):
-    p = _derive_anc_shm_path(video_path)
-    if not p or not os.path.exists(p):
-        return None
-    try:
-        if os.path.getsize(p) < ANC_TOTAL:
-            return None
-        f = open(p, "r+b")
-        return {{"shm_f": f, "shm": mmap.mmap(f.fileno(), ANC_TOTAL), "path": p}}
-    except Exception:
-        return None
-
-def _decode_anc_tc(shm):
-    """Dernier grain ANC → ATC RP188 (DID/SDID 0x60, 16 UDW BCD) → (hh,mm,ss,ff,df) ou None."""
-    try:
-        idx = struct.unpack("<Q", bytes(shm[0:8]))[0]
-        slot = idx % ANC_RING                       # l'en-tête pointe le DERNIER grain écrit
-        base = ANC_HDR + slot * ANC_SLOT
-        mn, _fill = struct.unpack_from("<II", shm, base)
-        if mn == 0 or mn > 256:
-            return None
-        meta_off = base + 8
-        udw_base = meta_off + mn * ANC_META_REC
-        for m in range(mn):
-            did, sdid, _line, _hori, udw_size, udw_offset, _c, _s = struct.unpack_from(
-                "<8H", shm, meta_off + m * ANC_META_REC)
-            if did != 0x60 or sdid != 0x60 or udw_size < 16:
-                continue
-            w = udw_base + udw_offset
-            if w + 16 > base + ANC_SLOT:
-                return None
-            b = [(shm[w + 2*i] & 0x0f) | ((shm[w + 2*i + 1] & 0x0f) << 4) for i in range(8)]
-            frames  = (b[0] & 0x0f) + ((b[0] >> 4) & 0x03) * 10
-            seconds = (b[2] & 0x0f) + ((b[2] >> 4) & 0x07) * 10
-            minutes = (b[4] & 0x0f) + ((b[4] >> 4) & 0x07) * 10
-            hours   = (b[6] & 0x0f) + ((b[6] >> 4) & 0x03) * 10
-            return (hours, minutes, seconds, frames, bool((b[0] >> 6) & 0x01))
-    except Exception:
-        return None
-    return None
-
-def _anc_tc_for(ov):
-    """(hh,mm,ss,ff,df) de l'entrée vidéo référencée par l'horloge ANC (tc_source), ou None."""
-    try:
-        idx = int(ov.get("tc_source") or 0)
-    except (TypeError, ValueError):
-        return None
-    with state_lock:
-        cfg = FLUX_CONFIG[idx] if 0 <= idx < len(FLUX_CONFIG) else None
-        vpath = (cfg.get("path") or "") if cfg else ""
-    rec = anc_states.get(idx)
-    # (ré)ouvre si l'entrée a changé de source, ou tant que le flux ANC n'est pas encore là.
-    if rec is None or rec["for_path"] != vpath or rec["state"] is None:
-        if rec and rec["state"]:
-            try: rec["state"]["shm"].close(); rec["state"]["shm_f"].close()
-            except Exception: pass
-        rec = {{"for_path": vpath, "state": _open_anc_state(vpath) if vpath else None}}
-        anc_states[idx] = rec
-    return _decode_anc_tc(rec["state"]["shm"]) if rec["state"] else None
-
-def _fmt_clock_fields(ov, hh, mm, ss, ff, df=False, dash=False):
-    """Met en forme HH/MM/SS/II selon les cases activées ; séparateur images ';' si drop-frame.
-    dash=True → tirets (timecode ANC indisponible)."""
-    cell = (lambda _v: "--") if dash else (lambda v: "%02d" % v)
-    parts = []
-    if _as_bool(_overlay_get(ov, "show_hh", True)): parts.append(cell(hh))
-    if _as_bool(_overlay_get(ov, "show_mm", True)): parts.append(cell(mm))
-    if _as_bool(_overlay_get(ov, "show_ss", True)): parts.append(cell(ss))
-    base = ":".join(parts)
-    if _as_bool(_overlay_get(ov, "show_ff", False)):
-        base = (base + (";" if df else ":") + cell(ff)) if base else cell(ff)
-    return base or ("--:--:--" if dash else "%02d:%02d:%02d" % (hh, mm, ss))
-
 def _format_clock(ov, now):
     src = ov.get("clock_source") or "ptp"
-    if src == "anc":   # timecode embarqué de la source (RP188/ATC), lu du flux ANC dérivé
-        tc = _anc_tc_for(ov)
-        if tc is None:
-            return _fmt_clock_fields(ov, 0, 0, 0, 0, dash=True)
-        hh, mm, ss, ff, df = tc
-        return _fmt_clock_fields(ov, hh, mm, ss, ff, df=df)
     if src in ("chrono", "countdown"):
         elapsed = _chrono_elapsed(ov, now)
         if src == "countdown":
@@ -1477,7 +1379,12 @@ def _format_clock(ov, now):
     mm = int((val % 3600) // 60)
     ss = int(val % 60)
     ff = int((val - int(val)) * _FN / _FD)
-    return _fmt_clock_fields(ov, hh, mm, ss, ff)
+    parts = []
+    if _as_bool(_overlay_get(ov, "show_hh", True)): parts.append("%02d" % hh)
+    if _as_bool(_overlay_get(ov, "show_mm", True)): parts.append("%02d" % mm)
+    if _as_bool(_overlay_get(ov, "show_ss", True)): parts.append("%02d" % ss)
+    if _as_bool(_overlay_get(ov, "show_ff", False)): parts.append("%02d" % ff)
+    return ":".join(parts) if parts else "%02d:%02d:%02d" % (hh, mm, ss)
 
 def _overlay_image(ov):
     b64 = ov.get("image_b64") or ""

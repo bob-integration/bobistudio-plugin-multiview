@@ -1206,7 +1206,6 @@ function newOverlay(kind) {
     if (kind === 'clock') Object.assign(o, {
         clock_source: 'ptp', show_hh: true, show_mm: true, show_ss: true, show_ff: false,
         offset_ms: 0, chrono_start: '00:00:00', chrono_running: false,
-        tc_source: 0,   // index d'entrée vidéo dont on lit le timecode ANC
         bg_color: '#000000', bg_opacity: 60 });
     if (kind === 'image') Object.assign(o, { image_b64: '', image_name: '', fit: 'contain', opacity: 100 });
     return o;
@@ -1250,8 +1249,7 @@ function serializeOverlays() {
             show_hh: o.show_hh !== false, show_mm: o.show_mm !== false,
             show_ss: o.show_ss !== false, show_ff: !!o.show_ff,
             offset_ms: parseInt(o.offset_ms) || 0,
-            chrono_start: o.chrono_start || '00:00:00', chrono_running: !!o.chrono_running,
-            tc_source: parseInt(o.tc_source) || 0 });
+            chrono_start: o.chrono_start || '00:00:00', chrono_running: !!o.chrono_running });
         if (o.kind === 'image') Object.assign(base, {
             image_b64: o.image_b64 || '', image_name: o.image_name || '',
             fit: o.fit || 'contain', opacity: clamp(o.opacity, 100) });
@@ -1282,14 +1280,12 @@ function hexA(hex, alpha) {
 }
 
 function clockSample(o) {
-    // L'éditeur n'a pas le timecode ANC live → placeholder en tirets pour la source ANC.
-    const dash = o.clock_source === 'anc';
     const p = [];
-    if (o.show_hh !== false) p.push(dash ? '--' : '12');
-    if (o.show_mm !== false) p.push(dash ? '--' : '34');
-    if (o.show_ss !== false) p.push(dash ? '--' : '56');
-    if (o.show_ff) p.push(dash ? '--' : '00');
-    return p.join(':') || (dash ? '--:--:--' : '12:34:56');
+    if (o.show_hh !== false) p.push('12');
+    if (o.show_mm !== false) p.push('34');
+    if (o.show_ss !== false) p.push('56');
+    if (o.show_ff) p.push('00');
+    return p.join(':') || '12:34:56';
 }
 
 function drawImageFit(ctx, img, o) {
@@ -1405,7 +1401,6 @@ function refreshOverlayPanel() {
     _ovSetChk('ov_show_ff', !!o.show_ff);
     _ovSetVal('ov_offset_ms', o.offset_ms || 0);
     _ovSetVal('ov_chrono_start', o.chrono_start || '00:00:00');
-    _ovFillTcSources(o.tc_source);
     _ovSetVal('ov_layer', o.layer || 'foreground');
     _ovSetVal('ov_fit', o.fit || 'contain');
     _ovSetVal('ov_opacity', o.opacity ?? 100);
@@ -1415,19 +1410,6 @@ function refreshOverlayPanel() {
     sub('ov_text_tsl_grp', o.kind === 'text' && o.text_source === 'tsl');
     sub('ov_chrono_grp',   o.kind === 'clock' && (o.clock_source === 'chrono' || o.clock_source === 'countdown'));
     sub('ov_ptp_grp',      o.kind === 'clock' && o.clock_source === 'ptp');
-    sub('ov_anc_grp',      o.kind === 'clock' && o.clock_source === 'anc');
-}
-
-// Peuple le sélecteur d'entrée vidéo dont l'horloge ANC lit le timecode embarqué.
-function _ovFillTcSources(selected) {
-    const sel = document.getElementById('ov_tc_source');
-    if (!sel) return;
-    const opts = (editorParams.flux_config || []).map((f, i) => {
-        const nm = computeDisplayName(f) || sourceHostname(f) || ('entrée ' + (i + 1));
-        return `<option value="${i}">#${i + 1} ${escapeHtml(nm)}</option>`;
-    });
-    sel.innerHTML = opts.join('') || '<option value="0">— aucune entrée —</option>';
-    sel.value = String(selected ?? 0);
 }
 
 function onOverlayChange() {
@@ -1458,7 +1440,6 @@ function onOverlayChange() {
         o.show_ff = g('ov_show_ff').checked;
         o.offset_ms = parseInt(g('ov_offset_ms').value) || 0;
         o.chrono_start = g('ov_chrono_start').value || '00:00:00';
-        o.tc_source = parseInt(g('ov_tc_source').value) || 0;
     }
     if (o.kind === 'image') {
         o.layer = g('ov_layer').value;

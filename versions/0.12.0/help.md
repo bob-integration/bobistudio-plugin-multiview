@@ -30,18 +30,16 @@ comme les fenêtres. Toute modification s'applique **à chaud**.
   couleur de fond. Chaque couleur a un état alternatif **Tally On** (autre couleur) déclenché
   par un index TSL. Le texte est **saisi en local** ou **issu du TSL** (index TSL).
 - **Champ horloge** : affiche un timecode réglable (cases **HH / MM / SS / II**). Source :
-  **PTP** (horloge synchrone du jour, avec offset positif/négatif), **chrono**, **décompte**, ou
-  **ANC** (timecode embarqué RP188/ATC de la source — choisir l'entrée vidéo dont on lit le TC ;
-  affiche `--:--:--:--` si la source n'a pas de timecode). Pour chrono/décompte, des boutons
-  **Démarrer / Arrêter / Réinitialiser** pilotent l'horloge en direct.
+  **PTP** (horloge synchrone du jour, avec offset positif/négatif), **chrono** ou **décompte**.
+  Pour chrono/décompte, des boutons **Démarrer / Arrêter / Réinitialiser** pilotent l'horloge
+  en direct.
 - **Champ image** : ajoute un **logo** au premier plan, ou un **fond** derrière toute l'image.
   L'image est **importée directement depuis l'ordinateur** (bouton « Importer une image… »),
   réduite côté navigateur puis embarquée au déploiement (aucun stockage serveur). Ajustement
   `contain` / `cover` / `stretch` et opacité réglables.
 
-> La source **ANC** lit le timecode embarqué (ST 2110-40 / RP188) du **flux ANC** de la source,
-> décodé côté multiview. Elle nécessite une source reçue par le moteur MTL (2110_io) qui produit
-> le flux ANC ; les sources générateur/ffmpeg sans ANC affichent `--:--:--:--`.
+> La source horloge « entrée ANC depuis SHM » est prévue dans une version ultérieure (elle
+> nécessite l'extraction du timecode en amont, côté receiver).
 
 ## Notes
 

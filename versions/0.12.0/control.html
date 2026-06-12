@@ -128,13 +128,12 @@
             </div>
             <!-- Horloge -->
             <div class="mw-editor-row ov-grp" data-kind="clock">
-                <div class="field"><label for="ov_clock_source">Source</label><select id="ov_clock_source" onchange="onOverlayChange()"><option value="ptp">PTP (horloge du jour)</option><option value="chrono">Chrono</option><option value="countdown">Décompte</option><option value="anc">ANC (timecode source)</option></select></div>
+                <div class="field"><label for="ov_clock_source">Source</label><select id="ov_clock_source" onchange="onOverlayChange()"><option value="ptp">PTP (horloge du jour)</option><option value="chrono">Chrono</option><option value="countdown">Décompte</option><option value="anc" disabled>ANC (à venir)</option></select></div>
                 <label class="field field-inline" for="ov_show_hh"><input type="checkbox" class="ios-toggle" id="ov_show_hh" onchange="onOverlayChange()"> HH</label>
                 <label class="field field-inline" for="ov_show_mm"><input type="checkbox" class="ios-toggle" id="ov_show_mm" onchange="onOverlayChange()"> MM</label>
                 <label class="field field-inline" for="ov_show_ss"><input type="checkbox" class="ios-toggle" id="ov_show_ss" onchange="onOverlayChange()"> SS</label>
                 <label class="field field-inline" for="ov_show_ff"><input type="checkbox" class="ios-toggle" id="ov_show_ff" onchange="onOverlayChange()"> II</label>
                 <div class="field field-narrow" id="ov_ptp_grp"><label for="ov_offset_ms">Offset (ms)</label><input type="number" id="ov_offset_ms" onchange="onOverlayChange()"></div>
-                <div class="field" id="ov_anc_grp"><label for="ov_tc_source">Source du timecode</label><select id="ov_tc_source" onchange="onOverlayChange()"></select></div>
             </div>
             <div class="mw-editor-row" id="ov_chrono_grp" hidden>
                 <div class="field field-narrow"><label for="ov_chrono_start">Départ (HH:MM:SS)</label><input type="text" id="ov_chrono_start" placeholder="00:00:00" onchange="onOverlayChange()"></div>
