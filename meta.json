@@ -1,7 +1,10 @@
 {
-  "version": "0.14.14",
+  "version": "0.14.15",
   "date": "2026-06-13",
   "changes": {
+    "Corrections (0.14.15)": [
+      "Sélection de proxy pyramide STRIDED-AWARE : la pyramide ne dégrade plus JAMAIS le temps de traitement. Avant, _select_input prenait le plus petit proxy ≥ taille de tuile par SEULE la taille → sur une grille 3×3 (tuile 640) il choisissait le proxy ½ (960→640 = ratio 1,5 NON entier → gather np.ix_ lent) alors que la source pleine se réduisait en ÷3 STRIDED (zéro-copie) : régression de +129 %. Désormais la sélection privilégie un ratio ENTIER sur les deux axes (resize strided) puis la plus petite largeur, et retombe sur le plein si aucun proxy n'offre de ratio entier. Bench (sources 1080p→1080p) : 2×2 −65 %, 4×4 −72 %, 3×3 et 1×1 neutres (au lieu de régresser)."
+    ],
     "Performance (0.14.14)": [
       "Consommation des proxies « pyramide » (Phase 2, OPPORTUNISTE) : si une pyramide co-localisée descale une source, l'orchestrateur injecte ses proxies pré-réduits {path,w,h} dans l'entrée flux_config ; chaque tuile choisit À L'EXÉCUTION le proxy le plus petit dont la largeur ≥ sa taille d'affichage (lecture + redimensionnement sur une image jusqu'à 16× plus petite) au lieu de re-descaler la source pleine à chaque trame. 100 % de repli : pas de pyramide, proxy absent/non prêt, ou tuile plus grande que tout proxy → lecture de la source pleine comme avant (jamais d'écran noir, chaque tuile décide indépendamment). Le chip « format source » continue d'afficher la résolution RÉELLE de la source, pas celle du proxy.",
       "Robustesse (défense en profondeur) : le ring de CHAQUE source est désormais DÉRIVÉ de la taille réelle du shm (≠ RING_SIZE figé) — indispensable pour lire un proxy de ring différent (souvent 4), et corrige par la même occasion tout mismatch de ring source↔multiview (mauvais slot / SIGBUS si on mmappait au-delà du fichier). cf. mxl-consumer-format-contract."

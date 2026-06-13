@@ -1720,28 +1720,39 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
             if i < len(sources): sources[i] = src
     return src
 
-def _select_input(i, cfg, target_w):
-    """Choisit la MEILLEURE source pour une tuile de largeur `target_w` : le proxy pyramide
-    le plus PETIT dont la largeur ≥ target_w (qualité préservée, charge minimale) ET qui
-    EXISTE sur disque ; sinon la source pleine câblée (repli systématique — un proxy absent
-    ne fige jamais la tuile). OPPORTUNISTE : une entrée sans `proxies` = comportement classique.
-    Renvoie (path, in_w, in_h)."""
+def _select_input(i, cfg, target_w, target_h):
+    """Choisit la MEILLEURE source pour une tuile `target_w×target_h` parmi la source pleine et
+    ses proxies pyramide. Critère = COÛT du redimensionnement, PAS juste la taille :
+      1. ne garder que les candidats ≥ tuile (jamais d'upscale) et présents sur disque ;
+      2. PRÉFÉRER un ratio ENTIER sur les deux axes → resize_plane reste en strided zéro-copie
+         (le gather np.ix_ non-entier est bien plus lent : un proxy ½ lu en ratio 1,5 coûte PLUS
+         cher que la source pleine lue en ÷N entier) ;
+      3. à coût égal, la source la PLUS PETITE (moins d'octets lus).
+    OPPORTUNISTE : entrée sans `proxies` = comportement classique. Repli systématique sur le
+    plein (un proxy absent/inadapté ne fige jamais la tuile). Renvoie (path, in_w, in_h)."""
     with state_lock:
         base = mv_state["inputs"][i] if i < len(mv_state["inputs"]) else ""
     base_w = cfg.get("in_w", 640); base_h = cfg.get("in_h", 360)
-    best = None
+    cands = [(base, base_w, base_h)]
     for p in (cfg.get("proxies") or []):
         try:
             pw = int(p.get("w") or 0); ph = int(p.get("h") or 0)
         except (TypeError, ValueError):
             continue
         pp = p.get("path") or ""
-        if pw >= target_w and pp and (best is None or pw < best[1]):
-            if os.path.exists(pp):
-                best = (pp, pw, ph)
-    if best:
-        return best[0], best[1], best[2]
-    return base, base_w, base_h
+        if pp and os.path.exists(pp):
+            cands.append((pp, pw, ph))
+    if target_w <= 0 or target_h <= 0:
+        return base, base_w, base_h
+    valid = [c for c in cands if c[1] >= target_w and c[2] >= target_h]
+    if not valid:
+        return base, base_w, base_h
+    # strided (ratio entier sur W ET H) d'abord, puis la plus petite largeur (moins d'octets).
+    def _key(c):
+        strided = (c[1] % target_w == 0 and c[2] % target_h == 0)
+        return (0 if strided else 1, c[1])
+    best = min(valid, key=_key)
+    return best
 
 class MvControlHandler(BaseHTTPRequestHandler):
     def _json(self):
@@ -1951,7 +1962,7 @@ while True:
         vy, vh = g["vy"], g["vh"]
         video_x, video_w = g["vx"], g["vw"]
         # Pyramide : lire le proxy pré-réduit le mieux dimensionné pour cette tuile (sinon plein).
-        _ep, _ew, _eh = _select_input(i, cfg, video_w)
+        _ep, _ew, _eh = _select_input(i, cfg, video_w, vh)
         src = ensure_input(i, _ep, _ew, _eh)   # rouvre le mmap si la source/proxy a changé
 
         if src is None:
