@@ -1,7 +1,10 @@
 {
-  "version": "0.14.1",
+  "version": "0.14.2",
   "date": "2026-06-13",
   "changes": {
+    "Nouveautés (0.14.2)": [
+      "Latence page Câbles : sémantique « arête = arrivée / nœud = traitement ». La latence par entrée (inputs_latency_ms) est désormais mesurée À LA LECTURE (ts_read − ts_in producteur = temps de TRANSIT, sous-trame) au lieu de ts_out − ts_in (qui incluait tout le compositing → 122 ms trompeurs sur le câble). Nouveau own_latency_ms (top-level :8080) = ts_out − début du cycle compositing = traitement PROPRE du nœud. La somme transit + own le long de la chaîne télescope en bout-en-bout réel. Coût : un time.time_ns() par entrée et par trame (négligeable)."
+    ],
     "Corrections (0.14.1)": [
       "Détection freeze : la mesure d'âge du frame_index utilise désormais time.monotonic() au lieu de l'horloge murale time.time() (partagée avec la grille genlock). Un saut de CLOCK_REALTIME (correction PTP/phc2sys) ne déclenche plus de faux badge FREEZE transitoire ni ne retarde la détection d'un vrai gel — aligné sur la logique de TTL TSL du même script.",
       "Composer i18n : un nom de layout contenant un motif spécial de String.replace ($&, $`, $', $1…) ne corrompt plus le message flash/confirmation (enregistrement, suppression, import) — la substitution {name} passe par un remplaçant fonction au lieu d'une chaîne."

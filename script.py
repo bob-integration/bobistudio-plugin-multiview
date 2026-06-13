@@ -19,7 +19,8 @@ class RollingMs:
         if time.time_ns() - self.last_ns > 2_000_000_000: return None
         return round(sum(self.d) / len(self.d), 1)
 
-lat_in = {{}}  # {{shm_name: RollingMs}}
+lat_in = {{}}  # {{shm_name: RollingMs}} — TRANSIT par entrée (ts_read − ts_in producteur) = arrivée
+own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start), exposé own_latency_ms
 
 # ─── Config injectée (contrat plugin) ───────────────────────
 CONFIG         = {config}
@@ -348,13 +349,14 @@ _tsl_slots = {{}}
 _tsl_combined = {{}}         # index → True si le contrôleur envoie des paquets combinés
 TSL_SLOT_TTL_FACTOR = 2.5   # TTL = factor × intervalle keepalive mesuré
 TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
-metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}}}
+metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None}}
 
 def _refresh_lat_metrics():
     out = {{}}
     for shm_name, rm in lat_in.items():
         out[shm_name] = rm.avg()
     metrics["inputs_latency_ms"] = out
+    metrics["own_latency_ms"] = own_lat.avg()
 # debug TSL : dernier paquet reçu (mis à jour par _handle_tsl_client)
 tsl_debug = {{"last_raw_hex": None, "last_ver": None, "last_index": None,
               "last_control": None, "last_text": None, "last_error": None,
@@ -1849,10 +1851,11 @@ while True:
     if wait > 0:
         time.sleep(wait)
 
+    ts_cycle_start = time.time_ns()   # début du compositing (après l'attente de grille) → own_latency
     canvas_y = np.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT)
     canvas_u = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
     canvas_v = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
-    ts_in_per_input = {{}}  # path → ts_in_ns, rempli par les lectures réussies
+    ts_in_per_input = {{}}  # path → transit_ms (âge à la lecture), rempli par les lectures réussies
     _statuses = []          # (idx, statut, chip format) → signature de la couche info
 
     with state_lock:
@@ -1891,7 +1894,9 @@ while True:
             in_h    = src["in_h"]
             frame_size = src["frame_size"]
             fi, ts_in = struct.unpack("QQ", bytes(shm[0:16]))
-            ts_in_per_input[src.get("path", cfg["path"])] = ts_in
+            # TRANSIT (arrivée) = âge de la trame d'entrée À LA LECTURE (avant compositing).
+            if ts_in:
+                ts_in_per_input[src.get("path", cfg["path"])] = (time.time_ns() - ts_in) / 1e6
             # Suivi freeze : t = dernier instant où le frame_index source a avancé.
             tr = _in_track.get(i)
             if tr is None or tr.get("path") != src["path"]:
@@ -2000,12 +2005,14 @@ while True:
     # write_ts = instant de présentation (grille PTP) en genlock, sinon horloge mur.
     _wts = int(next_frame_time * 1e9) if GENLOCK else ts_out
     shm_out[0:16] = struct.pack("QQ", out_frame_index, _wts)
-    # Latence par PiP : Δ ts_out − ts_in pour chaque input lu ce cycle
-    for path, ts_in in ts_in_per_input.items():
+    # Latence par PiP : TRANSIT (arrivée) déjà calculé à la lecture (ts_read − ts_in producteur).
+    for path, transit_ms in ts_in_per_input.items():
         key = path[len("/dev/shm/"):] if path.startswith("/dev/shm/") else path
         if key not in lat_in:
             lat_in[key] = RollingMs()
-        lat_in[key].push((ts_out - ts_in) / 1e6)
+        lat_in[key].push(transit_ms)
+    # Traitement PROPRE du nœud (compositing) = ts_out − début du cycle.
+    own_lat.push((ts_out - ts_cycle_start) / 1e6)
     out_frame_index += 1
     if GENLOCK:
         next_frame_time += FRAME_INTERVAL
