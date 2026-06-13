@@ -1,7 +1,11 @@
 {
-  "version": "0.14.13",
+  "version": "0.14.14",
   "date": "2026-06-13",
   "changes": {
+    "Performance (0.14.14)": [
+      "Consommation des proxies « pyramide » (Phase 2, OPPORTUNISTE) : si une pyramide co-localisée descale une source, l'orchestrateur injecte ses proxies pré-réduits {path,w,h} dans l'entrée flux_config ; chaque tuile choisit À L'EXÉCUTION le proxy le plus petit dont la largeur ≥ sa taille d'affichage (lecture + redimensionnement sur une image jusqu'à 16× plus petite) au lieu de re-descaler la source pleine à chaque trame. 100 % de repli : pas de pyramide, proxy absent/non prêt, ou tuile plus grande que tout proxy → lecture de la source pleine comme avant (jamais d'écran noir, chaque tuile décide indépendamment). Le chip « format source » continue d'afficher la résolution RÉELLE de la source, pas celle du proxy.",
+      "Robustesse (défense en profondeur) : le ring de CHAQUE source est désormais DÉRIVÉ de la taille réelle du shm (≠ RING_SIZE figé) — indispensable pour lire un proxy de ring différent (souvent 4), et corrige par la même occasion tout mismatch de ring source↔multiview (mauvais slot / SIGBUS si on mmappait au-delà du fichier). cf. mxl-consumer-format-contract."
+    ],
     "Performance (0.14.13)": [
       "Overlays per-frame (horloge/VU-mètres) limités à leur BOUNDING-BOX : ajouter une horloge faisait retomber le multiview à 10 fps (own 83 ms) car toute couche per-frame forçait une re-conversion RGBA→YUV de la trame 1080 ENTIÈRE à chaque image (ov_convert 50 ms), alors que l'horloge n'occupe ~1 % de l'écran. Désormais : le chrome statique est toujours blendé via ses opérandes pré-calculés (sans conversion), et les couches per-frame sont composées puis converties+blendées UNIQUEMENT sur leur bounding-box (getbbox, bornes alignées chroma). own retombe sous 20 ms → 50 fps tenu même avec horloge + VU. Z-ordre inchangé (over associatif)."
     ],

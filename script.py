@@ -457,11 +457,16 @@ def open_source(cfg):
         in_w = cfg.get("in_w", 640)
         in_h = cfg.get("in_h", 360)
         frame_size = (in_w * in_h + 2 * (in_w // _CW) * (in_h // _CH)) * _BPS
-        total = HEADER_SIZE + frame_size * RING_SIZE
+        # Ring du PRODUCTEUR DÉRIVÉ de la taille RÉELLE du shm (≠ RING_SIZE figé) : un proxy
+        # pyramide a son propre ring (souvent 4), et supposer RING_SIZE mmapperait au-delà du
+        # fichier → SIGBUS, ou lirait le mauvais slot. cf. mxl-consumer-format-contract.
+        actual = os.path.getsize(cfg["path"])
+        ring   = max(1, (actual - HEADER_SIZE) // frame_size)
+        total  = HEADER_SIZE + frame_size * ring
         f = open(cfg["path"], "r+b")
         shm = mmap.mmap(f.fileno(), total)
         return {{"f": f, "shm": shm, "view": memoryview(shm),
-                 "in_w": in_w, "in_h": in_h, "frame_size": frame_size}}
+                 "in_w": in_w, "in_h": in_h, "frame_size": frame_size, "ring": ring}}
     except Exception as e:
         print(f"Erreur ouverture {{cfg['path']}}: {{e}}")
         return None
@@ -1681,14 +1686,19 @@ mv_state = {{"inputs": [cfg.get("path", "") for cfg in FLUX_CONFIG]}}
 sources = [None] * len(FLUX_CONFIG)
 _in_track = {{}}  # i → {{"path", "fi", "t"}} : dernier avancement du frame_index source (détection freeze)
 
-def ensure_input(i):
+def ensure_input(i, want_path=None, want_w=None, want_h=None):
+    """Ouvre/maintient la source de la fenêtre i. Si (want_path,want_w,want_h) est fourni
+    (proxy choisi par _select_input), on ouvre CE shm ; sinon la source pleine câblée."""
     with state_lock:
         if i >= len(mv_state["inputs"]) or i >= len(sources):
             return None
-        wanted = mv_state["inputs"][i]
-        cur    = sources[i]
-        cfg_iw = FLUX_CONFIG[i].get("in_w", 640) if i < len(FLUX_CONFIG) else 640
-        cfg_ih = FLUX_CONFIG[i].get("in_h", 640) if i < len(FLUX_CONFIG) else 360
+        cur = sources[i]
+        if want_path is not None:
+            wanted = want_path; cfg_iw = want_w; cfg_ih = want_h
+        else:
+            wanted = mv_state["inputs"][i]
+            cfg_iw = FLUX_CONFIG[i].get("in_w", 640) if i < len(FLUX_CONFIG) else 640
+            cfg_ih = FLUX_CONFIG[i].get("in_h", 640) if i < len(FLUX_CONFIG) else 360
     if not wanted:
         if cur is not None:
             try: cur["shm"].close(); cur["f"].close()
@@ -1709,6 +1719,29 @@ def ensure_input(i):
         with state_lock:
             if i < len(sources): sources[i] = src
     return src
+
+def _select_input(i, cfg, target_w):
+    """Choisit la MEILLEURE source pour une tuile de largeur `target_w` : le proxy pyramide
+    le plus PETIT dont la largeur ≥ target_w (qualité préservée, charge minimale) ET qui
+    EXISTE sur disque ; sinon la source pleine câblée (repli systématique — un proxy absent
+    ne fige jamais la tuile). OPPORTUNISTE : une entrée sans `proxies` = comportement classique.
+    Renvoie (path, in_w, in_h)."""
+    with state_lock:
+        base = mv_state["inputs"][i] if i < len(mv_state["inputs"]) else ""
+    base_w = cfg.get("in_w", 640); base_h = cfg.get("in_h", 360)
+    best = None
+    for p in (cfg.get("proxies") or []):
+        try:
+            pw = int(p.get("w") or 0); ph = int(p.get("h") or 0)
+        except (TypeError, ValueError):
+            continue
+        pp = p.get("path") or ""
+        if pw >= target_w and pp and (best is None or pw < best[1]):
+            if os.path.exists(pp):
+                best = (pp, pw, ph)
+    if best:
+        return best[0], best[1], best[2]
+    return base, base_w, base_h
 
 class MvControlHandler(BaseHTTPRequestHandler):
     def _json(self):
@@ -1913,11 +1946,13 @@ while True:
     for i, cfg in enumerate(_fc):
         if cfg.get("hidden"):
             continue   # entrée de la banque non affichée : source câblée conservée, pas de rendu
-        src = ensure_input(i)   # rouvre le mmap si la source a changé (hot-input)
         # Géométrie partagée (bandeau sous l'image SANS déformation, bande VU hors image)
         g = _video_rect(cfg)
         vy, vh = g["vy"], g["vh"]
         video_x, video_w = g["vx"], g["vw"]
+        # Pyramide : lire le proxy pré-réduit le mieux dimensionné pour cette tuile (sinon plein).
+        _ep, _ew, _eh = _select_input(i, cfg, video_w)
+        src = ensure_input(i, _ep, _ew, _eh)   # rouvre le mmap si la source/proxy a changé
 
         if src is None:
             canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
@@ -1946,7 +1981,7 @@ while True:
             _chip = _fmt_chip_txt(cfg, src) if SHOW_FORMAT else ""
             if _st or _chip:
                 _statuses.append((i, _st, _chip))
-            slot   = fi % RING_SIZE
+            slot   = fi % src.get("ring", RING_SIZE)
             offset = HEADER_SIZE + slot * frame_size
 
             _yb  = in_w * in_h * _BPS               # octets du plan Y
