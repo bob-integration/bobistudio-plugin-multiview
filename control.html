@@ -8,7 +8,6 @@
     <div id="mw-editor-form" hidden>
         <header class="mw-editor-head">
             <h2 id="mw-editor-title-h"><span id="ed_hostname">—</span> <span class="meta">#<span id="ed_vmid">—</span></span></h2>
-            <button type="button" class="btn btn-orange" id="ed_deploy_btn" onclick="deployerEditor()" data-i18n="plugin.multiview.deploy">Déployer</button>
         </header>
         <div class="mw-insert" role="group" aria-label="Ajouter un élément" data-i18n-aria="plugin.multiview.add_aria">
             <span class="lbl" data-i18n="plugin.multiview.add_label">Ajouter :</span>
@@ -228,6 +227,9 @@
         </div>
         <div class="row">
             <div class="field"><label for="ed_tsl_port" data-i18n="plugin.multiview.tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
+        </div>
+        <div class="row mw-deploy-row">
+            <button type="button" class="btn btn-orange" id="ed_deploy_btn" onclick="deployerEditor()" data-i18n="plugin.multiview.deploy">Déployer</button>
         </div>
     </section>
     <section class="layout-list" aria-labelledby="layout-list-title">

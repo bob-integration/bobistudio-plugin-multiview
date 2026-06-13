@@ -37,6 +37,9 @@
 }
 .mw-settings .row:last-child { margin-bottom: 0; }
 .mw-settings .row .field { flex: 1; }
+/* Bouton Déployer en bas du panneau Sortie & habillage : pleine largeur, séparé. */
+.mw-settings .mw-deploy-row { margin-top: var(--space-3); }
+.mw-settings .mw-deploy-row #ed_deploy_btn { flex: 1; width: 100%; }
 
 .layout-list ul {
     list-style: none;

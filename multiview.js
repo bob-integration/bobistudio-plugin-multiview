@@ -836,6 +836,16 @@ function dessiner() {
     updateToolbar();
     _readTokens();
     drawCanvas();
+    mwRefreshSidebarPreview();
+}
+
+// Rafraîchit le mini-aperçu (schéma) de l'instance ÉDITÉE dans la liste de gauche, à partir de la
+// disposition LIVE de l'éditeur (editorParams) — sans round-trip serveur. La sidebar reflète ainsi
+// les changements au fil de l'édition, en plus du rafraîchissement après déploiement (tpLoadInstances).
+function mwRefreshSidebarPreview() {
+    if (editorVmid == null || !editorParams || typeof drawMiniPreview !== 'function') return;
+    const cv = document.querySelector('.tp-inst-preview[data-vmid="' + editorVmid + '"]');
+    if (cv) { try { drawMiniPreview(cv, editorParams); } catch (_) {} }
 }
 
 // Peinture du canvas seule : appelée à chaque frame de drag — le DOM (table,
