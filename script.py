@@ -494,9 +494,11 @@ def rgba_to_yuv(img):
 
 def blend(dst, src, alpha):
     """dst/src YUV (uint8/uint16) + alpha uint8 (0..255) → même dtype. Accumulateur uint32
-    car en 10/12 bits dst*(255-a) déborde uint16."""
+    car en 10/12 bits dst*(255-a) déborde uint16. Division /255 par astuce entière (pas de
+    division coûteuse) : pour t < 256*255, round(t/255) = (t + (t>>8) + 1) >> 8."""
     a32 = alpha.astype(np.uint32)
-    return ((dst.astype(np.uint32) * (255 - a32) + src.astype(np.uint32) * a32) // 255).astype(_NP_DT)
+    t = dst.astype(np.uint32) * (255 - a32) + src.astype(np.uint32) * a32
+    return ((t + (t >> 8) + 1) >> 8).astype(_NP_DT)
 
 # ─── Rendu d'overlay (PIL) ───────────────────────────────────
 
@@ -783,7 +785,7 @@ def render_static():
                     d.text(((text_l + text_r) // 2, bar_top + m["bar_h"] // 2), name,
                            font=_fit_text(d, name, m, text_r - text_l),
                            fill=(255, 255, 255, 255), anchor="mm")
-    return rgba_to_yuv(img)
+    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def render_dynamic():
     """Re-rendu à chaque changement Tally/TSL : éléments dépendant de l'état tally
@@ -932,7 +934,7 @@ def render_dynamic():
                 d.rectangle([x + w - tally_pad - tally_sz, ty,
                              x + w - tally_pad, ty + tally_sz],
                             fill=cR, outline=bR)
-    return rgba_to_yuv(img)
+    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def render_border():
     """Couche bordure SEULE, blendée juste APRÈS la vidéo : au-dessus de l'image
@@ -1008,7 +1010,7 @@ def render_border():
                 for k in range(BORDER_W):
                     d.rectangle([vx + k, vy + k, vx + vw - 1 - k, vy + vh - 1 - k],
                                 outline=BORDER_COLOR)
-    return rgba_to_yuv(img)
+    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def render_meters(now):
     """Re-rendu par frame : layer RGBA contenant tous les peak meters.
@@ -1058,7 +1060,7 @@ def render_meters(now):
             opacity_pct = 100  # hors image = totalement opaque (zone réservée)
         _draw_meter(img, mx, my, mw, mh, n, peaks, holds,
                     cfg.get("meter_scale") or "dbfs", opacity_pct)
-    return rgba_to_yuv(img)
+    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 
 # ─── Couche « info » : NO SIGNAL / FREEZE / format source ────────────────────
@@ -1118,7 +1120,7 @@ def render_info(statuses):
             d.rounded_rectangle([cx, cy, cx + cw, cy + ch], radius=2, fill=(0, 0, 0, 170))
             d.text((cx + cw // 2, cy + ch // 2 + 1), fmt_txt,
                    font=fnt, fill=(210, 212, 218, 255), anchor="mm")
-    return rgba_to_yuv(img)
+    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 _info_sig = None      # signature de la couche info bakée (None = re-bake forcé)
 _info_layer = None
@@ -1610,7 +1612,7 @@ def render_overlays_bg():
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     for ov in bg:
         _draw_image_overlay(img, ov)
-    return rgba_to_yuv(img)
+    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def render_overlays_fg(now):
     fg = [ov for ov in OVERLAYS if (not ov.get("hidden"))
@@ -1627,11 +1629,14 @@ def render_overlays_fg(now):
             _draw_text_overlay(d, ov, _format_clock(ov, now))
         elif k == "image":
             _draw_image_overlay(img, ov)
-    return rgba_to_yuv(img)
+    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
-static_y, static_u, static_v, static_a, static_a2 = render_static()
-dyn_y = dyn_u = dyn_v = dyn_a = dyn_a2 = None
-border_y, border_u, border_v, border_a, border_a2 = render_border()
+static_rgba  = render_static()   # couches d'habillage CACHÉES, conservées en RGBA (PIL)
+dyn_rgba     = None
+border_rgba  = render_border()
+_chrome_rgba = None              # info+bordure+statique+dynamique pré-composés en UNE image RGBA (caché)
+_chrome_yuv  = None              # sa conversion YUV+alpha (refaite seulement sur changement)
+_chrome_dirty = True             # force la 1re composition du chrome
 
 # ─── Boucle de mix ───────────────────────────────────────────
 
@@ -1869,7 +1874,8 @@ while True:
     # Images de fond (layer=background) : sous la vidéo. Couche cachée, re-bakée sur changement.
     if overlay_dirty.is_set():
         with state_lock:
-            overlay_bg_layer = render_overlays_bg()
+            _bg_rgba = render_overlays_bg()
+        overlay_bg_layer = rgba_to_yuv(_bg_rgba) if _bg_rgba is not None else None
         overlay_dirty.clear()
     if overlay_bg_layer is not None:
         _oby, _obu, _obv, _oba, _oba2 = overlay_bg_layer
@@ -1939,70 +1945,51 @@ while True:
 
     _t_after_inputs = time.time_ns()   # profiling : fin des entrées vidéo (lecture+resize+blend tuiles)
 
-    # Géométrie modifiée à chaud (:8082/window) → re-baker la couche statique
+    # Re-bake des couches d'habillage CACHÉES (RGBA) sur changement, puis (re)composition du
+    # « chrome » consolidé (z-ordre info < bordure < statique < dynamique) en UNE image RGBA cachée.
     if geom_dirty.is_set():
         with state_lock:
-            static_y, static_u, static_v, static_a, static_a2 = render_static()
-        geom_dirty.clear()
-        tally_dirty.set()   # labels protocole + pavés tally ont aussi bougé
-        _info_sig = None    # les rects vidéo ont pu bouger → re-baker la couche info
+            static_rgba = render_static()
+        geom_dirty.clear(); tally_dirty.set(); _info_sig = None; _chrome_dirty = True
 
-    # Re-rendu dynamique (labels protocole + tally) si l'état a changé.
-    # La couche bordure dépend aussi du tally (style tally_border) et de la géo/
-    # style (geom_dirty arme tally_dirty) → on la re-bake ici en même temps,
-    # AVANT son blend (la bordure est désormais la première couche d'habillage).
     if tally_dirty.is_set():
-        dyn_y, dyn_u, dyn_v, dyn_a, dyn_a2 = render_dynamic()
-        border_y, border_u, border_v, border_a, border_a2 = render_border()
-        tally_dirty.clear()
+        dyn_rgba    = render_dynamic()
+        border_rgba = render_border()
+        tally_dirty.clear(); _chrome_dirty = True
 
-    # Couche info (NO SIGNAL / FREEZE / chip format) : re-bakée seulement quand la
-    # signature change (transition d'état, recâblage, géométrie) — SOUS l'habillage.
     _sig = tuple(_statuses)
     if _sig != _info_sig:
         with state_lock:
             _info_layer = render_info(_statuses) if _statuses else None
-        _info_sig = _sig
-    if _info_layer is not None:
-        _iy, _iu, _iv, _ia, _ia2 = _info_layer
-        canvas_y = blend(canvas_y, _iy, _ia)
-        canvas_u = blend(canvas_u, _iu, _ia2)
-        canvas_v = blend(canvas_v, _iv, _ia2)
+        _info_sig = _sig; _chrome_dirty = True
 
-    # Bordure SOUS l'habillage : au-dessus de la vidéo seulement — le bandeau de
-    # texte, les pavés tally et les VU-mètres passent PAR-DESSUS (elle ne barre
-    # plus la zone de texte d'une ligne).
-    if border_a is not None:
-        canvas_y = blend(canvas_y, border_y, border_a)
-        canvas_u = blend(canvas_u, border_u, border_a2)
-        canvas_v = blend(canvas_v, border_v, border_a2)
+    if _chrome_dirty:
+        _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+        for _lyr in (_info_layer, border_rgba, static_rgba, dyn_rgba):   # z-ordre conservé
+            if _lyr is not None:
+                _ch.alpha_composite(_lyr)
+        _chrome_rgba = _ch
+        _chrome_yuv  = rgba_to_yuv(_chrome_rgba)
+        _chrome_dirty = False
 
-    # Blend overlay statique (bandeaux + noms)
-    canvas_y = blend(canvas_y, static_y,  static_a)
-    canvas_u = blend(canvas_u, static_u,  static_a2)
-    canvas_v = blend(canvas_v, static_v,  static_a2)
+    # Couches PER-FRAME (VU-mètres + overlays texte/horloge/logo) rendues chaque frame, PAR-DESSUS
+    # le chrome. Si rien de neuf → on réutilise le chrome déjà converti (pas de re-conversion).
+    _meters = render_meters(now)
+    _ovfg   = render_overlays_fg(now)
+    if _meters is None and _ovfg is None:
+        _ov_yuv = _chrome_yuv
+    else:
+        _overlay = _chrome_rgba.copy() if _chrome_rgba is not None else Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+        if _meters is not None: _overlay.alpha_composite(_meters)
+        if _ovfg   is not None: _overlay.alpha_composite(_ovfg)
+        _ov_yuv = rgba_to_yuv(_overlay)
 
-    if dyn_a is not None:
-        canvas_y = blend(canvas_y, dyn_y, dyn_a)
-        canvas_u = blend(canvas_u, dyn_u, dyn_a2)
-        canvas_v = blend(canvas_v, dyn_v, dyn_a2)
-
-    # Peak meters : re-rendu à chaque frame (les niveaux changent en continu)
-    m_layer = render_meters(now)
-    if m_layer is not None:
-        m_y, m_u, m_v, m_a, m_a2 = m_layer
-        canvas_y = blend(canvas_y, m_y, m_a)
-        canvas_u = blend(canvas_u, m_u, m_a2)
-        canvas_v = blend(canvas_v, m_v, m_a2)
-
-    # Overlays texte/horloge/logo (layer=foreground) : par-dessus TOUT, re-rendus chaque frame
-    # (l'horloge avance en continu, le texte/couleur peut suivre le tally TSL).
-    _ovfg = render_overlays_fg(now)
-    if _ovfg is not None:
-        _ofy, _ofu, _ofv, _ofa, _ofa2 = _ovfg
-        canvas_y = blend(canvas_y, _ofy, _ofa)
-        canvas_u = blend(canvas_u, _ofu, _ofa2)
-        canvas_v = blend(canvas_v, _ofv, _ofa2)
+    # UN SEUL blend de tout l'habillage (au lieu de ~6 couches × 3 plans, le hotspot des 64 ms).
+    if _ov_yuv is not None:
+        _oy, _ou, _ov, _oa, _oa2 = _ov_yuv
+        canvas_y = blend(canvas_y, _oy, _oa)
+        canvas_u = blend(canvas_u, _ou, _oa2)
+        canvas_v = blend(canvas_v, _ov, _oa2)
 
     _t_after_overlays = time.time_ns()   # profiling : fin de l'habillage (blends pleine trame)
     out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])

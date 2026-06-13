@@ -1,7 +1,10 @@
 {
-  "version": "0.14.3",
+  "version": "0.14.4",
   "date": "2026-06-13",
   "changes": {
+    "Performance (0.14.4)": [
+      "Compositing ~3× plus rapide (own_latency ~66 → ~18 ms, fps ~12 → ~40+). Le profiling 0.14.3 a montré que 96 % du temps partait dans les blends pleine trame de l'habillage (~6 couches × 3 plans Y/U/V, uint32 + //255). Consolidation : les render_* renvoient désormais du RGBA ; les couches cachées (info/bordure/statique/dynamique) sont pré-composées en UNE image RGBA (Image.alpha_composite, en C) + sa conversion YUV cachée, re-bakées seulement sur changement ; par frame on ajoute VU-mètres + overlays texte/horloge, on convertit UNE fois et on fait UN SEUL blend (au lieu de ~6). blend() : division /255 par astuce entière (pas de division coûteuse). Z-ordre et rendu inchangés. La vidéo (lecture+resize) ne coûtait déjà rien (0,3 ms)."
+    ],
     "Nouveautés (0.14.3)": [
       "Profiling du compositing : ventilation de own_latency exposée sur :8080 en compose_breakdown_ms {inputs, overlays, output} (moyennes glissantes) — entrées vidéo (lecture+resize+blend des tuiles) / habillage (blends pleine trame info/bordure/statique/dynamique/VU/overlays) / assemblage de sortie. Sert à cibler l'optimisation de la latence de traitement du multiview."
     ],
