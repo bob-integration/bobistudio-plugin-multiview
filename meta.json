@@ -1,7 +1,10 @@
 {
-  "version": "0.14.9",
+  "version": "0.14.10",
   "date": "2026-06-13",
   "changes": {
+    "Performance (0.14.10)": [
+      "Resize des tuiles ~gratuit pour les grilles à ratio entier (vise le 1080p50). À 1080, le redimensionnement des 4 entrées HD (resize_plane via gather np.ix_) coûtait ~20 ms/trame (inputs) — au-dessus du budget 20 ms d'une trame 50 fps → le genlock retombait à 25 fps. Pour un downscale à ratio ENTIER (2×2 → ½, 3×3 → ⅓, 4×4 → ¼…), resize_plane utilise désormais un slicing à pas constant plane[::sy, ::sx] (une VUE, zéro copie/alloc) au lieu du gather np.ix_ — résultat octet-identique au nearest-neighbor. Repli sur np.ix_ pour les ratios non entiers / l'upscale. own_latency repasse sous 20 ms → 1080p50 tenu."
+    ],
     "Corrections (0.14.9)": [
       "Robustesse sélection : le chargement des formats vidéo (loadVideoFormats) et le peuplement du sélecteur de format ajoutés en 0.14.8 ne peuvent plus EMPÊCHER de sélectionner un multiview dans la page Traitements — l'appel est gardé (typeof + try/catch) et le peuplement du select est enveloppé. Si la palette de formats est indisponible, on retombe proprement sur le repli sans bloquer l'éditeur."
     ],

@@ -468,6 +468,14 @@ def open_source(cfg):
 
 def resize_plane(plane, target_h, target_w):
     from_h, from_w = plane.shape
+    if target_h <= 0 or target_w <= 0:
+        return plane[:1, :1]
+    # Downscale à ratio ENTIER (grilles 2×2/3×3/4×4… → tuile = ½, ⅓, ¼ de la source) : slicing à
+    # pas constant `plane[::sy, ::sx]` (une VUE, zéro copie) au lieu du gather np.ix_ (alloue+copie).
+    # Résultat octet-identique au nearest-neighbor (arange*from/target = arange*s pour s entier).
+    # Sinon (ratio non entier / upscale), repli sur le gather générique.
+    if from_h % target_h == 0 and from_w % target_w == 0:
+        return plane[::from_h // target_h, ::from_w // target_w]
     row_idx = (np.arange(target_h) * from_h / target_h).astype(int)
     col_idx = (np.arange(target_w) * from_w / target_w).astype(int)
     return plane[np.ix_(row_idx, col_idx)]
