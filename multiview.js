@@ -250,7 +250,10 @@ async function chargerMw(vmid) {
     }, dc.params || {});
     // Format de sortie : pas de littéral en dur → vient du réglage système (Formats vidéo) si la
     // config persistée ne le porte pas. L'explicite (dc.params, semé à la création) prime.
-    await loadVideoFormats();
+    // DÉFENSIF : le chargement des formats ne doit JAMAIS empêcher de sélectionner un multiview.
+    try {
+        if (typeof loadVideoFormats === 'function') await loadVideoFormats();
+    } catch (e) { /* palette indisponible → on retombe sur le repli ci-dessous */ }
     const _sysf = systemDefaultFormat();
     editorParams.out_width  = editorParams.out_width  || _sysf.w;
     editorParams.out_height = editorParams.out_height || _sysf.h;
@@ -293,7 +296,7 @@ function renderEditor(hostname) {
     document.getElementById('ed_genlock').checked       = p.genlock !== false;
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     document.getElementById('ed_snap').checked          = snapEnabled;
-    populateOutFormatSelect();
+    try { populateOutFormatSelect(); } catch (e) { /* sélecteur de format non bloquant */ }
     // Réglages de sortie (colonne latérale) : visibles dès qu'une instance est chargée
     const settings = document.getElementById('mw-settings');
     if (settings) settings.hidden = false;

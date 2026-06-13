@@ -1,7 +1,10 @@
 {
-  "version": "0.14.8",
+  "version": "0.14.9",
   "date": "2026-06-13",
   "changes": {
+    "Corrections (0.14.9)": [
+      "Robustesse sélection : le chargement des formats vidéo (loadVideoFormats) et le peuplement du sélecteur de format ajoutés en 0.14.8 ne peuvent plus EMPÊCHER de sélectionner un multiview dans la page Traitements — l'appel est gardé (typeof + try/catch) et le peuplement du select est enveloppé. Si la palette de formats est indisponible, on retombe proprement sur le repli sans bloquer l'éditeur."
+    ],
     "Nouveautés (0.14.8)": [
       "Format de sortie depuis le RÉGLAGE SYSTÈME (fin des valeurs en dur) + sélecteur dans le composer. Le multiview hardcodait sa sortie en 1280×720p25 (deploy_defaults du plugin.json + défaut éditeur JS), sans jamais consulter le format vidéo par défaut du système (Réglages → Formats vidéo) que le chemin MTL utilise pourtant déjà. Résultat : impossible de sortir réellement en 1920×1080p50 (la sortie 2110 du sender, qui attend 1080, ne recevait aucune trame valide). Désormais : (1) out_width/out_height/fps/scan retirés des deploy_defaults ; (2) un multiview créé est semé avec le format par défaut système (scripts.multiview_output_format_defaults → get_default_video_format) ; (3) filet au rendu (plugins.render_script) qui complète le format absent depuis le défaut système pour les conteneurs existants ; (4) nouveau sélecteur « Format de sortie » dans le composer (panneau Sortie & habillage), pré-rempli sur le défaut système et peuplé depuis la palette video_formats — choix par-multiview, persisté ; (5) deployerEditor envoie enfin fps et scan (auparavant absents du payload). Le format est STRUCTUREL → un changement exige un redéploiement (avertissement affiché). i18n fr/en. Pré-requis : avoir un format 1920×1080p50 dans la palette Réglages et le choisir."
     ],
