@@ -1,7 +1,10 @@
 {
-  "version": "0.14.6",
+  "version": "0.14.7",
   "date": "2026-06-13",
   "changes": {
+    "Performance (0.14.7)": [
+      "Blend de l'habillage ~2× plus rapide (vise le 1080p50). Le sous-profiling 0.14.6 a montré que les ~20 ms restants de own_latency étaient à 100 % dans les 3 blend() pleine trame (Y/U/V), pas dans la conversion. Comme le chrome (bordures/labels/tally) est STATIQUE entre deux changements, on pré-calcule une fois ses opérandes de blend par plan — inv_a=(255−α) et src_a=src·α (_chrome_pre) — et le blend par trame se réduit à (dst·inv_a + src_a)//255 : plus de (255−α), de src·α ni de cast d'alpha (~2× moins de passes mémoire). De plus, en 8 bits (force8 par défaut) l'accumulateur passe en uint16 — la somme dst·(255−α)+src·α ≤ 255·255 = 65025 y tient — soit 2× moins d'octets que l'uint32 sur une opération memory-bound (uint32 conservé en 10/12 bits). Résultat numériquement IDENTIQUE au blend précédent (vérifié 8 et 10 bits). Quand des VU-mètres/horloge/logo sont présents (habillage dynamique), on garde le chemin complet inchangé. Décision de format confirmée : on reste planar+numpy (v210 en numpy = rédhibitoire à 50 fps ; le SDK MXL natif garde le payload planar → optim non jetable)."
+    ],
     "Nouveautés (0.14.6)": [
       "Profiling fin de l'habillage : compose_breakdown_ms expose désormais ov_render / ov_convert / ov_blend (moyennes glissantes) — rendu PIL des VU-mètres+overlays / conversion RGBA→YUV pleine trame / blend des 3 plans. Sert à cibler la réduction du temps de compositing (~22 ms) sous le budget 20 ms d'un 50 fps : on suspecte la conversion RGBA→YUV plein 1080 refaite à chaque trame (alors que le chrome est caché) comme poste dominant. Instrumentation seule, aucun changement de rendu."
     ],

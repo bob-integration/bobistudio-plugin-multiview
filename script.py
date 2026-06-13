@@ -503,6 +503,17 @@ def blend(dst, src, alpha):
     a32 = alpha.astype(np.uint32)
     return ((dst.astype(np.uint32) * (255 - a32) + src.astype(np.uint32) * a32) // 255).astype(_NP_DT)
 
+# Accumulateur du blend : en 8 bits la somme dst·(255−α)+src·α ≤ 255·255 = 65025 tient en uint16
+# (op memory-bound → 2× moins d'octets qu'uint32) ; en 10/12 bits il faut uint32.
+_ACC = np.uint32 if _DEEP else np.uint16
+
+def blend_pre(dst, inv_a, src_a):
+    """Blend RAPIDE quand src/α sont STATIQUES (habillage caché) : inv_a=(255−α) et src_a=src·α
+    pré-calculés UNE fois (cf. _chrome_pre). Par trame il ne reste que dst·inv_a + src_a puis //255 —
+    ~2× moins de passes mémoire que blend() (plus de (255−α), src·α, ni cast d'alpha). Résultat
+    numériquement IDENTIQUE à blend() (vérifié 8 et 10 bits)."""
+    return ((dst.astype(_ACC) * inv_a + src_a) // 255).astype(_NP_DT)
+
 # ─── Rendu d'overlay (PIL) ───────────────────────────────────
 
 def _make_font(size):
@@ -1639,6 +1650,7 @@ dyn_rgba     = None
 border_rgba  = render_border()
 _chrome_rgba = None              # info+bordure+statique+dynamique pré-composés en UNE image RGBA (caché)
 _chrome_yuv  = None              # sa conversion YUV+alpha (refaite seulement sur changement)
+_chrome_pre  = None              # opérandes de blend PRÉ-CALCULÉS du chrome (inv_a, src_a par plan) — chemin rapide
 _chrome_dirty = True             # force la 1re composition du chrome
 
 # ─── Boucle de mix ───────────────────────────────────────────
@@ -1973,6 +1985,11 @@ while True:
                 _ch.alpha_composite(_lyr)
         _chrome_rgba = _ch
         _chrome_yuv  = rgba_to_yuv(_chrome_rgba)
+        # Pré-calcul des opérandes de blend du chrome (statiques jusqu'au prochain changement) :
+        # inv_a=(255−α) et src_a=src·α par plan (Y, puis U/V via l'alpha sous-échantillonnée).
+        _cy, _cu, _cv, _ca, _ca2 = _chrome_yuv
+        _chrome_pre = (255 - _ca.astype(_ACC),  _cy.astype(_ACC) * _ca,
+                       255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
         _chrome_dirty = False
 
     # Couches PER-FRAME (VU-mètres + overlays texte/horloge/logo) rendues chaque frame, PAR-DESSUS
@@ -1981,21 +1998,30 @@ while True:
     _meters = render_meters(now)
     _ovfg   = render_overlays_fg(now)
     _ts_ov1 = time.time_ns()   # fin rendu PIL meters/fg
-    if _meters is None and _ovfg is None:
-        _ov_yuv = _chrome_yuv
+    if _meters is None and _ovfg is None and _chrome_pre is not None:
+        # CHEMIN RAPIDE : habillage = chrome STATIQUE → blend avec opérandes pré-calculés
+        # (inv_a, src·α) et accumulateur uint16 (8 bits). Pas de conversion, ~2× moins de passes.
+        _ov_yuv = None
+        _ts_ov2 = time.time_ns()
+        _piY, _saY, _piC, _saU, _saV = _chrome_pre
+        canvas_y = blend_pre(canvas_y, _piY, _saY)
+        canvas_u = blend_pre(canvas_u, _piC, _saU)
+        canvas_v = blend_pre(canvas_v, _piC, _saV)
     else:
-        _overlay = _chrome_rgba.copy() if _chrome_rgba is not None else Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-        if _meters is not None: _overlay.alpha_composite(_meters)
-        if _ovfg   is not None: _overlay.alpha_composite(_ovfg)
-        _ov_yuv = rgba_to_yuv(_overlay)
-    _ts_ov2 = time.time_ns()   # fin composition + conversion RGBA→YUV
-
-    # UN SEUL blend de tout l'habillage (au lieu de ~6 couches × 3 plans, le hotspot des 64 ms).
-    if _ov_yuv is not None:
-        _oy, _ou, _ov, _oa, _oa2 = _ov_yuv
-        canvas_y = blend(canvas_y, _oy, _oa)
-        canvas_u = blend(canvas_u, _ou, _oa2)
-        canvas_v = blend(canvas_v, _ov, _oa2)
+        if _meters is None and _ovfg is None:
+            _ov_yuv = _chrome_yuv
+        else:
+            _overlay = _chrome_rgba.copy() if _chrome_rgba is not None else Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+            if _meters is not None: _overlay.alpha_composite(_meters)
+            if _ovfg   is not None: _overlay.alpha_composite(_ovfg)
+            _ov_yuv = rgba_to_yuv(_overlay)
+        _ts_ov2 = time.time_ns()   # fin composition + conversion RGBA→YUV
+        # UN SEUL blend de tout l'habillage (au lieu de ~6 couches × 3 plans, le hotspot des 64 ms).
+        if _ov_yuv is not None:
+            _oy, _ou, _ov, _oa, _oa2 = _ov_yuv
+            canvas_y = blend(canvas_y, _oy, _oa)
+            canvas_u = blend(canvas_u, _ou, _oa2)
+            canvas_v = blend(canvas_v, _ov, _oa2)
 
     _t_after_overlays = time.time_ns()   # profiling : fin de l'habillage (blends pleine trame)
     _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
