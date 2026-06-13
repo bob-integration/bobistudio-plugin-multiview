@@ -235,8 +235,6 @@ async function chargerMw(vmid) {
     editorParams = Object.assign({
         flux_config: [],
         shm_out: 'mxl_mix',
-        out_width: 1280,
-        out_height: 720,
         border_w: 0,
         border_color: '#ffffff',
         overlay_below: false,
@@ -250,6 +248,14 @@ async function chargerMw(vmid) {
         tsl_port: 4801,
         overlays: []
     }, dc.params || {});
+    // Format de sortie : pas de littéral en dur → vient du réglage système (Formats vidéo) si la
+    // config persistée ne le porte pas. L'explicite (dc.params, semé à la création) prime.
+    await loadVideoFormats();
+    const _sysf = systemDefaultFormat();
+    editorParams.out_width  = editorParams.out_width  || _sysf.w;
+    editorParams.out_height = editorParams.out_height || _sysf.h;
+    editorParams.fps        = editorParams.fps        || _sysf.fps;
+    editorParams.scan       = editorParams.scan       || _sysf.scan;
     // Couleurs locales pour le rendu (non sauvegardé)
     editorParams.flux_config = (editorParams.flux_config || []).map((f, i) => Object.assign({
         color: COLORS[i % COLORS.length],
@@ -287,12 +293,61 @@ function renderEditor(hostname) {
     document.getElementById('ed_genlock').checked       = p.genlock !== false;
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     document.getElementById('ed_snap').checked          = snapEnabled;
+    populateOutFormatSelect();
     // Réglages de sortie (colonne latérale) : visibles dès qu'une instance est chargée
     const settings = document.getElementById('mw-settings');
     if (settings) settings.hidden = false;
 
     resizeCanvas();
     dessiner();
+}
+
+// ─── Format de sortie (depuis le réglage système, jamais en dur) ─────────────
+
+// Format par défaut SYSTÈME (palette Réglages → Formats vidéo). Repli ultime = celui du serveur
+// (get_default_video_format : 1280×720) UNIQUEMENT si la palette est vide (DB vierge).
+function systemDefaultFormat() {
+    const list = window._videoFormats || [];
+    const def  = window._videoFormatDefault || '';
+    const f = list.find(x => x.label === def) || list[0];
+    if (f) return { w: f.w, h: f.h, fps: f.fps, scan: f.scan || 'p' };
+    return { w: 1280, h: 720, fps: 25, scan: 'p' };
+}
+
+// Peuple le sélecteur de format de sortie depuis la palette système, sélectionne le format courant
+// (ou ajoute une option « (actuel) » si la résolution courante n'est pas dans la palette).
+function populateOutFormatSelect() {
+    const sel = document.getElementById('ed_out_format');
+    if (!sel) return;
+    const list = window._videoFormats || [];
+    const cur  = editorParams;
+    let html = '', matched = false;
+    list.forEach(f => {
+        const isCur = f.w === cur.out_width && f.h === cur.out_height
+            && Math.abs((f.fps || 0) - (cur.fps || 0)) < 0.01 && (f.scan || 'p') === (cur.scan || 'p');
+        if (isCur) matched = true;
+        html += `<option value="${escapeHtml(f.label)}"${isCur ? ' selected' : ''}>${escapeHtml(f.label)}</option>`;
+    });
+    if (!matched) {
+        const lbl = `${cur.out_width}×${cur.out_height}${cur.scan || 'p'}${cur.fps}`;
+        html = `<option value="__current__" selected>${escapeHtml(lbl)}</option>` + html;
+    }
+    sel.innerHTML = html;
+}
+
+// Changement de format de sortie : structurel (résolution/cadence) → exige un redéploiement.
+function onFormatChange() {
+    const sel = document.getElementById('ed_out_format');
+    if (!sel) return;
+    const f = (window._videoFormats || []).find(x => x.label === sel.value);
+    if (!f) return;   // « (actuel) » : rien à changer
+    editorParams.out_width  = f.w;
+    editorParams.out_height = f.h;
+    editorParams.fps        = f.fps;
+    editorParams.scan       = f.scan || 'p';
+    resizeCanvas();
+    dessiner();
+    mwFlash(T('plugin.multiview.format_changed_redeploy'));
 }
 
 // ─── Handlers globaux ────────────────────────────────────────
@@ -1760,6 +1815,8 @@ async function deployerEditor() {
         shm_out:       editorParams.shm_out,
         out_width:     editorParams.out_width,
         out_height:    editorParams.out_height,
+        fps:           editorParams.fps,
+        scan:          editorParams.scan || 'p',
         border_w:      editorParams.border_w,
         border_color:  editorParams.border_color,
         overlay_below: editorParams.overlay_below,

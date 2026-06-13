@@ -198,6 +198,9 @@
     <section class="mw-settings" id="mw-settings" aria-labelledby="mw-settings-title" hidden>
         <h2 id="mw-settings-title" data-i18n="plugin.multiview.settings_title">Sortie &amp; habillage</h2>
         <div class="row">
+            <div class="field"><label for="ed_out_format" title="Résolution/cadence de sortie. Vient du réglage système (Formats vidéo) ; param structurel : un changement redéploie le container." data-i18n="plugin.multiview.out_format" data-i18n-title="plugin.multiview.out_format_title">Format de sortie</label><select id="ed_out_format" onchange="onFormatChange()"></select></div>
+        </div>
+        <div class="row">
             <div class="field"><label for="ed_max" data-i18n="plugin.multiview.max_inputs">Max entrées</label><input type="number" id="ed_max" min="1" max="32" onchange="onMaxChange()"></div>
             <div class="field"><label for="ed_label_size" data-i18n="plugin.multiview.label_size">Taille texte (px)</label><input type="number" id="ed_label_size" min="6" max="80" onchange="onGlobalChange()"></div>
         </div>
