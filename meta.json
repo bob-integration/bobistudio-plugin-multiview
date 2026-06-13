@@ -1,7 +1,10 @@
 {
-  "version": "0.14.5",
+  "version": "0.14.6",
   "date": "2026-06-13",
   "changes": {
+    "Nouveautés (0.14.6)": [
+      "Profiling fin de l'habillage : compose_breakdown_ms expose désormais ov_render / ov_convert / ov_blend (moyennes glissantes) — rendu PIL des VU-mètres+overlays / conversion RGBA→YUV pleine trame / blend des 3 plans. Sert à cibler la réduction du temps de compositing (~22 ms) sous le budget 20 ms d'un 50 fps : on suspecte la conversion RGBA→YUV plein 1080 refaite à chaque trame (alors que le chrome est caché) comme poste dominant. Instrumentation seule, aucun changement de rendu."
+    ],
     "Corrections (0.14.5)": [
       "blend() : retour à la division `// 255` (une seule ufunc numpy vectorisée). L'astuce entière `(t+(t>>8)+1)>>8` introduite en 0.14.4 s'est révélée PLUS LENTE à la mesure (own ~50 ms persistait) : en numpy elle fait 4 passes mémoire sur des tableaux pleine trame (memory-bound) là où `//255` est une seule opération vectorisée. Le gain réel de 0.14.4 vient de la CONSOLIDATION des couches (un blend au lieu de ~6), pas de l'arithmétique du blend. La consolidation est conservée ; seule l'astuce contre-productive est annulée."
     ],

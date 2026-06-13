@@ -23,6 +23,8 @@ lat_in = {{}}  # {{shm_name: RollingMs}} — TRANSIT par entrée (ts_read − ts
 own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start), exposé own_latency_ms
 # Profiling du compositing (où vont les ms de own_latency) : entrées vidéo / habillage / sortie.
 _t_inputs = RollingMs(); _t_overlays = RollingMs(); _t_output = RollingMs()
+# Sous-ventilation de l'habillage (overlays) : rendu PIL meters/fg / conversion RGBA→YUV / blend.
+_t_ov_render = RollingMs(); _t_ov_convert = RollingMs(); _t_ov_blend = RollingMs()
 
 # ─── Config injectée (contrat plugin) ───────────────────────
 CONFIG         = {config}
@@ -361,7 +363,9 @@ def _refresh_lat_metrics():
     metrics["own_latency_ms"] = own_lat.avg()
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
-                                       "output": _t_output.avg()}}
+                                       "output": _t_output.avg(),
+                                       "ov_render": _t_ov_render.avg(), "ov_convert": _t_ov_convert.avg(),
+                                       "ov_blend": _t_ov_blend.avg()}}
 # debug TSL : dernier paquet reçu (mis à jour par _handle_tsl_client)
 tsl_debug = {{"last_raw_hex": None, "last_ver": None, "last_index": None,
               "last_control": None, "last_text": None, "last_error": None,
@@ -1973,8 +1977,10 @@ while True:
 
     # Couches PER-FRAME (VU-mètres + overlays texte/horloge/logo) rendues chaque frame, PAR-DESSUS
     # le chrome. Si rien de neuf → on réutilise le chrome déjà converti (pas de re-conversion).
+    _ts_ov0 = time.time_ns()
     _meters = render_meters(now)
     _ovfg   = render_overlays_fg(now)
+    _ts_ov1 = time.time_ns()   # fin rendu PIL meters/fg
     if _meters is None and _ovfg is None:
         _ov_yuv = _chrome_yuv
     else:
@@ -1982,6 +1988,7 @@ while True:
         if _meters is not None: _overlay.alpha_composite(_meters)
         if _ovfg   is not None: _overlay.alpha_composite(_ovfg)
         _ov_yuv = rgba_to_yuv(_overlay)
+    _ts_ov2 = time.time_ns()   # fin composition + conversion RGBA→YUV
 
     # UN SEUL blend de tout l'habillage (au lieu de ~6 couches × 3 plans, le hotspot des 64 ms).
     if _ov_yuv is not None:
@@ -1991,6 +1998,9 @@ while True:
         canvas_v = blend(canvas_v, _ov, _oa2)
 
     _t_after_overlays = time.time_ns()   # profiling : fin de l'habillage (blends pleine trame)
+    _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
+    _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
+    _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
     out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
     slot   = out_frame_index % RING_SIZE
     offset = HEADER_SIZE + slot * OUT_FRAME_SIZE
