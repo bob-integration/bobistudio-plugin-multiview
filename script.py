@@ -1844,6 +1844,7 @@ next_frame_time = _grid_next(start_time, FRAME_INTERVAL) if GENLOCK else start_t
 
 while True:
     now = time.time()
+    now_m = time.monotonic()   # horloge MONOTONE pour les durées (détection freeze) — insensible aux sauts de CLOCK_REALTIME (genlock garde time.time())
     wait = next_frame_time - now
     if wait > 0:
         time.sleep(wait)
@@ -1894,11 +1895,11 @@ while True:
             # Suivi freeze : t = dernier instant où le frame_index source a avancé.
             tr = _in_track.get(i)
             if tr is None or tr.get("path") != src["path"]:
-                tr = {{"path": src["path"], "fi": fi, "t": now}}
+                tr = {{"path": src["path"], "fi": fi, "t": now_m}}
                 _in_track[i] = tr
             elif fi != tr["fi"]:
-                tr["fi"] = fi; tr["t"] = now
-            _st = "freeze" if (FREEZE_DETECT_S > 0 and now - tr["t"] > FREEZE_DETECT_S) else ""
+                tr["fi"] = fi; tr["t"] = now_m
+            _st = "freeze" if (FREEZE_DETECT_S > 0 and now_m - tr["t"] > FREEZE_DETECT_S) else ""
             _chip = _fmt_chip_txt(cfg, src) if SHOW_FORMAT else ""
             if _st or _chip:
                 _statuses.append((i, _st, _chip))

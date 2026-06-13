@@ -2019,7 +2019,7 @@ async function enregistrerLayout() {
     } catch(e) {}
     if (r && r.ok) {
         nameEl.value = '';
-        mwFlash(T('plugin.multiview.flash_layout_saved').replace('{name}', name));
+        mwFlash(T('plugin.multiview.flash_layout_saved').replace('{name}', () => name));
         rafraichirListeLayouts();
     } else {
         mwFlash(T('plugin.multiview.flash_layout_save_failed'));
@@ -2071,7 +2071,7 @@ function appliquerLayout(lid) {
 
 async function supprimerLayout(lid) {
     const l = savedLayouts.find(x => x.id === lid);
-    if (!confirm(T('plugin.multiview.confirm_delete_layout').replace('{name}', l ? l.name : lid))) return;
+    if (!confirm(T('plugin.multiview.confirm_delete_layout').replace('{name}', () => (l ? l.name : lid)))) return;
     let r = null;
     try { r = await fetch('/api/layouts/' + lid, {method: 'DELETE'}); } catch(e) {}
     if (r && r.ok) rafraichirListeLayouts();
@@ -2108,7 +2108,7 @@ function onImportLayoutFile(input) {
             });
         } catch(e) {}
         if (r && r.ok) {
-            mwFlash(T('plugin.multiview.flash_layout_imported').replace('{name}', name));
+            mwFlash(T('plugin.multiview.flash_layout_imported').replace('{name}', () => name));
             rafraichirListeLayouts();
         } else {
             mwFlash(T('plugin.multiview.flash_layout_import_failed'));

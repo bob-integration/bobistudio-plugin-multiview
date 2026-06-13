@@ -1,8 +1,12 @@
 {
-  "version": "0.14.0",
-  "date": "2026-06-12",
+  "version": "0.14.1",
+  "date": "2026-06-13",
   "changes": {
-    "Nouveautés": [
+    "Corrections (0.14.1)": [
+      "Détection freeze : la mesure d'âge du frame_index utilise désormais time.monotonic() au lieu de l'horloge murale time.time() (partagée avec la grille genlock). Un saut de CLOCK_REALTIME (correction PTP/phc2sys) ne déclenche plus de faux badge FREEZE transitoire ni ne retarde la détection d'un vrai gel — aligné sur la logique de TTL TSL du même script.",
+      "Composer i18n : un nom de layout contenant un motif spécial de String.replace ($&, $`, $', $1…) ne corrompt plus le message flash/confirmation (enregistrement, suppression, import) — la substitution {name} passe par un remplaçant fonction au lieu d'une chaîne."
+    ],
+    "Nouveautés (0.14.0)": [
       "« NO SIGNAL » : quand la source d'une fenêtre est absente (shm manquant, entrée non câblée, erreur de lecture), la fenêtre affiche un panneau NO SIGNAL (fond gris sombre + texte centré) au lieu d'un noir muet indistinguable d'une vidéo noire légitime. Activé par défaut, désactivable (réglage « NO SIGNAL si source absente », hot-apply via /style).",
       "Détection d'image FIGÉE : badge FREEZE ambre en haut à droite de la fenêtre quand le frame_index de la source n'avance plus depuis N secondes (réglage « Détection freeze », défaut 2 s, 0 = off, hot-apply). Suivi par entrée quasi gratuit (le header shm était déjà lu chaque frame pour la latence) ; rendu via une couche « info » cachée par signature — le coût PIL n'est payé qu'aux transitions d'état, pas par frame.",
       "FORMAT SOURCE par fenêtre (mode ingénierie) : chip discret en bas à droite de l'image affichant le format DÉCLARÉ de la source en notation broadcast (ex. 1920×1080p25, 29.97 fractionnaire géré). Le format vient du câblage : l'orchestrateur résout in_fps/in_scan depuis le producteur du shm (_shm_fmt, étendu avec la cadence) aux mêmes points que in_w/in_h — zéro mesure côté script, info rafraîchie à chaque déploiement/hot-apply/recâblage. Désactivé par défaut (réglage « Format source par fenêtre », hot-apply).",
