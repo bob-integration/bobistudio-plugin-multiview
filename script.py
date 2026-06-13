@@ -21,6 +21,8 @@ class RollingMs:
 
 lat_in = {{}}  # {{shm_name: RollingMs}} — TRANSIT par entrée (ts_read − ts_in producteur) = arrivée
 own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start), exposé own_latency_ms
+# Profiling du compositing (où vont les ms de own_latency) : entrées vidéo / habillage / sortie.
+_t_inputs = RollingMs(); _t_overlays = RollingMs(); _t_output = RollingMs()
 
 # ─── Config injectée (contrat plugin) ───────────────────────
 CONFIG         = {config}
@@ -357,6 +359,9 @@ def _refresh_lat_metrics():
         out[shm_name] = rm.avg()
     metrics["inputs_latency_ms"] = out
     metrics["own_latency_ms"] = own_lat.avg()
+    # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
+    metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
+                                       "output": _t_output.avg()}}
 # debug TSL : dernier paquet reçu (mis à jour par _handle_tsl_client)
 tsl_debug = {{"last_raw_hex": None, "last_ver": None, "last_index": None,
               "last_control": None, "last_text": None, "last_error": None,
@@ -1932,6 +1937,8 @@ while True:
             if SHOW_NO_SIGNAL:
                 _statuses.append((i, "nosignal", ""))
 
+    _t_after_inputs = time.time_ns()   # profiling : fin des entrées vidéo (lecture+resize+blend tuiles)
+
     # Géométrie modifiée à chaud (:8082/window) → re-baker la couche statique
     if geom_dirty.is_set():
         with state_lock:
@@ -1997,11 +2004,16 @@ while True:
         canvas_u = blend(canvas_u, _ofu, _ofa2)
         canvas_v = blend(canvas_v, _ofv, _ofa2)
 
+    _t_after_overlays = time.time_ns()   # profiling : fin de l'habillage (blends pleine trame)
     out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
     slot   = out_frame_index % RING_SIZE
     offset = HEADER_SIZE + slot * OUT_FRAME_SIZE
     shm_out_view[offset:offset + OUT_FRAME_SIZE] = out_frame.tobytes()
     ts_out = time.time_ns()
+    # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
+    _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)
+    _t_overlays.push((_t_after_overlays - _t_after_inputs) / 1e6)
+    _t_output.push((ts_out - _t_after_overlays) / 1e6)
     # write_ts = instant de présentation (grille PTP) en genlock, sinon horloge mur.
     _wts = int(next_frame_time * 1e9) if GENLOCK else ts_out
     shm_out[0:16] = struct.pack("QQ", out_frame_index, _wts)

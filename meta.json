@@ -1,7 +1,10 @@
 {
-  "version": "0.14.2",
+  "version": "0.14.3",
   "date": "2026-06-13",
   "changes": {
+    "Nouveautés (0.14.3)": [
+      "Profiling du compositing : ventilation de own_latency exposée sur :8080 en compose_breakdown_ms {inputs, overlays, output} (moyennes glissantes) — entrées vidéo (lecture+resize+blend des tuiles) / habillage (blends pleine trame info/bordure/statique/dynamique/VU/overlays) / assemblage de sortie. Sert à cibler l'optimisation de la latence de traitement du multiview."
+    ],
     "Nouveautés (0.14.2)": [
       "Latence page Câbles : sémantique « arête = arrivée / nœud = traitement ». La latence par entrée (inputs_latency_ms) est désormais mesurée À LA LECTURE (ts_read − ts_in producteur = temps de TRANSIT, sous-trame) au lieu de ts_out − ts_in (qui incluait tout le compositing → 122 ms trompeurs sur le câble). Nouveau own_latency_ms (top-level :8080) = ts_out − début du cycle compositing = traitement PROPRE du nœud. La somme transit + own le long de la chaîne télescope en bout-en-bout réel. Coût : un time.time_ns() par entrée et par trame (négligeable)."
     ],
