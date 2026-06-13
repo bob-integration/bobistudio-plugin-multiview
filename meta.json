@@ -1,7 +1,11 @@
 {
-  "version": "0.14.11",
+  "version": "0.14.12",
   "date": "2026-06-13",
   "changes": {
+    "Nouveautés (0.14.12)": [
+      "Habillage « Cadre tally » : la bordure passe en FIN 3 px fixe (au lieu de l'épaisseur auto ~max(4, 1,5·t)) et l'onglet nom est désormais POSÉ AU-DESSUS du cadre (dehors), aligné sur le bord externe — le cadre ne cerne plus que l'image. Miroir éditeur appliqué (mwFrameMetrics + drawDressing).",
+      "Habillage « Aucun (bordure simple) » : les pavés tally sont centrés sur le rectangle VIDÉO (vx/vw) au lieu des bords de la cellule — quand des VU-mètres audio sont affichés (qui rétrécissent l'image), les tally collent désormais aux bords de l'image, pas à l'ensemble cellule+audio. Miroir éditeur (videoX/videoW)."
+    ],
     "Nouveautés (0.14.11)": [
       "Composer : le bouton « Déployer » passe en BAS du panneau « Sortie & habillage » (pleine largeur), à côté des réglages structurels qu'il applique (format de sortie, genlock), au lieu d'être dans l'en-tête.",
       "Mini-aperçu de la liste de gauche rafraîchi EN DIRECT pendant l'édition : le schéma de disposition de l'instance éditée se redessine depuis la disposition live de l'éditeur (mwRefreshSidebarPreview, sans round-trip serveur), en plus du rafraîchissement après déploiement. NB : c'est un schéma des fenêtres, pas une vignette vidéo live.",

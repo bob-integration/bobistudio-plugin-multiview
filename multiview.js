@@ -681,8 +681,8 @@ function mwFrameMetrics(f) {
         const fr = Math.max(2, Math.floor(t / 2));
         ml = mr = mt = fr;
         mb = fr + (barOn ? band + Math.max(2, Math.floor(t / 2)) : 0);
-    } else if (style === 'tally_border') {   // cadre épais + onglet nom
-        const b = Math.max(4, Math.round(t * 1.5));
+    } else if (style === 'tally_border') {   // cadre FIN (3 px) + onglet nom AU-DESSUS
+        const b = 3;
         ml = mr = mb = b;
         mt = b + (f.show_label ? band : 0);
     } else if (style === 'viewfinder') {     // équerres + chip nom
@@ -779,14 +779,15 @@ function drawDressing(ctx, f, fm, style, vx, vy, vw, vh, eff) {
     } else if (style === 'tally_border') {
         const b = fm.ml;
         const band = Math.max(0, fm.mt - b);
+        // Cadre fin autour de l'IMAGE seule ; onglet nom AU-DESSUS du cadre (dehors).
         ctx.strokeStyle = '#46464e'; ctx.lineWidth = b;
-        ctx.strokeRect(vx - b / 2, vy - band - b / 2, vw + b, vh + band + b);
+        ctx.strokeRect(vx - b / 2, vy - b / 2, vw + b, vh + b);
         if (f.show_label) {
-            const tabW = Math.max(24, Math.min(vw, ctx.measureText(name).width + 16));
+            const tabW = Math.max(24, Math.min(vw + 2 * b, ctx.measureText(name).width + 16));
             ctx.fillStyle = '#323238';
-            ctx.fillRect(vx, vy - band, tabW, band);
+            ctx.fillRect(vx - b, vy - b - band, tabW, band);
             ctx.fillStyle = '#f5f5fa';
-            ctx.fillText(name, vx + 6, vy - band / 2);
+            ctx.fillText(name, vx - b + 6, vy - b - band / 2);
         }
 
     } else if (style === 'viewfinder') {
@@ -943,14 +944,16 @@ function drawCanvas() {
             let textL = f.x, textR = f.x + f.w;
 
             if (f.show_tally) {
+                // Pavés tally centrés sur le rectangle VIDÉO (videoX/videoW), pas la cellule
+                // entière (qui inclut la bande VU audio) — miroir de render_dynamic 'none'.
                 const ty = barTop + (BAR_H - TALLY_SIZE) / 2;
                 ctx.fillStyle = 'rgba(128,128,128,0.7)';
                 ctx.strokeStyle = '#ffffff';
                 ctx.lineWidth = 1;
-                ctx.fillRect(f.x + TALLY_PAD, ty, TALLY_SIZE, TALLY_SIZE);
-                ctx.strokeRect(f.x + TALLY_PAD, ty, TALLY_SIZE, TALLY_SIZE);
-                ctx.fillRect(f.x + f.w - TALLY_PAD - TALLY_SIZE, ty, TALLY_SIZE, TALLY_SIZE);
-                ctx.strokeRect(f.x + f.w - TALLY_PAD - TALLY_SIZE, ty, TALLY_SIZE, TALLY_SIZE);
+                ctx.fillRect(videoX + TALLY_PAD, ty, TALLY_SIZE, TALLY_SIZE);
+                ctx.strokeRect(videoX + TALLY_PAD, ty, TALLY_SIZE, TALLY_SIZE);
+                ctx.fillRect(videoX + videoW - TALLY_PAD - TALLY_SIZE, ty, TALLY_SIZE, TALLY_SIZE);
+                ctx.strokeRect(videoX + videoW - TALLY_PAD - TALLY_SIZE, ty, TALLY_SIZE, TALLY_SIZE);
                 textL += TALLY_PAD + TALLY_SIZE + 4;
                 textR -= TALLY_PAD + TALLY_SIZE + 4;
             }

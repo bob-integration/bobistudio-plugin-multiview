@@ -597,8 +597,8 @@ def _frame_metrics(cfg):
         f = max(2, t // 2)
         ml = mr = mt = f
         mb = f + ((band + max(2, t // 2)) if bar_on else 0)
-    elif FRAME_STYLE == "tally_border":  # cadre épais toujours visible + onglet nom
-        b = max(4, int(round(t * 1.5)))
+    elif FRAME_STYLE == "tally_border":  # cadre FIN (3 px) toujours visible + onglet nom AU-DESSUS
+        b = 3
         ml = mr = mb = b
         mt = b + (band if show_label else 0)
     elif FRAME_STYLE == "viewfinder":    # équerres + chip nom
@@ -855,15 +855,17 @@ def render_dynamic():
             if show_label:
                 g = _video_rect(cfg)
                 fm = g["fm"]
+                b = fm["ml"]
                 txt = proto_txt if is_proto else (cfg.get("name", "") or "")
-                tab_y0 = g["vy"] - fm["band"]
-                tab_y1 = g["vy"] - 1
+                # Onglet AU-DESSUS du cadre fin (dehors), aligné sur le bord externe du cadre.
+                tab_y0 = g["vy"] - b - fm["band"]
+                tab_y1 = g["vy"] - b - 1
                 try:
                     tw = int(d.textlength(txt, font=m["font"])) if txt else 0
                 except Exception:
                     tw = 0
-                tab_w = max(24, min(g["vw"], tw + 4 * tally_pad))
-                tab_x0 = g["vx"]
+                tab_w = max(24, min(g["vw"] + 2 * b, tw + 4 * tally_pad))
+                tab_x0 = g["vx"] - b
                 d.rectangle([tab_x0, tab_y0, tab_x0 + tab_w - 1, tab_y1],
                             fill=_BAR_TINTS.get(dom, _BAR_TINTS["off"]))
                 if txt:
@@ -945,16 +947,20 @@ def render_dynamic():
                        font=_fit_text(d, proto_txt, m, text_r - text_l),
                        fill=txt_fill, anchor="mm")
             if show_tally:
+                # Pavés tally centrés sur le rectangle VIDÉO (vx/vw), pas la cellule entière
+                # (qui inclut la bande VU audio).
+                g = _video_rect(cfg)
+                vx, vw = g["vx"], g["vw"]
                 ty = bar_top + (m["bar_h"] - tally_sz) // 2
                 stL = tally_state.get(f"{{i}}_L", "off")
                 stR = tally_state.get(f"{{i}}_R", "off")
                 cL = TALLY_COLORS[stL]; bL = TALLY_BORDER_COLORS[stL]
                 cR = TALLY_COLORS[stR]; bR = TALLY_BORDER_COLORS[stR]
-                d.rectangle([x + tally_pad, ty,
-                             x + tally_pad + tally_sz, ty + tally_sz],
+                d.rectangle([vx + tally_pad, ty,
+                             vx + tally_pad + tally_sz, ty + tally_sz],
                             fill=cL, outline=bL)
-                d.rectangle([x + w - tally_pad - tally_sz, ty,
-                             x + w - tally_pad, ty + tally_sz],
+                d.rectangle([vx + vw - tally_pad - tally_sz, ty,
+                             vx + vw - tally_pad, ty + tally_sz],
                             fill=cR, outline=bR)
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
@@ -997,13 +1003,11 @@ def render_border():
                                    _FRAME_NEUTRAL, f)
 
         elif FRAME_STYLE == "tally_border":
-            # Bordure épaisse TOUJOURS visible (neutre au repos), englobant l'onglet
-            # nom (zone mt - b au-dessus de l'image, cf. _frame_metrics).
+            # Bordure FINE (3 px) TOUJOURS visible (neutre au repos), cernant SEULEMENT l'image.
+            # L'onglet nom est posé AU-DESSUS du cadre (dehors) → render_dynamic.
             b = fm["ml"]
-            band = max(0, fm["mt"] - b)
             color = _TALLY_BORDER_RGBA[dom] if dom != "off" else _FRAME_NEUTRAL
-            _render_border_colored(d, vx - b, max(y, vy - band - b),
-                                   vw + 2 * b, vh + band + 2 * b, color, b)
+            _render_border_colored(d, vx - b, vy - b, vw + 2 * b, vh + 2 * b, color, b)
 
         elif FRAME_STYLE == "viewfinder":
             # Équerres de viseur aux 4 coins (blanches au repos, couleur tally sinon).
