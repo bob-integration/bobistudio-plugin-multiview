@@ -2004,38 +2004,38 @@ while True:
                        255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
         _chrome_dirty = False
 
-    # Couches PER-FRAME (VU-mètres + overlays texte/horloge/logo) rendues chaque frame, PAR-DESSUS
-    # le chrome. Si rien de neuf → on réutilise le chrome déjà converti (pas de re-conversion).
+    # Habillage = chrome STATIQUE (caché) + couches PER-FRAME (VU/horloge/logo).
     _ts_ov0 = time.time_ns()
     _meters = render_meters(now)
     _ovfg   = render_overlays_fg(now)
     _ts_ov1 = time.time_ns()   # fin rendu PIL meters/fg
-    if _meters is None and _ovfg is None and _chrome_pre is not None:
-        # CHEMIN RAPIDE : habillage = chrome STATIQUE → blend avec opérandes pré-calculés
-        # (inv_a, src·α) et accumulateur uint16 (8 bits). Pas de conversion, ~2× moins de passes.
-        _ov_yuv = None
-        _ts_ov2 = time.time_ns()
+    # 1) Chrome statique : TOUJOURS blendé via opérandes pré-calculés (plein écran, SANS conversion).
+    if _chrome_pre is not None:
         _piY, _saY, _piC, _saU, _saV = _chrome_pre
         canvas_y = blend_pre(canvas_y, _piY, _saY)
         canvas_u = blend_pre(canvas_u, _piC, _saU)
         canvas_v = blend_pre(canvas_v, _piC, _saV)
-    else:
-        if _meters is None and _ovfg is None:
-            _ov_yuv = _chrome_yuv
-        else:
-            _overlay = _chrome_rgba.copy() if _chrome_rgba is not None else Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-            if _meters is not None: _overlay.alpha_composite(_meters)
-            if _ovfg   is not None: _overlay.alpha_composite(_ovfg)
-            _ov_yuv = rgba_to_yuv(_overlay)
-        _ts_ov2 = time.time_ns()   # fin composition + conversion RGBA→YUV
-        # UN SEUL blend de tout l'habillage (au lieu de ~6 couches × 3 plans, le hotspot des 64 ms).
-        if _ov_yuv is not None:
-            _oy, _ou, _ov, _oa, _oa2 = _ov_yuv
-            canvas_y = blend(canvas_y, _oy, _oa)
-            canvas_u = blend(canvas_u, _ou, _oa2)
-            canvas_v = blend(canvas_v, _ov, _oa2)
+    _ts_ov2 = time.time_ns()   # fin du blend chrome
+    # 2) Couches PER-FRAME : converties + blendées UNIQUEMENT sur leur BOUNDING-BOX (l'horloge fait
+    #    ~1 % de l'écran → plus de re-conversion plein 1080). Posées PAR-DESSUS le chrome (z-ordre OK :
+    #    associativité du « over »). Bornes alignées sur grille chroma paire.
+    if _meters is not None or _ovfg is not None:
+        _pf = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+        if _meters is not None: _pf.alpha_composite(_meters)
+        if _ovfg   is not None: _pf.alpha_composite(_ovfg)
+        _bb = _pf.getbbox()
+        if _bb:
+            bx0, by0, bx1, by1 = _bb
+            bx0 -= bx0 % 2; by0 -= by0 % 2
+            if bx1 % 2: bx1 = min(OUT_WIDTH, bx1 + 1)
+            if by1 % 2: by1 = min(OUT_HEIGHT, by1 + 1)
+            _oy, _ou, _ov, _oa, _oa2 = rgba_to_yuv(_pf.crop((bx0, by0, bx1, by1)))
+            canvas_y[by0:by1, bx0:bx1] = blend(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
+            cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
+            canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
+            canvas_v[cy0:cy1, cx0:cx1] = blend(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
-    _t_after_overlays = time.time_ns()   # profiling : fin de l'habillage (blends pleine trame)
+    _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=overlays per-frame (bbox)
     _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
     _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
     _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
