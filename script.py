@@ -494,11 +494,10 @@ def rgba_to_yuv(img):
 
 def blend(dst, src, alpha):
     """dst/src YUV (uint8/uint16) + alpha uint8 (0..255) → même dtype. Accumulateur uint32
-    car en 10/12 bits dst*(255-a) déborde uint16. Division /255 par astuce entière (pas de
-    division coûteuse) : pour t < 256*255, round(t/255) = (t + (t>>8) + 1) >> 8."""
+    car en 10/12 bits dst*(255-a) déborde uint16. NB : `// 255` (une seule ufunc vectorisée) est
+    PLUS rapide en numpy que l'astuce entière `(t+(t>>8)+1)>>8` (4 passes mémoire = memory-bound)."""
     a32 = alpha.astype(np.uint32)
-    t = dst.astype(np.uint32) * (255 - a32) + src.astype(np.uint32) * a32
-    return ((t + (t >> 8) + 1) >> 8).astype(_NP_DT)
+    return ((dst.astype(np.uint32) * (255 - a32) + src.astype(np.uint32) * a32) // 255).astype(_NP_DT)
 
 # ─── Rendu d'overlay (PIL) ───────────────────────────────────
 
