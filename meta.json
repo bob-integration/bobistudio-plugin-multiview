@@ -1,7 +1,16 @@
 {
-  "version": "0.14.23",
+  "version": "0.14.26",
   "date": "2026-06-14",
   "changes": {
+    "Performance (0.14.26)": [
+      "Horloge : rafraîchissement DÉTERMINISTE mémoïsé. La couche per-frame (horloge) n'est re-rendue (PIL) + reconvertie (RGBA→YUV bbox) que quand sa VALEUR AFFICHÉE change — signature = chaînes formatées des horloges. Une horloge HH:MM:SS (défaut, sans le champ images/FF) ne change qu'1×/s → re-render 1×/s au lieu de 50×/s ; seul le blend (peu cher) reste par-trame. Mesuré : ov_render 2.1→0.2, ov_blend 7.6→0.6 (≈ −90% du coût horloge), fps qui remonte. Si l'opérateur active le champ images (show_ff), l'horloge redevient per-frame (inhérent). Les VU-mètres (qui changent à chaque trame) gardent la reconstruction systématique."
+    ],
+    "Performance (0.14.25)": [
+      "Overlays texte/images fixes BAKÉS dans le chrome caché au lieu d'être redessinés à chaque trame. Avant, render_overlays_fg rendait le texte ET l'horloge par-trame → un texte fixe était re-dessiné (PIL) + reconverti RGBA→YUV à CHAQUE image, coût croissant avec le nombre de caractères (la bbox per-frame grossissait). Désormais le texte/les images premier-plan sont dans render_overlays_fg_static, intégrés au chrome (rendu une fois, re-baké seulement sur édition / tally / MAJ TSL), et la couche per-frame ne garde que l'HORLOGE (vraiment variable). Mesuré : texte 4 ou 80 caractères → ov_render=0, ov_blend=0 par trame (coût per-frame nul, constant). Le coût du texte est désormais payé une seule fois (au changement), plus à chaque image."
+    ],
+    "Nouveautés (0.14.24)": [
+      "Le chip « format source par fenêtre » affiche aussi l'ESPACE COLORIMÉTRIQUE (ex. « 1920×1080p50 BT.709 »). La colorimétrie est injectée par l'orchestrateur (in_colorimetry, via _shm_fmt) au déploiement et au refresh à chaud du format source — même source de vérité (le câble) que in_w/in_h/in_fps/in_scan."
+    ],
     "Corrections (0.14.23)": [
       "Le chip « format source par fenêtre » passe en HAUT-DROITE (au lieu de bas-droite). Le badge FREEZE, aussi en haut-droite, s'empile désormais SOUS le chip format quand les deux sont affichés (plus de chevauchement)."
     ],

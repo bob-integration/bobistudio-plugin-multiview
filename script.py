@@ -1149,11 +1149,16 @@ def _fmt_chip_txt(cfg, src):
         return ""
     fps = cfg.get("in_fps")
     if not fps:
-        return f"{{w}}×{{h}}"
-    n, d = _rate_nd(fps)
-    fps_txt = str(n) if d == 1 else str(round(n / d, 2))
-    scan = "i" if str(cfg.get("in_scan") or "p").startswith("i") else "p"
-    return f"{{w}}×{{h}}{{scan}}{{fps_txt}}"
+        base = f"{{w}}×{{h}}"
+    else:
+        n, d = _rate_nd(fps)
+        fps_txt = str(n) if d == 1 else str(round(n / d, 2))
+        scan = "i" if str(cfg.get("in_scan") or "p").startswith("i") else "p"
+        base = f"{{w}}×{{h}}{{scan}}{{fps_txt}}"
+    colo = str(cfg.get("in_colorimetry") or "").strip()
+    if colo:
+        base += " " + (("BT." + colo) if colo.isdigit() else colo.upper())
+    return base
 
 def render_info(statuses):
     """Layer RGBA plein canvas : placeholders NO SIGNAL, badges FREEZE, chips format.
@@ -1301,7 +1306,9 @@ def _apply_tsl(index, control, text):
     tt = _tsl_slots.get((index, 'tt'), [0])[0]
     lh = _tsl_slots.get((index, 'lh'), [0])[0]
     color = _tally_dominant(rh, lh, tt)
-    tsl_text_by_index[index] = text   # exposé aux overlays texte sourcés TSL
+    if tsl_text_by_index.get(index) != text:
+        tsl_text_by_index[index] = text   # exposé aux overlays texte sourcés TSL
+        overlay_dirty.set()               # re-bake la couche overlay cachée (texte sourcé TSL)
     changed = False
     for i, cfg in enumerate(FLUX_CONFIG):
         if int(cfg.get("tsl_index", 0) or 0) != index:
@@ -1699,30 +1706,48 @@ def render_overlays_bg():
         _draw_image_overlay(img, ov)
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
-def render_overlays_fg(now):
-    fg = [ov for ov in OVERLAYS if (not ov.get("hidden"))
+def render_overlays_fg_static():
+    """Overlays premier-plan dont la VALEUR ne change pas par trame (texte fixe/TSL, images) →
+    BAKÉS dans le chrome caché (rendu une seule fois, re-baké sur édition/tally/MAJ TSL). Sortir le
+    texte de la boucle per-frame supprime un re-dessin + une reconversion RGBA→YUV à CHAQUE image
+    (coût ∝ nombre de caractères / surface)."""
+    fg = [ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") in ("text", "image")
           and not (ov.get("kind") == "image" and ov.get("layer") == "background")]
     if not fg:
         return None
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     d = ImageDraw.Draw(img, "RGBA")
     for ov in fg:
-        k = ov.get("kind")
-        if k == "text":
+        if ov.get("kind") == "text":
             _draw_text_overlay(d, ov, _overlay_text_value(ov))
-        elif k == "clock":
-            _draw_text_overlay(d, ov, _format_clock(ov, now))
-        elif k == "image":
+        else:
             _draw_image_overlay(img, ov)
+    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
+
+def render_overlays_fg(now):
+    """PER-FRAME : uniquement les horloges (valeur qui change à chaque trame). Le texte/les images
+    fixes sont dans le chrome caché (render_overlays_fg_static)."""
+    clk = [ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") == "clock"]
+    if not clk:
+        return None
+    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img, "RGBA")
+    for ov in clk:
+        _draw_text_overlay(d, ov, _format_clock(ov, now))
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 static_rgba  = render_static()   # couches d'habillage CACHÉES, conservées en RGBA (PIL)
 dyn_rgba     = None
+overlay_fg_rgba = render_overlays_fg_static()   # overlays texte/images fixes, bakés dans le chrome
 border_rgba  = render_border()
 _chrome_rgba = None              # info+bordure+statique+dynamique pré-composés en UNE image RGBA (caché)
 _chrome_yuv  = None              # sa conversion YUV+alpha (refaite seulement sur changement)
 _chrome_pre  = None              # opérandes de blend PRÉ-CALCULÉS du chrome (inv_a, src_a par plan) — chemin rapide
 _chrome_dirty = True             # force la 1re composition du chrome
+# Cache de la couche PER-FRAME (horloge) : YUV+bbox réutilisés tant que la valeur affichée ne change
+# pas (re-render+convert DÉTERMINISTE, 1×/s sans le champ images). Réinitialisé quand meters présents.
+_pf_cache_sig = None
+_pf_cache     = None
 
 # ─── Boucle de mix ───────────────────────────────────────────
 
@@ -2092,11 +2117,15 @@ while True:
         _fc = list(FLUX_CONFIG)   # snapshot stable pour cette frame
 
     # Images de fond (layer=background) : sous la vidéo. Couche cachée, re-bakée sur changement.
+    # Idem couche overlay PREMIER-PLAN cachée (texte/images fixes) → re-bakée ici (édition / MAJ TSL),
+    # puis intégrée au chrome (coût par-trame nul).
     if overlay_dirty.is_set():
         with state_lock:
             _bg_rgba = render_overlays_bg()
+            overlay_fg_rgba = render_overlays_fg_static()
         overlay_bg_layer = rgba_to_yuv(_bg_rgba) if _bg_rgba is not None else None
         overlay_dirty.clear()
+        _chrome_dirty = True
     if overlay_bg_layer is not None:
         _oby, _obu, _obv, _oba, _oba2 = overlay_bg_layer
         canvas_y = blend(canvas_y, _oby, _oba)
@@ -2187,6 +2216,7 @@ while True:
     if tally_dirty.is_set():
         dyn_rgba    = render_dynamic()
         border_rgba = render_border()
+        overlay_fg_rgba = render_overlays_fg_static()   # texte tally-réactif (couleur on/off)
         tally_dirty.clear(); _chrome_dirty = True
 
     _sig = tuple(_statuses)
@@ -2197,7 +2227,7 @@ while True:
 
     if _chrome_dirty:
         _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-        for _lyr in (_info_layer, border_rgba, static_rgba, dyn_rgba):   # z-ordre conservé
+        for _lyr in (_info_layer, border_rgba, static_rgba, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé (overlays fixes au-dessus)
             if _lyr is not None:
                 _ch.alpha_composite(_lyr)
         _chrome_rgba = _ch
@@ -2209,11 +2239,21 @@ while True:
                        255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
         _chrome_dirty = False
 
-    # Habillage = chrome STATIQUE (caché) + couches PER-FRAME (VU/horloge/logo).
+    # Habillage = chrome STATIQUE (caché) + couche PER-FRAME (VU + horloge).
     _ts_ov0 = time.time_ns()
     _meters = render_meters(now)
-    _ovfg   = render_overlays_fg(now)
-    _ts_ov1 = time.time_ns()   # fin rendu PIL meters/fg
+    # La couche per-frame n'est RE-RENDUE+RECONVERTIE que quand son contenu change. VU-mètres =
+    # changent à chaque trame → reconstruction systématique (_pf_sig=None). Sinon (horloges seules),
+    # signature = valeurs AFFICHÉES des horloges (déterministe) → re-render 1×/s sans le champ images,
+    # per-frame seulement si l'horloge montre les images (FF). Le blend, lui, reste à chaque trame.
+    if _meters is not None:
+        _pf_sig = None
+    else:
+        _pf_sig = tuple(_format_clock(ov, now) for ov in OVERLAYS
+                        if (not ov.get("hidden")) and ov.get("kind") == "clock")
+    _render_pf = (_pf_sig is None) or (_pf_sig != _pf_cache_sig)
+    _ovfg = render_overlays_fg(now) if _render_pf else None
+    _ts_ov1 = time.time_ns()   # fin rendu PIL (≈0 si réutilisation du cache horloge)
     # 1) Chrome statique : TOUJOURS blendé via opérandes pré-calculés (plein écran, SANS conversion).
     if _chrome_pre is not None:
         _piY, _saY, _piC, _saU, _saV = _chrome_pre
@@ -2221,24 +2261,28 @@ while True:
         canvas_u = blend_pre(canvas_u, _piC, _saU)
         canvas_v = blend_pre(canvas_v, _piC, _saV)
     _ts_ov2 = time.time_ns()   # fin du blend chrome
-    # 2) Couches PER-FRAME : converties + blendées UNIQUEMENT sur leur BOUNDING-BOX (l'horloge fait
-    #    ~1 % de l'écran → plus de re-conversion plein 1080). Posées PAR-DESSUS le chrome (z-ordre OK :
-    #    associativité du « over »). Bornes alignées sur grille chroma paire.
-    if _meters is not None or _ovfg is not None:
-        _pf = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-        if _meters is not None: _pf.alpha_composite(_meters)
-        if _ovfg   is not None: _pf.alpha_composite(_ovfg)
-        _bb = _pf.getbbox()
-        if _bb:
-            bx0, by0, bx1, by1 = _bb
-            bx0 -= bx0 % 2; by0 -= by0 % 2
-            if bx1 % 2: bx1 = min(OUT_WIDTH, bx1 + 1)
-            if by1 % 2: by1 = min(OUT_HEIGHT, by1 + 1)
-            _oy, _ou, _ov, _oa, _oa2 = rgba_to_yuv(_pf.crop((bx0, by0, bx1, by1)))
-            canvas_y[by0:by1, bx0:bx1] = blend(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
-            cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
-            canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
-            canvas_v[cy0:cy1, cx0:cx1] = blend(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
+    # 2) Couche PER-FRAME : convertie en YUV (bbox) SEULEMENT au changement (cache), puis blendée à
+    #    chaque trame sur sa bounding-box. Bornes alignées sur grille chroma paire.
+    if _render_pf:
+        _pf_cache_sig = _pf_sig; _pf_cache = None
+        if _meters is not None or _ovfg is not None:
+            _pf = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+            if _meters is not None: _pf.alpha_composite(_meters)
+            if _ovfg   is not None: _pf.alpha_composite(_ovfg)
+            _bb = _pf.getbbox()
+            if _bb:
+                bx0, by0, bx1, by1 = _bb
+                bx0 -= bx0 % 2; by0 -= by0 % 2
+                if bx1 % 2: bx1 = min(OUT_WIDTH, bx1 + 1)
+                if by1 % 2: by1 = min(OUT_HEIGHT, by1 + 1)
+                _oy, _ou, _ov, _oa, _oa2 = rgba_to_yuv(_pf.crop((bx0, by0, bx1, by1)))
+                _pf_cache = (_oy, _ou, _ov, _oa, _oa2, bx0, by0, bx1, by1)
+    if _pf_cache is not None:
+        _oy, _ou, _ov, _oa, _oa2, bx0, by0, bx1, by1 = _pf_cache
+        canvas_y[by0:by1, bx0:bx1] = blend(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
+        cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
+        canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
+        canvas_v[cy0:cy1, cx0:cx1] = blend(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
     _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=overlays per-frame (bbox)
     _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
