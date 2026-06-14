@@ -1,7 +1,13 @@
 {
-  "version": "0.14.27",
+  "version": "0.14.28",
   "date": "2026-06-14",
   "changes": {
+    "Nouveautés (0.14.28)": [
+      "Composer : déplacement de GROUPE — quand plusieurs fenêtres sont sélectionnées, glisser l'une les déplace toutes ensemble (même delta, clampé pour qu'aucune ne sorte du cadre).",
+      "Composer : outils « Remplir largeur / hauteur » (remplir(axis)) — les fenêtres sélectionnées se tuilent en parts égales pour couvrir toute la largeur (ou hauteur) de la sortie, dans leur ordre courant ; l'autre dimension est conservée.",
+      "Composer : champs numériques (X/Y/L/H, opacités, tailles…) dotés de gros boutons −/+ confortables (clic + appui maintenu = répétition) à la place des minuscules flèches natives — masquées en CSS.",
+      "Composer : une modif de disposition appliquée à chaud (window/style) est désormais PERSISTÉE dans deploy_config côté orchestrateur (routes._persist_multiview_hot) → elle ne disparaît plus de l'éditeur après un changement de multiview puis retour (elle restait active sur la sortie mais l'affichage rechargeait l'ancienne config DB)."
+    ],
     "Corrections (0.14.27)": [
       "Handler SIGBUS ajouté (manquant — coco/pyramide en avaient un, pas le multiview). Un multiview CHAÎNÉ qui lit le shm de sortie d'un autre plugin (ex. un autre multiview) était TUÉ net (pas de traceback) quand ce shm amont était recréé/redimensionné (redéploiement, changement de format/overlay du producteur) : lecture d'un mmap momentanément tronqué → SIGBUS non géré → mort du script (sortie figée, :8080/:8082 down). Désormais le handler referme les sources et ensure_input les rouvre à chaud → le multiview chaîné survit à la recréation du shm amont.",
       "Garde-fou de boucle : le corps per-frame (rendu chrome/overlays + écriture sortie) est désormais enveloppé d'un try/except → une exception transitoire (rendu PIL, blend numpy, écriture shm…) saute la frame (la sortie garde sa dernière image via le ring) et la cadence continue, au lieu de tuer le script. Log throttlé (5 s). N'attrape PAS les signaux de contrôle (KeyboardInterrupt). Combiné au handler SIGBUS et à l'auto-restart orchestrateur (existant : poll :8081/status → /start), le multiview ne meurt plus sur un incident ponctuel."

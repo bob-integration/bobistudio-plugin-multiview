@@ -23,6 +23,8 @@ let selectedIdxs  = [];     // multi-select : le dernier est le primary (référ
 let dragMode      = null;   // 'move' | 'resize'
 let dragStart     = null;
 let dragOrigRect  = null;
+let dragGroupOrig = [];     // [{j, x, y}] positions d'origine de TOUTES les fenêtres sélectionnées
+                            // (déplacement de groupe : même delta appliqué à chacune)
 let snapEnabled   = true;
 let snapGuides    = [];     // [{type:'v'|'h', pos:number}] dessinées pendant le drag
 
@@ -309,6 +311,50 @@ function renderEditor(hostname) {
 
     resizeCanvas();
     dessiner();
+    mwEnhanceSteppers(document.querySelector('.mw-compose'));   // boutons −/+ confortables (idempotent)
+}
+
+// ─── Steppers numériques : boutons −/+ confortables (remplacent les flèches natives) ─────────
+// Les spinners natifs de <input type=number> sont minuscules → on enrobe chaque champ d'un
+// stepper avec deux gros boutons (clic + appui maintenu pour répéter). Idempotent : on ignore un
+// champ déjà enrobé. Conserve l'id et le onchange du champ (getElementById/handlers intacts).
+function mwStep(input, dir) {
+    const step = parseFloat(input.step) || 1;
+    const min  = input.min !== '' ? parseFloat(input.min) : -Infinity;
+    const max  = input.max !== '' ? parseFloat(input.max) :  Infinity;
+    let v = parseFloat(input.value); if (isNaN(v)) v = 0;
+    v = Math.min(max, Math.max(min, v + dir * step));
+    v = parseFloat(v.toFixed(6));   // évite les imprécisions flottantes (step 0.5…)
+    input.value = v;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+function _mwBindHold(btn, fn) {
+    let to = null, iv = null;
+    const stop = () => { clearTimeout(to); clearInterval(iv); to = iv = null; };
+    btn.addEventListener('pointerdown', e => {
+        e.preventDefault(); fn();
+        to = setTimeout(() => { iv = setInterval(fn, 60); }, 350);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, stop));
+}
+function mwEnhanceSteppers(root) {
+    (root || document).querySelectorAll('input[type="number"]').forEach(inp => {
+        if (inp.closest('.num-stepper')) return;   // déjà enrobé
+        inp.classList.add('mw-num');
+        const wrap = document.createElement('div');
+        wrap.className = 'num-stepper';
+        inp.parentNode.insertBefore(wrap, inp);
+        const mk = (cls, txt) => {
+            const b = document.createElement('button');
+            b.type = 'button'; b.className = 'num-btn ' + cls; b.tabIndex = -1;
+            b.textContent = txt; b.setAttribute('aria-hidden', 'true');
+            return b;
+        };
+        const dec = mk('num-dec', '−'), inc = mk('num-inc', '+');
+        wrap.append(dec, inp, inc);
+        _mwBindHold(dec, () => mwStep(inp, -1));
+        _mwBindHold(inc, () => mwStep(inp, +1));
+    });
 }
 
 // ─── Format de sortie (depuis le réglage système, jamais en dur) ─────────────
@@ -1148,8 +1194,11 @@ function canvasMouseDown(e) {
         if (pos.x >= f.x && pos.x <= f.x + f.w &&
             pos.y >= f.y && pos.y <= f.y + f.h) {
             selectedOverlay = -1;
-            toggleSelection(i, e.shiftKey);
+            // Si on commence le drag sur une fenêtre DÉJÀ sélectionnée (sans Maj), on garde la
+            // sélection multiple pour la déplacer en groupe ; sinon clic = sélection simple.
+            if (!(isSelected(i) && !e.shiftKey)) toggleSelection(i, e.shiftKey);
             dragMode = 'move'; dragOverlay = false; dragStart = pos; dragOrigRect = {...editorParams.flux_config[primaryIdx()]};
+            dragGroupOrig = selectedIdxs.map(j => ({ j, x: editorParams.flux_config[j].x, y: editorParams.flux_config[j].y }));
             dessiner();
             return;
         }
@@ -1216,13 +1265,29 @@ function canvasMouseMove(e) {
     const out_h = editorParams.out_height;
 
     if (dragMode === 'move') {
+        // Delta visé d'après la fenêtre primaire (avec snap), puis appliqué À TOUT LE GROUPE.
         let nx = Math.max(0, Math.min(out_w - f.w, Math.round(dragOrigRect.x + dx)));
         let ny = Math.max(0, Math.min(out_h - f.h, Math.round(dragOrigRect.y + dy)));
         if (snapEnabled) {
             const snapped = computeSnap(primary, nx, ny, f.w, f.h);
             nx = snapped.x; ny = snapped.y; snapGuides = snapped.guides;
         } else snapGuides = [];
-        f.x = nx; f.y = ny;
+        let ddx = nx - dragOrigRect.x, ddy = ny - dragOrigRect.y;
+        // Clamp le delta pour qu'AUCUNE fenêtre du groupe ne sorte du cadre.
+        const grp = dragGroupOrig.length ? dragGroupOrig : [{ j: primary, x: dragOrigRect.x, y: dragOrigRect.y }];
+        let loX = -Infinity, hiX = Infinity, loY = -Infinity, hiY = Infinity;
+        grp.forEach(g => {
+            const gf = editorParams.flux_config[g.j];
+            loX = Math.max(loX, -g.x); hiX = Math.min(hiX, out_w - gf.w - g.x);
+            loY = Math.max(loY, -g.y); hiY = Math.min(hiY, out_h - gf.h - g.y);
+        });
+        ddx = Math.max(loX, Math.min(hiX, ddx));
+        ddy = Math.max(loY, Math.min(hiY, ddy));
+        grp.forEach(g => {
+            const gf = editorParams.flux_config[g.j];
+            gf.x = Math.round(g.x + ddx);
+            gf.y = Math.round(g.y + ddy);
+        });
     } else if (dragMode === 'resize') {
         const ratio = dragOrigRect.w / dragOrigRect.h;
         let nw = Math.max(64, Math.min(out_w - f.x, Math.round(dragOrigRect.w + dx)));
@@ -1980,6 +2045,36 @@ function distribuer(axis) {
         const yN = items[items.length - 1].f.y;
         const step = (yN - y0) / (items.length - 1);
         items.forEach((it, k) => { it.f.y = Math.round(y0 + step * k); });
+    }
+    dessiner();
+    selectedIdxs.forEach(i => hotApplyWindow(i));
+}
+
+// Remplir : les fenêtres sélectionnées se TUILENT pour couvrir toute la largeur (ou hauteur) de la
+// sortie, en parts égales, dans leur ordre courant. L'autre dimension est conservée.
+// Ex. 4 PiP (un à gauche, un à droite, deux au centre) → 4 colonnes égales sur toute la largeur.
+function remplir(axis) {
+    if (!editorParams || selectedIdxs.length < 1) return;
+    const fc = editorParams.flux_config;
+    const out_w = editorParams.out_width, out_h = editorParams.out_height;
+    const items = selectedIdxs.map(i => fc[i]);
+    const n = items.length;
+    if (axis === 'h') {
+        items.sort((a, b) => a.x - b.x);
+        const colW = Math.max(2, Math.floor(out_w / n) & ~1);
+        items.forEach((f, k) => {
+            f.x = k * colW;
+            f.w = (k === n - 1) ? Math.max(2, (out_w - k * colW) & ~1) : colW;
+            if (f.x + f.w > out_w) f.x = out_w - f.w;
+        });
+    } else {
+        items.sort((a, b) => a.y - b.y);
+        const rowH = Math.max(2, Math.floor(out_h / n) & ~1);
+        items.forEach((f, k) => {
+            f.y = k * rowH;
+            f.h = (k === n - 1) ? Math.max(2, (out_h - k * rowH) & ~1) : rowH;
+            if (f.y + f.h > out_h) f.y = out_h - f.h;
+        });
     }
     dessiner();
     selectedIdxs.forEach(i => hotApplyWindow(i));

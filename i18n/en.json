@@ -188,5 +188,11 @@
   "plugin.multiview.flash_file_read_failed": "Could not read the file.",
   "plugin.multiview.flash_invalid_layout_file": "Invalid file: multiview layout expected ({name, config}).",
   "plugin.multiview.flash_layout_imported": "Layout \"{name}\" imported.",
-  "plugin.multiview.flash_layout_import_failed": "Could not import the layout."
+  "plugin.multiview.flash_layout_import_failed": "Could not import the layout.",
+  "plugin.multiview.group_fill": "Fill",
+  "plugin.multiview.group_fill_aria": "Fill the space",
+  "plugin.multiview.fill_h": "Fill width",
+  "plugin.multiview.fill_h_title": "Tile selected windows to fill the full width",
+  "plugin.multiview.fill_v": "Fill height",
+  "plugin.multiview.fill_v_title": "Tile selected windows to fill the full height"
 }

@@ -211,6 +211,29 @@
 .field-color input[type="color"] { width: 60px; padding: 2px; }
 .field-narrow input { width: 88px; }
 
+/* Steppers numériques : flèches natives (minuscules) masquées, remplacées par des boutons −/+
+   confortables de part et d'autre du champ. */
+input[type="number"].mw-num::-webkit-inner-spin-button,
+input[type="number"].mw-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"].mw-num { -moz-appearance: textfield; appearance: textfield; }
+.num-stepper { display: inline-flex; align-items: stretch; width: 100%; }
+.num-stepper input { flex: 1 1 auto; min-width: 0; width: auto; text-align: center; border-radius: 0; position: relative; z-index: 1; }
+.num-stepper .num-btn {
+    flex: 0 0 auto; width: 30px; padding: 0;
+    border: 1px solid var(--border); background: var(--surface-2, rgba(255,255,255,0.05));
+    color: var(--text); font-size: 1.15em; line-height: 1; cursor: pointer;
+    user-select: none; touch-action: none; transition: background 0.12s, color 0.12s;
+}
+.num-stepper .num-btn:hover  { background: var(--accent-soft, rgba(96,165,250,0.18)); color: var(--accent, #60a5fa); }
+.num-stepper .num-btn:active { background: var(--accent, #60a5fa); color: #fff; }
+.num-stepper .num-dec { border-radius: var(--radius-small, 6px) 0 0 var(--radius-small, 6px); border-right: none; }
+.num-stepper .num-inc { border-radius: 0 var(--radius-small, 6px) var(--radius-small, 6px) 0; border-left: none; }
+/* En champ étroit (X/Y/L/H), le stepper occupe toute la largeur de la cellule (élargie pour
+   accueillir les deux boutons sans rogner le champ). */
+.field-narrow { width: 132px; }
+.field-narrow .num-stepper { width: 100%; }
+.field-narrow .num-stepper input { width: auto; }
+
 /* Lignes de champs de l'éditeur */
 .mw-editor-row {
     display: flex;
