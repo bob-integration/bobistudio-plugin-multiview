@@ -361,15 +361,18 @@ TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None}}
 
 def _compute_proxy_needs():
-    """Tailles vidéo RÉELLES distinctes par source câblée (besoins pour la pyramide).
-    {{"<src-shm>": [[w,h], …]}}. Calculé via _video_rect (taille d'AFFICHAGE, après marges
-    habillage) → source de vérité unique, l'orchestrateur ne re-dérive pas la géométrie."""
-    out = {{}}
+    """Besoins de tailles par source câblée pour la pyramide, AVEC le nombre de tuiles qui
+    réclament chaque taille : {{"<src-shm>": [[w, h, count], …]}}. Le compteur est essentiel :
+    l'orchestrateur ne génère un proxy sur-mesure que si une (source, taille) est demandée
+    ≥ seuil fois — une même source affichée dans N tuiles à la même taille pèse donc N (sinon,
+    dédupliqué à 1, le seuil ≥2 ne se déclenchait jamais pour un multiview seul). Taille = vw×vh
+    via _video_rect (après marges habillage) → source de vérité unique."""
+    counts = {{}}   # shm → {{(w,h): count}}
     try:
         with state_lock:
             fc = list(FLUX_CONFIG)
     except Exception:
-        return out
+        return {{}}
     for cfg in fc:
         if cfg.get("hidden"):
             continue
@@ -384,10 +387,9 @@ def _compute_proxy_needs():
             continue
         if w < 2 or h < 2:
             continue
-        lst = out.setdefault(shm, [])
-        if [w, h] not in lst:
-            lst.append([w, h])
-    return out
+        d = counts.setdefault(shm, {{}})
+        d[(w, h)] = d.get((w, h), 0) + 1
+    return {{shm: [[w, h, c] for (w, h), c in d.items()] for shm, d in counts.items()}}
 
 def _refresh_lat_metrics():
     out = {{}}

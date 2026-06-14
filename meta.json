@@ -1,7 +1,11 @@
 {
-  "version": "0.14.18",
+  "version": "0.14.19",
   "date": "2026-06-14",
   "changes": {
+    "Corrections (0.14.19)": [
+      "proxy_needs compte désormais les TUILES par (source, taille) → [[w,h,count]] au lieu de [[w,h]]. Sans ce compteur, une source affichée dans N tuiles à la même taille était dédupliquée à 1 demande, donc le seuil sur-mesure ≥2 ne se déclenchait JAMAIS pour un multiview seul → toutes les tuiles restaient en gather depuis l'octave ½ au lieu d'une copie pure sur-mesure. Désormais le seuil par défaut (2) fonctionne dès qu'une source apparaît ≥2 fois.",
+      "Profil resources ajouté (cores 3, memory 2048, pin) : le conteneur multiview obtient des cœurs DÉDIÉS (cpuset via core_pool) au lieu de partager les cœurs du nœud → latence de compositing stable, plus de variance due à la contention CPU."
+    ],
     "Corrections (0.14.18)": [
       "Toggle « Proxies pyramide (ingénierie) » ajouté DANS le composer (onglet global, sous « Format source par fenêtre ») : il manquait à l'interface en 0.14.17 (le back-end show_proxy existait mais aucune case ne le pilotait). Bascule à chaud (/style) → badge par vignette du proxy lu + coût. Labels i18n (plugin.multiview.show_proxy)."
     ],
