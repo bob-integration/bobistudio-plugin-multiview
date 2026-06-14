@@ -1,7 +1,10 @@
 {
-  "version": "0.14.22",
+  "version": "0.14.23",
   "date": "2026-06-14",
   "changes": {
+    "Corrections (0.14.23)": [
+      "Le chip « format source par fenêtre » passe en HAUT-DROITE (au lieu de bas-droite). Le badge FREEZE, aussi en haut-droite, s'empile désormais SOUS le chip format quand les deux sont affichés (plus de chevauchement)."
+    ],
     "Nouveautés (0.14.22)": [
       "Injection de proxies pyramide À CHAUD : le multiview scrute /dev/shm en continu (~1,5 s, _proxy_scan_loop) pour découvrir les proxies disponibles de ses sources (nommage déterministe <src>__pL / <src>__s<w>x<h>) et rafraîchit cfg['proxies'] tout seul. Fini le « settle 2-passes » : quand le reconcile régénère une taille sur-mesure (layout/résolution changés), le multiview la consomme en copie pure sans redéploiement, et cesse d'utiliser les proxies retirés. L'injection au déploiement (orchestrateur) reste comme amorce initiale."
     ],

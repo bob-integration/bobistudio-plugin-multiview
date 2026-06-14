@@ -1184,24 +1184,27 @@ def render_info(statuses):
             d.text((vx + vw // 2, vy + vh // 2), "NO SIGNAL",
                    font=fnt, fill=(150, 153, 160, 255), anchor="mm")
             continue   # pas de chip format sans source
-        if status == "freeze":
-            fnt = _font(max(8, min(20, vh // 12)))
-            pad = max(3, vh // 80)
-            tb = d.textbbox((0, 0), "FREEZE", font=fnt)
-            bw, bh = (tb[2] - tb[0]) + 2 * pad, (tb[3] - tb[1]) + 2 * pad
-            bx, by = vx + vw - bw - 4, vy + 4
-            d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=3, fill=(214, 132, 0, 235))
-            d.text((bx + bw // 2, by + bh // 2 + 1), "FREEZE",
-                   font=fnt, fill=(24, 18, 6, 255), anchor="mm")
+        # Chip format (mode ingénierie) en HAUT-DROITE.
+        _stack_top = vy + 3   # bas du dernier badge haut-droite → empilement (FREEZE en dessous)
         if fmt_txt:
             fnt = _font(max(8, min(14, vh // 14)))
             pad = max(2, vh // 120)
             tb = d.textbbox((0, 0), fmt_txt, font=fnt)
             cw, ch = (tb[2] - tb[0]) + 2 * pad + 2, (tb[3] - tb[1]) + 2 * pad
-            cx, cy = vx + vw - cw - 3, vy + vh - ch - 3
+            cx, cy = vx + vw - cw - 3, vy + 3
             d.rounded_rectangle([cx, cy, cx + cw, cy + ch], radius=2, fill=(0, 0, 0, 170))
             d.text((cx + cw // 2, cy + ch // 2 + 1), fmt_txt,
                    font=fnt, fill=(210, 212, 218, 255), anchor="mm")
+            _stack_top = cy + ch + 3
+        if status == "freeze":
+            fnt = _font(max(8, min(20, vh // 12)))
+            pad = max(3, vh // 80)
+            tb = d.textbbox((0, 0), "FREEZE", font=fnt)
+            bw, bh = (tb[2] - tb[0]) + 2 * pad, (tb[3] - tb[1]) + 2 * pad
+            bx, by = vx + vw - bw - 4, _stack_top + 1   # sous le chip format (haut-droite empilé)
+            d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=3, fill=(214, 132, 0, 235))
+            d.text((bx + bw // 2, by + bh // 2 + 1), "FREEZE",
+                   font=fnt, fill=(24, 18, 6, 255), anchor="mm")
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 _info_sig = None      # signature de la couche info bakée (None = re-bake forcé)
