@@ -126,8 +126,8 @@ function computeDisplayName(f) {
 function drawMiniPreview(canvas, params) {
     if (!canvas || !params) return;
     const ctx = canvas.getContext('2d');
-    const ow = params.out_width  || 1280;
-    const oh = params.out_height || 720;
+    const ow = params.out_width  || 1920;
+    const oh = params.out_height || 1080;
     // Canvas redimensionné pour conserver le ratio
     const cw = canvas.clientWidth || 200;
     const ch = Math.round(cw * oh / ow);
@@ -252,8 +252,12 @@ async function chargerMw(vmid) {
     // Format de sortie : pas de littéral en dur → vient du réglage système (Formats vidéo) si la
     // config persistée ne le porte pas. L'explicite (dc.params, semé à la création) prime.
     // DÉFENSIF : le chargement des formats ne doit JAMAIS empêcher de sélectionner un multiview.
+    // `scripts.js:loadVideoFormats` n'est PAS chargé sur la page Traitements (uniquement Containers/
+    // Projects) → on a un chargeur AUTONOME pour ne pas dépendre de ce global (sinon dropdown vide
+    // + repli 720p sur la page Traitements).
     try {
         if (typeof loadVideoFormats === 'function') await loadVideoFormats();
+        else await _mvEnsureVideoFormats();
     } catch (e) { /* palette indisponible → on retombe sur le repli ci-dessous */ }
     const _sysf = systemDefaultFormat();
     editorParams.out_width  = editorParams.out_width  || _sysf.w;
@@ -311,12 +315,33 @@ function renderEditor(hostname) {
 
 // Format par défaut SYSTÈME (palette Réglages → Formats vidéo). Repli ultime = celui du serveur
 // (get_default_video_format : 1280×720) UNIQUEMENT si la palette est vide (DB vierge).
+// Chargeur AUTONOME des formats vidéo (la page Traitements ne charge pas scripts.js). Peuple les
+// mêmes globals (window._videoFormats / window._videoFormatDefault) que scripts.js:loadVideoFormats.
+async function _mvEnsureVideoFormats() {
+    if (Array.isArray(window._videoFormats) && window._videoFormats.length) return window._videoFormats;
+    try {
+        const r = await fetch('/api/settings');
+        if (!r.ok) return [];
+        const s = await r.json();
+        window._videoFormatDefault = s.video_format_default || '';
+        window._videoFormats = (s.video_formats || '').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+            const p = l.split(';').map(x => x.trim());
+            return { label: p[0] || '', w: parseInt(p[1]) || 0, h: parseInt(p[2]) || 0,
+                     fps: parseFloat(p[3]) || 25, scan: (p[4] || 'p').toLowerCase() === 'i' ? 'i' : 'p',
+                     chroma: ['420','422','444'].includes(p[5]) ? p[5] : '422',
+                     bit_depth: [8,10,12].includes(parseInt(p[6])) ? parseInt(p[6]) : 10,
+                     colorimetry: (p[7] || '709').toLowerCase() };
+        }).filter(f => f.label && f.w && f.h);
+    } catch (e) { window._videoFormats = []; }
+    return window._videoFormats;
+}
+
 function systemDefaultFormat() {
     const list = window._videoFormats || [];
     const def  = window._videoFormatDefault || '';
     const f = list.find(x => x.label === def) || list[0];
     if (f) return { w: f.w, h: f.h, fps: f.fps, scan: f.scan || 'p' };
-    return { w: 1280, h: 720, fps: 25, scan: 'p' };
+    return { w: 1920, h: 1080, fps: 50, scan: 'p' };   // repli broadcast (jamais 720p) si aucun format configuré
 }
 
 // Peuple le sélecteur de format de sortie depuis la palette système, sélectionne le format courant
