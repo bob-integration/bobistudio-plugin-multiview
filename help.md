@@ -12,6 +12,23 @@ Les modifications sont **live** (pas de redéploiement). Le layout est persisté
 
 Câbler les sources depuis la page **Câbles** ou depuis l'éditeur directement. Le changement de source se fait **à chaud** si la résolution est identique.
 
+## Proxies pyramide (accélération)
+
+Le multiview peut lire des versions **pré-réduites** des sources, produites par une **pyramide de
+proxies**, au lieu de redimensionner la source pleine pour chaque tuile — gain important sur le
+temps de traitement (le 1080p50 tient même avec beaucoup de tuiles).
+
+C'est **opportuniste et automatique** : il suffit qu'une *pyramide* soit déployée **sur le même
+nœud** et câblée aux **mêmes sources** que les fenêtres du multiview. On ne câble **pas** le
+multiview vers la pyramide ; les deux consomment la même source. Après avoir câblé la pyramide,
+**re-déploie/re-sauve le multiview** pour qu'il prenne les proxies en compte. Sans pyramide, le
+multiview lit la source pleine comme avant (aucune régression).
+
+Pour voir ce que chaque tuile lit, active **« Proxies pyramide (ingénierie) »** dans les réglages
+globaux du composer : un badge apparaît en haut-gauche de chaque vignette — `¼ ~` (octave),
+`952×536 ✓` (taille sur-mesure, copie pure) ou `plein ↯` (source pleine, pas encore de proxy). La
+bascule est **à chaud**. Détail complet dans l'aide du plugin **Pyramide**.
+
 ## Layouts enregistrés
 
 Enregistrer une disposition (bouton « Enregistrer le layout ») pour la rappeler instantanément plus tard. Les layouts sont globaux (partagés entre instances).

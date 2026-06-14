@@ -11,7 +11,7 @@
   "skaarhoj": {"mode": "multiview", "desc_i18n": "settings.js.skh_desc_multiview"},
   "deploy_order": 1,
   "resources": {"cores": 3, "memory": 2048, "pin": true},
-  "version": "0.14.20",
+  "version": "0.14.22",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {

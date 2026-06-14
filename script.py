@@ -1835,6 +1835,62 @@ def _select_input(i, cfg, target_w, target_h):
     best = min(valid, key=_key)
     return best[0], best[1], best[2], _classify(best[0], base, best[1], best[2], target_w, target_h)
 
+
+def _scan_proxies_for(cfg):
+    """Découvre les proxies pyramide DISPONIBLES pour la source d'une fenêtre, en scrutant
+    /dev/shm (nommage déterministe `<src>__pL` octave / `<src>__s<w>x<h>` sur-mesure). Renvoie
+    [{{path,w,h}}] ou None si la source n'est pas résolue. Dims octave = MÊME formule que la
+    pyramide (_proxy_dims, alignée chroma) ; sur-mesure = lue du nom (exacte)."""
+    path = cfg.get("path") or ""
+    src = path[len("/dev/shm/"):] if path.startswith("/dev/shm/") else path
+    if not src:
+        return None
+    in_w = int(cfg.get("in_w") or 0); in_h = int(cfg.get("in_h") or 0)
+    pref = src + "__"
+    try:
+        names = os.listdir("/dev/shm")
+    except OSError:
+        return None
+    out = []
+    for name in names:
+        if not name.startswith(pref):
+            continue
+        suf = name[len(pref):]
+        w = h = 0
+        if suf.startswith("s") and "x" in suf:
+            try:
+                ws, hs = suf[1:].split("x", 1); w = int(ws); h = int(hs)
+            except ValueError:
+                continue
+        elif suf.startswith("p"):
+            try:
+                L = int(suf[1:])
+            except ValueError:
+                continue
+            if L > 0 and in_w and in_h:
+                w = max(2, in_w // L); w -= w % max(2, _CW)
+                h = max(2, in_h // L); h -= h % max(2, _CH)
+        if w >= 2 and h >= 2:
+            out.append({{"path": "/dev/shm/" + name, "w": w, "h": h}})
+    return out
+
+def _proxy_scan_loop():
+    """Rafraîchit `cfg['proxies']` de chaque fenêtre en continu (toutes ~1.5 s) → injection À CHAUD :
+    le multiview consomme les nouveaux proxies (sur-mesure régénérés par le reconcile) ou cesse
+    d'utiliser ceux retirés, SANS redéploiement (plus de settle 2-passes)."""
+    while True:
+        time.sleep(1.5)
+        try:
+            with state_lock:
+                fc = list(FLUX_CONFIG)
+            for cfg in fc:
+                px = _scan_proxies_for(cfg)
+                if px is not None:
+                    cfg["proxies"] = px
+        except Exception:
+            pass
+
+
 class MvControlHandler(BaseHTTPRequestHandler):
     def _json(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -2001,11 +2057,16 @@ threading.Thread(
     target=lambda: HTTPServer(("0.0.0.0", 8082), MvControlHandler).serve_forever(),
     daemon=True).start()
 
+# Injection de proxies pyramide À CHAUD : scrute /dev/shm en continu (cf. _proxy_scan_loop).
+threading.Thread(target=_proxy_scan_loop, daemon=True).start()
+
 f_out = open(SHM_OUT, "r+b")
 shm_out = mmap.mmap(f_out.fileno(), OUT_TOTAL)
 shm_out_view = memoryview(shm_out)
 out_frame_index = 0
 start_time = time.time()
+_fps_last_idx = 0          # fps en fenêtre glissante (delta depuis le dernier report)
+_fps_last_t   = start_time
 next_frame_time = _grid_next(start_time, FRAME_INTERVAL) if GENLOCK else start_time
 
 while True:
@@ -2208,7 +2269,12 @@ while True:
     else:
         next_frame_time = start_time + (out_frame_index * FRAME_INTERVAL)
     if out_frame_index % 25 == 0:
-        elapsed = time.time() - start_time
-        metrics["fps"] = round(out_frame_index / elapsed, 1)
+        # fps en fenêtre glissante (débit sur les ~25 dernières trames) au lieu d'une moyenne
+        # cumulée depuis le démarrage (qui masquait les variations / sous-estimait après warmup).
+        _now_fps = time.time()
+        _dt_fps = _now_fps - _fps_last_t
+        if _dt_fps > 0:
+            metrics["fps"] = round((out_frame_index - _fps_last_idx) / _dt_fps, 1)
+        _fps_last_idx = out_frame_index; _fps_last_t = _now_fps
         _refresh_lat_metrics()
         print(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} fps")

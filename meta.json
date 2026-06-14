@@ -1,7 +1,13 @@
 {
-  "version": "0.14.20",
+  "version": "0.14.22",
   "date": "2026-06-14",
   "changes": {
+    "Nouveautés (0.14.22)": [
+      "Injection de proxies pyramide À CHAUD : le multiview scrute /dev/shm en continu (~1,5 s, _proxy_scan_loop) pour découvrir les proxies disponibles de ses sources (nommage déterministe <src>__pL / <src>__s<w>x<h>) et rafraîchit cfg['proxies'] tout seul. Fini le « settle 2-passes » : quand le reconcile régénère une taille sur-mesure (layout/résolution changés), le multiview la consomme en copie pure sans redéploiement, et cesse d'utiliser les proxies retirés. L'injection au déploiement (orchestrateur) reste comme amorce initiale."
+    ],
+    "Corrections (0.14.21)": [
+      "fps en FENÊTRE GLISSANTE (débit sur les ~25 dernières trames) au lieu d'une moyenne cumulée depuis le démarrage → la valeur affichée (badge, console, page Câbles) reflète le débit réel instantané."
+    ],
     "Corrections (0.14.20)": [
       "Sélecteur de format de sortie vide + sortie tombée en 720p quand on déploie depuis la page Traitements : scripts.js (qui définit loadVideoFormats) n'est chargé que par les pages Containers/Projects, pas par Traitements → la liste des formats restait nulle → menu vide + repli 1280×720. Le composer charge désormais les formats de façon AUTONOME (_mvEnsureVideoFormats lit /api/settings directement, mêmes globals) → la liste s'affiche et le défaut système (ex. 3G 1920×1080p50) est respecté partout. Repli de secours passé de 720p25 à 1080p50 (jamais de 720p surprise)."
     ],
