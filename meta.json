@@ -1,7 +1,11 @@
 {
-  "version": "0.14.26",
+  "version": "0.14.27",
   "date": "2026-06-14",
   "changes": {
+    "Corrections (0.14.27)": [
+      "Handler SIGBUS ajouté (manquant — coco/pyramide en avaient un, pas le multiview). Un multiview CHAÎNÉ qui lit le shm de sortie d'un autre plugin (ex. un autre multiview) était TUÉ net (pas de traceback) quand ce shm amont était recréé/redimensionné (redéploiement, changement de format/overlay du producteur) : lecture d'un mmap momentanément tronqué → SIGBUS non géré → mort du script (sortie figée, :8080/:8082 down). Désormais le handler referme les sources et ensure_input les rouvre à chaud → le multiview chaîné survit à la recréation du shm amont.",
+      "Garde-fou de boucle : le corps per-frame (rendu chrome/overlays + écriture sortie) est désormais enveloppé d'un try/except → une exception transitoire (rendu PIL, blend numpy, écriture shm…) saute la frame (la sortie garde sa dernière image via le ring) et la cadence continue, au lieu de tuer le script. Log throttlé (5 s). N'attrape PAS les signaux de contrôle (KeyboardInterrupt). Combiné au handler SIGBUS et à l'auto-restart orchestrateur (existant : poll :8081/status → /start), le multiview ne meurt plus sur un incident ponctuel."
+    ],
     "Performance (0.14.26)": [
       "Horloge : rafraîchissement DÉTERMINISTE mémoïsé. La couche per-frame (horloge) n'est re-rendue (PIL) + reconvertie (RGBA→YUV bbox) que quand sa VALEUR AFFICHÉE change — signature = chaînes formatées des horloges. Une horloge HH:MM:SS (défaut, sans le champ images/FF) ne change qu'1×/s → re-render 1×/s au lieu de 50×/s ; seul le blend (peu cher) reste par-trame. Mesuré : ov_render 2.1→0.2, ov_blend 7.6→0.6 (≈ −90% du coût horloge), fps qui remonte. Si l'opérateur active le champ images (show_ff), l'horloge redevient per-frame (inhérent). Les VU-mètres (qui changent à chaque trame) gardent la reconstruction systématique."
     ],

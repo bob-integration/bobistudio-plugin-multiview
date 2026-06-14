@@ -3,7 +3,7 @@
 # Auteur : Cyril Mazouer, pour le compte de BOBI SAS
 # Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
-import mmap, socket, struct, time, numpy as np, threading, json, os, re, base64, io
+import mmap, socket, struct, time, numpy as np, threading, json, os, re, base64, io, signal
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
@@ -2097,9 +2097,33 @@ _fps_last_idx = 0          # fps en fenêtre glissante (delta depuis le dernier 
 _fps_last_t   = start_time
 next_frame_time = _grid_next(start_time, FRAME_INTERVAL) if GENLOCK else start_time
 
+# SIGBUS : indispensable pour un multiview CHAÎNÉ (qui lit le shm d'un autre plugin). Quand le
+# producteur amont recrée/redimensionne son shm (redéploiement, changement de format), une lecture
+# d'un mmap momentanément tronqué lève SIGBUS → SANS handler, le process est TUÉ net (pas une
+# exception Python). Le handler referme les sources → ensure_input les rouvre à l'état courant.
+_bus_error = threading.Event()
+def _on_sigbus(signum, frame):
+    _bus_error.set()
+try:
+    signal.signal(signal.SIGBUS, _on_sigbus)
+except (ValueError, OSError):
+    pass   # pas dans le thread principal / plateforme sans SIGBUS
+_last_frame_err = 0.0   # throttle du log du garde-fou de boucle (try/except du corps per-frame)
+
 while True:
     now = time.time()
     now_m = time.monotonic()   # horloge MONOTONE pour les durées (détection freeze) — insensible aux sauts de CLOCK_REALTIME (genlock garde time.time())
+    if _bus_error.is_set():
+        _bus_error.clear()
+        with state_lock:
+            for _s in sources:
+                if _s is not None:
+                    try: _s["shm"].close(); _s["f"].close()
+                    except Exception: pass
+            sources[:] = [None] * len(sources)
+            _in_track.clear()
+        time.sleep(0.02)
+        continue   # source(s) refermée(s) → ensure_input rouvre proprement à la frame suivante
     wait = next_frame_time - now
     if wait > 0:
         time.sleep(wait)
@@ -2206,100 +2230,109 @@ while True:
 
     _t_after_inputs = time.time_ns()   # profiling : fin des entrées vidéo (lecture+resize+blend tuiles)
 
-    # Re-bake des couches d'habillage CACHÉES (RGBA) sur changement, puis (re)composition du
-    # « chrome » consolidé (z-ordre info < bordure < statique < dynamique) en UNE image RGBA cachée.
-    if geom_dirty.is_set():
-        with state_lock:
-            static_rgba = render_static()
-        geom_dirty.clear(); tally_dirty.set(); _info_sig = None; _chrome_dirty = True
+    try:
+        # Re-bake des couches d'habillage CACHÉES (RGBA) sur changement, puis (re)composition du
+        # « chrome » consolidé (z-ordre info < bordure < statique < dynamique) en UNE image RGBA cachée.
+        if geom_dirty.is_set():
+            with state_lock:
+                static_rgba = render_static()
+            geom_dirty.clear(); tally_dirty.set(); _info_sig = None; _chrome_dirty = True
 
-    if tally_dirty.is_set():
-        dyn_rgba    = render_dynamic()
-        border_rgba = render_border()
-        overlay_fg_rgba = render_overlays_fg_static()   # texte tally-réactif (couleur on/off)
-        tally_dirty.clear(); _chrome_dirty = True
+        if tally_dirty.is_set():
+            dyn_rgba    = render_dynamic()
+            border_rgba = render_border()
+            overlay_fg_rgba = render_overlays_fg_static()   # texte tally-réactif (couleur on/off)
+            tally_dirty.clear(); _chrome_dirty = True
 
-    _sig = tuple(_statuses)
-    if _sig != _info_sig:
-        with state_lock:
-            _info_layer = render_info(_statuses) if _statuses else None
-        _info_sig = _sig; _chrome_dirty = True
+        _sig = tuple(_statuses)
+        if _sig != _info_sig:
+            with state_lock:
+                _info_layer = render_info(_statuses) if _statuses else None
+            _info_sig = _sig; _chrome_dirty = True
 
-    if _chrome_dirty:
-        _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-        for _lyr in (_info_layer, border_rgba, static_rgba, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé (overlays fixes au-dessus)
-            if _lyr is not None:
-                _ch.alpha_composite(_lyr)
-        _chrome_rgba = _ch
-        _chrome_yuv  = rgba_to_yuv(_chrome_rgba)
-        # Pré-calcul des opérandes de blend du chrome (statiques jusqu'au prochain changement) :
-        # inv_a=(255−α) et src_a=src·α par plan (Y, puis U/V via l'alpha sous-échantillonnée).
-        _cy, _cu, _cv, _ca, _ca2 = _chrome_yuv
-        _chrome_pre = (255 - _ca.astype(_ACC),  _cy.astype(_ACC) * _ca,
-                       255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
-        _chrome_dirty = False
+        if _chrome_dirty:
+            _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+            for _lyr in (_info_layer, border_rgba, static_rgba, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé (overlays fixes au-dessus)
+                if _lyr is not None:
+                    _ch.alpha_composite(_lyr)
+            _chrome_rgba = _ch
+            _chrome_yuv  = rgba_to_yuv(_chrome_rgba)
+            # Pré-calcul des opérandes de blend du chrome (statiques jusqu'au prochain changement) :
+            # inv_a=(255−α) et src_a=src·α par plan (Y, puis U/V via l'alpha sous-échantillonnée).
+            _cy, _cu, _cv, _ca, _ca2 = _chrome_yuv
+            _chrome_pre = (255 - _ca.astype(_ACC),  _cy.astype(_ACC) * _ca,
+                           255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
+            _chrome_dirty = False
 
-    # Habillage = chrome STATIQUE (caché) + couche PER-FRAME (VU + horloge).
-    _ts_ov0 = time.time_ns()
-    _meters = render_meters(now)
-    # La couche per-frame n'est RE-RENDUE+RECONVERTIE que quand son contenu change. VU-mètres =
-    # changent à chaque trame → reconstruction systématique (_pf_sig=None). Sinon (horloges seules),
-    # signature = valeurs AFFICHÉES des horloges (déterministe) → re-render 1×/s sans le champ images,
-    # per-frame seulement si l'horloge montre les images (FF). Le blend, lui, reste à chaque trame.
-    if _meters is not None:
-        _pf_sig = None
-    else:
-        _pf_sig = tuple(_format_clock(ov, now) for ov in OVERLAYS
-                        if (not ov.get("hidden")) and ov.get("kind") == "clock")
-    _render_pf = (_pf_sig is None) or (_pf_sig != _pf_cache_sig)
-    _ovfg = render_overlays_fg(now) if _render_pf else None
-    _ts_ov1 = time.time_ns()   # fin rendu PIL (≈0 si réutilisation du cache horloge)
-    # 1) Chrome statique : TOUJOURS blendé via opérandes pré-calculés (plein écran, SANS conversion).
-    if _chrome_pre is not None:
-        _piY, _saY, _piC, _saU, _saV = _chrome_pre
-        canvas_y = blend_pre(canvas_y, _piY, _saY)
-        canvas_u = blend_pre(canvas_u, _piC, _saU)
-        canvas_v = blend_pre(canvas_v, _piC, _saV)
-    _ts_ov2 = time.time_ns()   # fin du blend chrome
-    # 2) Couche PER-FRAME : convertie en YUV (bbox) SEULEMENT au changement (cache), puis blendée à
-    #    chaque trame sur sa bounding-box. Bornes alignées sur grille chroma paire.
-    if _render_pf:
-        _pf_cache_sig = _pf_sig; _pf_cache = None
-        if _meters is not None or _ovfg is not None:
-            _pf = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-            if _meters is not None: _pf.alpha_composite(_meters)
-            if _ovfg   is not None: _pf.alpha_composite(_ovfg)
-            _bb = _pf.getbbox()
-            if _bb:
-                bx0, by0, bx1, by1 = _bb
-                bx0 -= bx0 % 2; by0 -= by0 % 2
-                if bx1 % 2: bx1 = min(OUT_WIDTH, bx1 + 1)
-                if by1 % 2: by1 = min(OUT_HEIGHT, by1 + 1)
-                _oy, _ou, _ov, _oa, _oa2 = rgba_to_yuv(_pf.crop((bx0, by0, bx1, by1)))
-                _pf_cache = (_oy, _ou, _ov, _oa, _oa2, bx0, by0, bx1, by1)
-    if _pf_cache is not None:
-        _oy, _ou, _ov, _oa, _oa2, bx0, by0, bx1, by1 = _pf_cache
-        canvas_y[by0:by1, bx0:bx1] = blend(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
-        cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
-        canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
-        canvas_v[cy0:cy1, cx0:cx1] = blend(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
+        # Habillage = chrome STATIQUE (caché) + couche PER-FRAME (VU + horloge).
+        _ts_ov0 = time.time_ns()
+        _meters = render_meters(now)
+        # La couche per-frame n'est RE-RENDUE+RECONVERTIE que quand son contenu change. VU-mètres =
+        # changent à chaque trame → reconstruction systématique (_pf_sig=None). Sinon (horloges seules),
+        # signature = valeurs AFFICHÉES des horloges (déterministe) → re-render 1×/s sans le champ images,
+        # per-frame seulement si l'horloge montre les images (FF). Le blend, lui, reste à chaque trame.
+        if _meters is not None:
+            _pf_sig = None
+        else:
+            _pf_sig = tuple(_format_clock(ov, now) for ov in OVERLAYS
+                            if (not ov.get("hidden")) and ov.get("kind") == "clock")
+        _render_pf = (_pf_sig is None) or (_pf_sig != _pf_cache_sig)
+        _ovfg = render_overlays_fg(now) if _render_pf else None
+        _ts_ov1 = time.time_ns()   # fin rendu PIL (≈0 si réutilisation du cache horloge)
+        # 1) Chrome statique : TOUJOURS blendé via opérandes pré-calculés (plein écran, SANS conversion).
+        if _chrome_pre is not None:
+            _piY, _saY, _piC, _saU, _saV = _chrome_pre
+            canvas_y = blend_pre(canvas_y, _piY, _saY)
+            canvas_u = blend_pre(canvas_u, _piC, _saU)
+            canvas_v = blend_pre(canvas_v, _piC, _saV)
+        _ts_ov2 = time.time_ns()   # fin du blend chrome
+        # 2) Couche PER-FRAME : convertie en YUV (bbox) SEULEMENT au changement (cache), puis blendée à
+        #    chaque trame sur sa bounding-box. Bornes alignées sur grille chroma paire.
+        if _render_pf:
+            _pf_cache_sig = _pf_sig; _pf_cache = None
+            if _meters is not None or _ovfg is not None:
+                _pf = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+                if _meters is not None: _pf.alpha_composite(_meters)
+                if _ovfg   is not None: _pf.alpha_composite(_ovfg)
+                _bb = _pf.getbbox()
+                if _bb:
+                    bx0, by0, bx1, by1 = _bb
+                    bx0 -= bx0 % 2; by0 -= by0 % 2
+                    if bx1 % 2: bx1 = min(OUT_WIDTH, bx1 + 1)
+                    if by1 % 2: by1 = min(OUT_HEIGHT, by1 + 1)
+                    _oy, _ou, _ov, _oa, _oa2 = rgba_to_yuv(_pf.crop((bx0, by0, bx1, by1)))
+                    _pf_cache = (_oy, _ou, _ov, _oa, _oa2, bx0, by0, bx1, by1)
+        if _pf_cache is not None:
+            _oy, _ou, _ov, _oa, _oa2, bx0, by0, bx1, by1 = _pf_cache
+            canvas_y[by0:by1, bx0:bx1] = blend(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
+            cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
+            canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
+            canvas_v[cy0:cy1, cx0:cx1] = blend(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
-    _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=overlays per-frame (bbox)
-    _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
-    _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
-    _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
-    out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
-    slot   = out_frame_index % RING_SIZE
-    offset = HEADER_SIZE + slot * OUT_FRAME_SIZE
-    shm_out_view[offset:offset + OUT_FRAME_SIZE] = out_frame.tobytes()
-    ts_out = time.time_ns()
-    # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
-    _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)
-    _t_overlays.push((_t_after_overlays - _t_after_inputs) / 1e6)
-    _t_output.push((ts_out - _t_after_overlays) / 1e6)
-    # write_ts = instant de présentation (grille PTP) en genlock, sinon horloge mur.
-    _wts = int(next_frame_time * 1e9) if GENLOCK else ts_out
-    shm_out[0:16] = struct.pack("QQ", out_frame_index, _wts)
+        _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=overlays per-frame (bbox)
+        _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
+        _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
+        _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
+        out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
+        slot   = out_frame_index % RING_SIZE
+        offset = HEADER_SIZE + slot * OUT_FRAME_SIZE
+        shm_out_view[offset:offset + OUT_FRAME_SIZE] = out_frame.tobytes()
+        ts_out = time.time_ns()
+        # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
+        _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)
+        _t_overlays.push((_t_after_overlays - _t_after_inputs) / 1e6)
+        _t_output.push((ts_out - _t_after_overlays) / 1e6)
+        # write_ts = instant de présentation (grille PTP) en genlock, sinon horloge mur.
+        _wts = int(next_frame_time * 1e9) if GENLOCK else ts_out
+        shm_out[0:16] = struct.pack("QQ", out_frame_index, _wts)
+    except Exception as _e:
+        # Garde-fou : une exception transitoire (rendu overlay/chrome, écriture sortie…) ne doit
+        # PAS tuer le process. On saute cette frame (la sortie garde sa dernière image via le ring)
+        # et la cadence avance normalement ci-dessous. Log throttlé pour ne pas inonder.
+        _nowe = time.time()
+        if _nowe - _last_frame_err > 5.0:
+            print(f"multiview: erreur de rendu ignorée (frame {{out_frame_index}}) : {{_e}}")
+            _last_frame_err = _nowe
     # Latence par PiP : TRANSIT (arrivée) déjà calculé à la lecture (ts_read − ts_in producteur).
     for path, transit_ms in ts_in_per_input.items():
         key = path[len("/dev/shm/"):] if path.startswith("/dev/shm/") else path
