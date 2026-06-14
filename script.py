@@ -355,12 +355,42 @@ TSL_SLOT_TTL_FACTOR = 2.5   # TTL = factor × intervalle keepalive mesuré
 TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None}}
 
+def _compute_proxy_needs():
+    """Tailles vidéo RÉELLES distinctes par source câblée (besoins pour la pyramide).
+    {{"<src-shm>": [[w,h], …]}}. Calculé via _video_rect (taille d'AFFICHAGE, après marges
+    habillage) → source de vérité unique, l'orchestrateur ne re-dérive pas la géométrie."""
+    out = {{}}
+    try:
+        with state_lock:
+            fc = list(FLUX_CONFIG)
+    except Exception:
+        return out
+    for cfg in fc:
+        if cfg.get("hidden"):
+            continue
+        path = cfg.get("path") or ""
+        shm = path[len("/dev/shm/"):] if path.startswith("/dev/shm/") else path
+        if not shm:
+            continue
+        try:
+            g = _video_rect(cfg)
+            w = int(g.get("vw") or 0); h = int(g.get("vh") or 0)
+        except Exception:
+            continue
+        if w < 2 or h < 2:
+            continue
+        lst = out.setdefault(shm, [])
+        if [w, h] not in lst:
+            lst.append([w, h])
+    return out
+
 def _refresh_lat_metrics():
     out = {{}}
     for shm_name, rm in lat_in.items():
         out[shm_name] = rm.avg()
     metrics["inputs_latency_ms"] = out
     metrics["own_latency_ms"] = own_lat.avg()
+    metrics["proxy_needs"] = _compute_proxy_needs()
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
                                        "output": _t_output.avg(),
@@ -1720,19 +1750,24 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
             if i < len(sources): sources[i] = src
     return src
 
+_PROXY_UPSCALE_TOL = 0.08   # un proxy jusqu'à ~8% trop petit peut être AGRANDI (zoom léger) au
+
 def _select_input(i, cfg, target_w, target_h):
     """Choisit la MEILLEURE source pour une tuile `target_w×target_h` parmi la source pleine et
-    ses proxies pyramide. Critère = COÛT du redimensionnement, PAS juste la taille :
-      1. ne garder que les candidats ≥ tuile (jamais d'upscale) et présents sur disque ;
-      2. PRÉFÉRER un ratio ENTIER sur les deux axes → resize_plane reste en strided zéro-copie
-         (le gather np.ix_ non-entier est bien plus lent : un proxy ½ lu en ratio 1,5 coûte PLUS
-         cher que la source pleine lue en ÷N entier) ;
-      3. à coût égal, la source la PLUS PETITE (moins d'octets lus).
+    ses proxies pyramide (octaves + tailles sur-mesure). Critère = COÛT du redimensionnement :
+      0. « convient » = couvre la tuile à la TOLÉRANCE D'UPSCALE près (≤8% d'agrandissement) →
+         un proxy un poil trop petit est préféré à l'octave au-dessus (moins d'octets, zoom léger
+         imperceptible sur un mur de monitoring) ;
+      1. MATCH EXACT (w==tuile, h==tuile) → resize_plane renvoie le plan tel quel = COPIE PURE ;
+      2. sinon ratio ENTIER downscale (strided zéro-copie ; le gather np.ix_ non-entier est lent) ;
+      3. sinon la PLUS PETITE aire (moins d'octets lus + gather le plus court).
     OPPORTUNISTE : entrée sans `proxies` = comportement classique. Repli systématique sur le
     plein (un proxy absent/inadapté ne fige jamais la tuile). Renvoie (path, in_w, in_h)."""
     with state_lock:
         base = mv_state["inputs"][i] if i < len(mv_state["inputs"]) else ""
     base_w = cfg.get("in_w", 640); base_h = cfg.get("in_h", 360)
+    if target_w <= 0 or target_h <= 0:
+        return base, base_w, base_h
     cands = [(base, base_w, base_h)]
     for p in (cfg.get("proxies") or []):
         try:
@@ -1740,19 +1775,19 @@ def _select_input(i, cfg, target_w, target_h):
         except (TypeError, ValueError):
             continue
         pp = p.get("path") or ""
-        if pp and os.path.exists(pp):
+        if pp and pw > 0 and ph > 0 and os.path.exists(pp):
             cands.append((pp, pw, ph))
-    if target_w <= 0 or target_h <= 0:
-        return base, base_w, base_h
-    valid = [c for c in cands if c[1] >= target_w and c[2] >= target_h]
+    min_w = target_w / (1.0 + _PROXY_UPSCALE_TOL)
+    min_h = target_h / (1.0 + _PROXY_UPSCALE_TOL)
+    valid = [c for c in cands if c[1] >= min_w and c[2] >= min_h]
     if not valid:
         return base, base_w, base_h
-    # strided (ratio entier sur W ET H) d'abord, puis la plus petite largeur (moins d'octets).
     def _key(c):
-        strided = (c[1] % target_w == 0 and c[2] % target_h == 0)
-        return (0 if strided else 1, c[1])
-    best = min(valid, key=_key)
-    return best
+        exact   = (c[1] == target_w and c[2] == target_h)
+        strided = (c[1] >= target_w and c[2] >= target_h and
+                   c[1] % target_w == 0 and c[2] % target_h == 0)
+        return (0 if exact else (1 if strided else 2), c[1] * c[2])
+    return min(valid, key=_key)
 
 class MvControlHandler(BaseHTTPRequestHandler):
     def _json(self):

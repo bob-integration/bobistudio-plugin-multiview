@@ -1,7 +1,10 @@
 {
-  "version": "0.14.15",
-  "date": "2026-06-13",
+  "version": "0.14.16",
+  "date": "2026-06-14",
   "changes": {
+    "Nouveautés (0.14.16)": [
+      "Pyramide hybride — côté multiview : (1) `_select_input` gagne une TOLÉRANCE D'UPSCALE ≤8% (un proxy un poil trop petit est agrandi au lieu de sauter à la taille au-dessus) et privilégie le MATCH EXACT (copie pure, zéro resize) puis le ratio entier strided ; (2) le multiview publie `proxy_needs` sur :8080 = tailles vidéo réelles distinctes par source (via _video_rect, après marges habillage), AVEC un compte par taille — consommé par l'orchestrateur pour générer à la demande les proxies sur-mesure (taille exacte des tuiles, ex. quad 952×536) que le multiview lit alors en copie pure. Opportuniste et 100% repli : sans pyramide / proxy absent → comportement classique."
+    ],
     "Corrections (0.14.15)": [
       "Sélection de proxy pyramide STRIDED-AWARE : la pyramide ne dégrade plus JAMAIS le temps de traitement. Avant, _select_input prenait le plus petit proxy ≥ taille de tuile par SEULE la taille → sur une grille 3×3 (tuile 640) il choisissait le proxy ½ (960→640 = ratio 1,5 NON entier → gather np.ix_ lent) alors que la source pleine se réduisait en ÷3 STRIDED (zéro-copie) : régression de +129 %. Désormais la sélection privilégie un ratio ENTIER sur les deux axes (resize strided) puis la plus petite largeur, et retombe sur le plein si aucun proxy n'offre de ratio entier. Bench (sources 1080p→1080p) : 2×2 −65 %, 4×4 −72 %, 3×3 et 1×1 neutres (au lieu de régresser)."
     ],
