@@ -141,6 +141,8 @@
   "plugin.multiview.freeze_detect_title": "Badge FREEZE quand l'image source n'avance plus depuis N secondes",
   "plugin.multiview.show_format": "Format source par fenêtre",
   "plugin.multiview.show_format_title": "Chip discret en bas à droite de chaque fenêtre : format déclaré de la source (ex. 1920×1080p25)",
+  "plugin.multiview.show_proxy": "Proxies pyramide (ingénierie)",
+  "plugin.multiview.show_proxy_title": "Mode ingénierie : badge en haut à gauche de chaque fenêtre indiquant le proxy pyramide lu et son coût (¼ ~ octave, 952×536 ✓ copie pure, plein ↯ gather)",
   "plugin.multiview.genlock_title": "Verrouille la phase de sortie sur la grille PTP. Param structurel : un changement redéploie le container.",
   "plugin.multiview.tsl_port": "TSL port TCP",
   "plugin.multiview.layouts_title": "Layouts enregistrés",

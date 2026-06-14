@@ -10,7 +10,7 @@
   },
   "skaarhoj": {"mode": "multiview", "desc_i18n": "settings.js.skh_desc_multiview"},
   "deploy_order": 1,
-  "version": "0.14.17",
+  "version": "0.14.18",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
@@ -40,7 +40,8 @@
     "frame_style": "none",
     "show_no_signal": true,
     "freeze_detect_s": 2.0,
-    "show_format": false
+    "show_format": false,
+    "show_proxy": false
   },
   "config_schema": [
     {

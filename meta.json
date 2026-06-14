@@ -1,7 +1,10 @@
 {
-  "version": "0.14.17",
+  "version": "0.14.18",
   "date": "2026-06-14",
   "changes": {
+    "Corrections (0.14.18)": [
+      "Toggle « Proxies pyramide (ingénierie) » ajouté DANS le composer (onglet global, sous « Format source par fenêtre ») : il manquait à l'interface en 0.14.17 (le back-end show_proxy existait mais aucune case ne le pilotait). Bascule à chaud (/style) → badge par vignette du proxy lu + coût. Labels i18n (plugin.multiview.show_proxy)."
+    ],
     "Nouveautés (0.14.17)": [
       "Monitoring pyramide (P2) : badge proxy par tuile (toggle « proxies » mode ingénierie, hot via /style). Chaque vignette indique ce qu'elle LIT et à quel coût — « ¼ ~ » (octave strided), « 952×536 ✓ » (sur-mesure copie pure), « plein ↯ » (gather) — code couleur vert/ambre/rouge. Le multiview expose aussi `proxy_usage`/`proxy_read` sur :8080 (consommés par la console Pyramide, les KPIs et les alertes orphelins/non-couverts côté orchestrateur)."
     ],

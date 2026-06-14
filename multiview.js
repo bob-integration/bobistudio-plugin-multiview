@@ -243,6 +243,7 @@ async function chargerMw(vmid) {
         show_no_signal: true,
         freeze_detect_s: 2,
         show_format: false,
+        show_proxy: false,
         max_inputs: 4,
         genlock: true,
         tsl_port: 4801,
@@ -293,6 +294,7 @@ function renderEditor(hostname) {
     document.getElementById('ed_show_no_signal').checked = p.show_no_signal !== false;
     document.getElementById('ed_freeze_detect').value    = p.freeze_detect_s ?? 2;
     document.getElementById('ed_show_format').checked    = !!p.show_format;
+    document.getElementById('ed_show_proxy').checked     = !!p.show_proxy;
     document.getElementById('ed_genlock').checked       = p.genlock !== false;
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     document.getElementById('ed_snap').checked          = snapEnabled;
@@ -364,6 +366,7 @@ function onGlobalChange() {
     editorParams.show_no_signal  = document.getElementById('ed_show_no_signal').checked;
     editorParams.freeze_detect_s = Math.max(0, parseFloat(document.getElementById('ed_freeze_detect').value) || 0);
     editorParams.show_format     = document.getElementById('ed_show_format').checked;
+    editorParams.show_proxy      = document.getElementById('ed_show_proxy').checked;
     dessiner();
     hotApplyStyle();
 }
@@ -1319,6 +1322,7 @@ function hotApplyStyle() {
             show_no_signal:  editorParams.show_no_signal !== false,
             freeze_detect_s: editorParams.freeze_detect_s ?? 2,
             show_format:     !!editorParams.show_format,
+            show_proxy:      !!editorParams.show_proxy,
         })
     }).catch(() => {});
 }
@@ -1798,6 +1802,7 @@ async function deployerEditor() {
     editorParams.show_no_signal  = document.getElementById('ed_show_no_signal').checked;
     editorParams.freeze_detect_s = Math.max(0, parseFloat(document.getElementById('ed_freeze_detect').value) || 0);
     editorParams.show_format     = document.getElementById('ed_show_format').checked;
+    editorParams.show_proxy      = document.getElementById('ed_show_proxy').checked;
     editorParams.genlock = document.getElementById('ed_genlock').checked;
     const tslPortEl = document.getElementById('ed_tsl_port');
     if (tslPortEl) editorParams.tsl_port = parseInt(tslPortEl.value) || 0;
@@ -1841,6 +1846,7 @@ async function deployerEditor() {
         show_no_signal:  editorParams.show_no_signal !== false,
         freeze_detect_s: editorParams.freeze_detect_s ?? 2,
         show_format:     !!editorParams.show_format,
+        show_proxy:      !!editorParams.show_proxy,
         max_inputs:    editorParams.max_inputs,
         genlock:       editorParams.genlock,
         tsl_port:      editorParams.tsl_port ?? 4801
