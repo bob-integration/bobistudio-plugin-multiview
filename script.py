@@ -53,6 +53,11 @@ try:
 except (TypeError, ValueError):
     FREEZE_DETECT_S = 2.0
 SHOW_FORMAT   = _as_bool(CONFIG.get("show_format"))     # chip format déclaré par fenêtre (mode ingénierie)
+SHOW_PROXY    = _as_bool(CONFIG.get("show_proxy"))      # badge proxy lu par tuile (mode ingénierie pyramide)
+
+# Monitoring pyramide : dernier choix de proxy par tuile (lu par _refresh_lat_metrics → :8080).
+_proxy_usage_latest = {{}}   # {{idx: {{src, read, cost, kind}}}}
+_proxy_read_latest  = []     # noms de shm RÉELLEMENT lus (≠ chemins pleins) → détection orphelins
 
 # Chroma uniforme du pipeline (entrées ET sortie ont le même layout ; défaut 4:2:2).
 CHROMA = str(CONFIG.get("chroma") or "422")
@@ -391,6 +396,8 @@ def _refresh_lat_metrics():
     metrics["inputs_latency_ms"] = out
     metrics["own_latency_ms"] = own_lat.avg()
     metrics["proxy_needs"] = _compute_proxy_needs()
+    metrics["proxy_usage"] = dict(_proxy_usage_latest)   # idx → {{src,read,cost,kind}}
+    metrics["proxy_read"]  = list(_proxy_read_latest)     # shm proxy réellement lus (orphan-detect)
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
                                        "output": _t_output.avg(),
@@ -1151,11 +1158,23 @@ def render_info(statuses):
     `statuses` = [(idx, statut, fmt_txt)] — exactement la signature qui a déclenché le bake."""
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    for i, status, fmt_txt in statuses:
+    for i, status, fmt_txt, proxy in statuses:
         if i >= len(FLUX_CONFIG):
             continue
         g = _video_rect(FLUX_CONFIG[i])
         vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]
+        if proxy:
+            # Badge proxy (mode ingénierie) en haut-gauche, couleur selon la classe de coût.
+            _plabel, _pcost = proxy
+            _pcol = {{"copy": (40, 170, 90, 235), "strided": (210, 150, 0, 235)}}.get(_pcost, (200, 70, 55, 235))
+            _pglyph = {{"copy": "✓", "strided": "~"}}.get(_pcost, "↯")
+            ptxt = f"{{_plabel}} {{_pglyph}}"
+            fnt = _font(max(8, min(14, vh // 14)))
+            pad = max(2, vh // 120)
+            tb = d.textbbox((0, 0), ptxt, font=fnt)
+            bw, bh = (tb[2] - tb[0]) + 2 * pad + 2, (tb[3] - tb[1]) + 2 * pad
+            d.rounded_rectangle([vx + 3, vy + 3, vx + 3 + bw, vy + 3 + bh], radius=2, fill=_pcol)
+            d.text((vx + 3 + bw // 2, vy + 3 + bh // 2 + 1), ptxt, font=fnt, fill=(12, 14, 10, 255), anchor="mm")
         if status == "nosignal":
             # Fond gris sombre : distingue « pas de source » d'une vidéo noire légitime.
             d.rectangle([vx, vy, vx + vw - 1, vy + vh - 1], fill=(22, 24, 28, 255))
@@ -1752,6 +1771,30 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
 
 _PROXY_UPSCALE_TOL = 0.08   # un proxy jusqu'à ~8% trop petit peut être AGRANDI (zoom léger) au
 
+_OCT_GLYPH = {{2: "½", 4: "¼", 8: "⅛", 16: "1/16"}}
+
+def _classify(path, base, w, h, tw, th):
+    """Métadonnée du choix de proxy pour le monitoring (P2/P3/P4) : {{read, cost, kind}}.
+    kind = full|oct|custom ; cost = copy (taille exacte) | strided (downscale entier) | gather."""
+    if path == base:
+        kind, read = "full", "plein"
+    elif "__s" in path:
+        kind, read = "custom", f"{{w}}×{{h}}"
+    elif "__p" in path:
+        kind = "oct"
+        try: L = int(path.rsplit("__p", 1)[1])
+        except (ValueError, IndexError): L = 0
+        read = _OCT_GLYPH.get(L, (f"1/{{L}}" if L else "oct"))
+    else:
+        kind, read = "proxy", f"{{w}}×{{h}}"
+    if w == tw and h == th:
+        cost = "copy"
+    elif w >= tw and h >= th and tw and th and w % tw == 0 and h % th == 0:
+        cost = "strided"
+    else:
+        cost = "gather"
+    return {{"read": read, "cost": cost, "kind": kind}}
+
 def _select_input(i, cfg, target_w, target_h):
     """Choisit la MEILLEURE source pour une tuile `target_w×target_h` parmi la source pleine et
     ses proxies pyramide (octaves + tailles sur-mesure). Critère = COÛT du redimensionnement :
@@ -1767,7 +1810,7 @@ def _select_input(i, cfg, target_w, target_h):
         base = mv_state["inputs"][i] if i < len(mv_state["inputs"]) else ""
     base_w = cfg.get("in_w", 640); base_h = cfg.get("in_h", 360)
     if target_w <= 0 or target_h <= 0:
-        return base, base_w, base_h
+        return base, base_w, base_h, _classify(base, base, base_w, base_h, target_w or base_w, target_h or base_h)
     cands = [(base, base_w, base_h)]
     for p in (cfg.get("proxies") or []):
         try:
@@ -1781,13 +1824,14 @@ def _select_input(i, cfg, target_w, target_h):
     min_h = target_h / (1.0 + _PROXY_UPSCALE_TOL)
     valid = [c for c in cands if c[1] >= min_w and c[2] >= min_h]
     if not valid:
-        return base, base_w, base_h
+        return base, base_w, base_h, _classify(base, base, base_w, base_h, target_w, target_h)
     def _key(c):
         exact   = (c[1] == target_w and c[2] == target_h)
         strided = (c[1] >= target_w and c[2] >= target_h and
                    c[1] % target_w == 0 and c[2] % target_h == 0)
         return (0 if exact else (1 if strided else 2), c[1] * c[2])
-    return min(valid, key=_key)
+    best = min(valid, key=_key)
+    return best[0], best[1], best[2], _classify(best[0], base, best[1], best[2], target_w, target_h)
 
 class MvControlHandler(BaseHTTPRequestHandler):
     def _json(self):
@@ -1852,7 +1896,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
         b = self._json()
         with state_lock:
             global BORDER_W, BORDER_COLOR, OVERLAY_BELOW, LABEL_SIZE, FRAME_STYLE
-            global SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_FORMAT
+            global SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_FORMAT, SHOW_PROXY
             if "border_w" in b:
                 try: BORDER_W = max(0, int(b["border_w"]))
                 except (TypeError, ValueError): pass
@@ -1874,6 +1918,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError): pass
             if "show_format" in b:
                 SHOW_FORMAT = _as_bool(b["show_format"])
+            if "show_proxy" in b:
+                SHOW_PROXY = _as_bool(b["show_proxy"])
             geom_dirty.set()
             tally_dirty.set()
         self.send_response(200)
@@ -1972,7 +2018,9 @@ while True:
     canvas_u = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
     canvas_v = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
     ts_in_per_input = {{}}  # path → transit_ms (âge à la lecture), rempli par les lectures réussies
-    _statuses = []          # (idx, statut, chip format) → signature de la couche info
+    _statuses = []          # (idx, statut, chip format, proxy) → signature de la couche info
+    _pu = {{}}              # idx → {{src, read, cost, kind}} (monitoring pyramide, cette frame)
+    _pread = []             # noms de shm proxy réellement lus cette frame
 
     with state_lock:
         _fc = list(FLUX_CONFIG)   # snapshot stable pour cette frame
@@ -1997,13 +2045,19 @@ while True:
         vy, vh = g["vy"], g["vh"]
         video_x, video_w = g["vx"], g["vw"]
         # Pyramide : lire le proxy pré-réduit le mieux dimensionné pour cette tuile (sinon plein).
-        _ep, _ew, _eh = _select_input(i, cfg, video_w, vh)
+        _ep, _ew, _eh, _einfo = _select_input(i, cfg, video_w, vh)
         src = ensure_input(i, _ep, _ew, _eh)   # rouvre le mmap si la source/proxy a changé
+        # Monitoring : choix de proxy de cette tuile (badge P2 + métriques P3/P4).
+        _srcname = (cfg.get("path") or "").removeprefix("/dev/shm/")
+        _pu[i] = {{"src": _srcname, "read": _einfo["read"], "cost": _einfo["cost"], "kind": _einfo["kind"]}}
+        if _einfo["kind"] != "full":
+            _pread.append(_ep.removeprefix("/dev/shm/"))
+        _proxy_chip = (_einfo["read"], _einfo["cost"]) if SHOW_PROXY else None
 
         if src is None:
             canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
             if SHOW_NO_SIGNAL:
-                _statuses.append((i, "nosignal", ""))
+                _statuses.append((i, "nosignal", "", None))
             continue
 
         try:
@@ -2025,8 +2079,8 @@ while True:
                 tr["fi"] = fi; tr["t"] = now_m
             _st = "freeze" if (FREEZE_DETECT_S > 0 and now_m - tr["t"] > FREEZE_DETECT_S) else ""
             _chip = _fmt_chip_txt(cfg, src) if SHOW_FORMAT else ""
-            if _st or _chip:
-                _statuses.append((i, _st, _chip))
+            if _st or _chip or _proxy_chip:
+                _statuses.append((i, _st, _chip, _proxy_chip))
             slot   = fi % src.get("ring", RING_SIZE)
             offset = HEADER_SIZE + slot * frame_size
 
@@ -2049,7 +2103,11 @@ while True:
         except Exception:
             canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
             if SHOW_NO_SIGNAL:
-                _statuses.append((i, "nosignal", ""))
+                _statuses.append((i, "nosignal", "", None))
+
+    # Publication du monitoring proxy de cette frame (swap de référence = atomique pour le lecteur).
+    _proxy_usage_latest = _pu
+    _proxy_read_latest = sorted(set(_pread))
 
     _t_after_inputs = time.time_ns()   # profiling : fin des entrées vidéo (lecture+resize+blend tuiles)
 

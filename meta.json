@@ -1,7 +1,10 @@
 {
-  "version": "0.14.16",
+  "version": "0.14.17",
   "date": "2026-06-14",
   "changes": {
+    "Nouveautés (0.14.17)": [
+      "Monitoring pyramide (P2) : badge proxy par tuile (toggle « proxies » mode ingénierie, hot via /style). Chaque vignette indique ce qu'elle LIT et à quel coût — « ¼ ~ » (octave strided), « 952×536 ✓ » (sur-mesure copie pure), « plein ↯ » (gather) — code couleur vert/ambre/rouge. Le multiview expose aussi `proxy_usage`/`proxy_read` sur :8080 (consommés par la console Pyramide, les KPIs et les alertes orphelins/non-couverts côté orchestrateur)."
+    ],
     "Nouveautés (0.14.16)": [
       "Pyramide hybride — côté multiview : (1) `_select_input` gagne une TOLÉRANCE D'UPSCALE ≤8% (un proxy un poil trop petit est agrandi au lieu de sauter à la taille au-dessus) et privilégie le MATCH EXACT (copie pure, zéro resize) puis le ratio entier strided ; (2) le multiview publie `proxy_needs` sur :8080 = tailles vidéo réelles distinctes par source (via _video_rect, après marges habillage), AVEC un compte par taille — consommé par l'orchestrateur pour générer à la demande les proxies sur-mesure (taille exacte des tuiles, ex. quad 952×536) que le multiview lit alors en copie pure. Opportuniste et 100% repli : sans pyramide / proxy absent → comportement classique."
     ],
