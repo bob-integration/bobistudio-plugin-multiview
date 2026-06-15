@@ -238,6 +238,12 @@
         </div>
         <div class="row">
             <label class="field field-inline" for="ed_genlock" title="Verrouille la phase de sortie sur la grille PTP. Param structurel : un changement redéploie le container." data-i18n-title="plugin.multiview.genlock_title"><input type="checkbox" class="ios-toggle" id="ed_genlock"> Genlock</label>
+            <div class="field"><label for="ed_fps_target" title="Cadence visée pour ce mur. Si le multiview sature, le tissu de composition le découpe automatiquement pour tenir cette cadence (auto = budget global du cluster).">Cadence visée</label>
+                <select id="ed_fps_target" onchange="onGlobalChange()">
+                    <option value="0">Auto (global)</option>
+                    <option value="50">50 fps</option>
+                    <option value="25">25 fps</option>
+                </select></div>
         </div>
         <div class="row">
             <div class="field"><label for="ed_tsl_port" data-i18n="plugin.multiview.tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>

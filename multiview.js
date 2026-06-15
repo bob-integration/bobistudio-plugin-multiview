@@ -302,6 +302,7 @@ function renderEditor(hostname) {
     document.getElementById('ed_show_format').checked    = !!p.show_format;
     document.getElementById('ed_show_proxy').checked     = !!p.show_proxy;
     document.getElementById('ed_genlock').checked       = p.genlock !== false;
+    { const _ft = document.getElementById('ed_fps_target'); if (_ft) _ft.value = String(parseInt(p.fps_target) || 0); }
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     document.getElementById('ed_snap').checked          = snapEnabled;
     try { populateOutFormatSelect(); } catch (e) { /* sélecteur de format non bloquant */ }
@@ -1898,6 +1899,7 @@ async function deployerEditor() {
     editorParams.show_format     = document.getElementById('ed_show_format').checked;
     editorParams.show_proxy      = document.getElementById('ed_show_proxy').checked;
     editorParams.genlock = document.getElementById('ed_genlock').checked;
+    { const _ft = document.getElementById('ed_fps_target'); if (_ft) editorParams.fps_target = parseInt(_ft.value) || 0; }
     const tslPortEl = document.getElementById('ed_tsl_port');
     if (tslPortEl) editorParams.tsl_port = parseInt(tslPortEl.value) || 0;
     padBank();   // max_inputs a pu changer → complète la banque
@@ -1943,6 +1945,7 @@ async function deployerEditor() {
         show_proxy:      !!editorParams.show_proxy,
         max_inputs:    editorParams.max_inputs,
         genlock:       editorParams.genlock,
+        fps_target:    editorParams.fps_target || 0,
         tsl_port:      editorParams.tsl_port ?? 4801
     };
 

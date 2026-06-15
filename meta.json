@@ -1,7 +1,10 @@
 {
-  "version": "0.14.31",
+  "version": "0.14.32",
   "date": "2026-06-15",
   "changes": {
+    "Nouveautés (0.14.32)": [
+      "Composer : champ « Cadence visée » (fps_target : Auto / 50 / 25) par multiview. Intention de performance lue par l'orchestrateur (tissu de composition) : si le mur sature, il est auto-shardé pour tenir cette cadence (Auto = budget global du cluster). Persisté dans deploy_config (hot-apply, pas de redéploiement) ; aucun effet sur le script de rendu."
+    ],
     "Nouveautés (0.14.31)": [
       "Mode de cadence « input-locked » (param `cadence`: `genlock` défaut | `input`) pour le tissu de composition : un multiview INTERMÉDIAIRE (shard/assembleur chaîné) émet DÈS qu'une nouvelle trame d'entrée est dispo (data-driven), sans attendre la grille PTP — la latence cumulée d'un DAG = Σ des temps de calcul du chemin critique au lieu de +1 image par étage. Aux JOINTURES (plusieurs entrées) : BARRIÈRE d'alignement (on compose quand CHAQUE entrée a avancé → rythme de l'entrée la plus lente, pas de sur-production) avec filet « branche en retard » (deadline 2× l'intervalle si une source meurt). Défaut `genlock` inchangé (sources et sorties finales). Validé sur conteneurs réels : un shard passe de 25 fps (genlock, slip-grille) à ~41 fps ; l'assembleur suit le rythme des shards sans gaspiller."
     ],
