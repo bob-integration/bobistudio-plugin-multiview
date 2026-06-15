@@ -1,7 +1,10 @@
 {
-  "version": "0.14.29",
+  "version": "0.14.30",
   "date": "2026-06-15",
   "changes": {
+    "Performance (0.14.30)": [
+      "VU-mètres : compositing PER-TUILE au lieu d'une couche plein écran. Chaque meter est désormais rendu + converti (RGBA→YUV) + blendé sur SA PROPRE petite bbox locale (la bande VU d'une cellule), au lieu d'être composé dans une image plein écran puis converti/blendé sur la bbox-UNION de tous les meters. Sur un mur de monitoring où les VU sont dispersés (16 fenêtres), cette bbox-union couvrait quasi tout l'écran → rgba_to_yuv + blend tournaient sur ~plein écran 50×/s (les meters changent à chaque trame, jamais cachés). Le coût de l'habillage per-frame passe ainsi de « ∝ surface englobante » à « ∝ somme des bandes VU » (≪). Mesuré sur un multiview 16 fenêtres saturé : own_latency ~75 ms (fps 12,5) dominé par ce poste. Les horloges gardent leur propre cache par valeur (inchangé) ; z-ordre conservé (VU sous les overlays fg)."
+    ],
     "Nouveautés (0.14.29)": [
       "Overlays texte MULTILIGNES : le champ « Texte » est désormais une zone de saisie (Entrée = saut de ligne) et le rendu gère plusieurs lignes (multiline_text). La police s'ajuste pour tenir à la fois en largeur ET en hauteur de la boîte ; l'alignement (gauche/centre/droite) justifie aussi les lignes. Mono-ligne inchangé."
     ],

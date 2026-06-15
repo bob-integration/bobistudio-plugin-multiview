@@ -1083,13 +1083,13 @@ def render_border():
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def render_meters(now):
-    """Re-rendu par frame : layer RGBA contenant tous les peak meters.
-    Renvoie (y, u, v, a, a2) prêt à blender, ou None si aucun meter activé."""
-    has_meters = any((cfg.get("meter_channels") or 0) > 0 and not cfg.get("hidden")
-                     for cfg in FLUX_CONFIG)
-    if not has_meters:
-        return None
-    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+    """Re-rendu par frame des peak meters. Renvoie une LISTE de TUILES YUV prêtes à blender
+    [(bx0, by0, bx1, by1, y, u, v, a, a2), ...] — UNE tuile par meter, sur sa propre bbox locale
+    (alignée chroma paire), PAS une couche plein écran. Les VU changent à chaque trame (jamais
+    cachés) : convertir/blender chaque petit rectangle (≈ une bande VU dans une cellule) au lieu
+    d'une bbox-union quasi plein écran (meters dispersés sur un mur 16 fenêtres) supprime le gros
+    du coût de l'habillage per-frame. Renvoie None si aucun meter activé."""
+    tiles = []
     for i, cfg in enumerate(FLUX_CONFIG):
         n = int(cfg.get("meter_channels") or 0)
         if n == 0 or cfg.get("hidden"):
@@ -1128,9 +1128,22 @@ def render_meters(now):
         opacity_pct = int(cfg.get("meter_opacity") or 70)
         if not inside:
             opacity_pct = 100  # hors image = totalement opaque (zone réservée)
-        _draw_meter(img, mx, my, mw, mh, n, peaks, holds,
+        # bbox locale du meter (_draw_meter dessine jusqu'à mx+mw / my+mh inclus → +1), bornée à
+        # la sortie et alignée chroma : origine ramenée à un multiple de _CW/_CH, dimensions
+        # complétées au multiple supérieur (rgba_to_yuv sous-échantillonne par _CW/_CH).
+        bx0 = max(0, mx); by0 = max(0, my)
+        bx1 = min(OUT_WIDTH, mx + mw + 1); by1 = min(OUT_HEIGHT, my + mh + 1)
+        bx0 -= bx0 % _CW; by0 -= by0 % _CH
+        if (bx1 - bx0) % _CW: bx1 = min(OUT_WIDTH, bx1 + (_CW - (bx1 - bx0) % _CW))
+        if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - (by1 - by0) % _CH))
+        if bx1 <= bx0 or by1 <= by0:
+            continue
+        tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
+        _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds,
                     cfg.get("meter_scale") or "dbfs", opacity_pct)
-    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
+        oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
+        tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
+    return tiles or None
 
 
 # ─── Couche « info » : NO SIGNAL / FREEZE / format source ────────────────────
@@ -1753,8 +1766,9 @@ _chrome_rgba = None              # info+bordure+statique+dynamique pré-composé
 _chrome_yuv  = None              # sa conversion YUV+alpha (refaite seulement sur changement)
 _chrome_pre  = None              # opérandes de blend PRÉ-CALCULÉS du chrome (inv_a, src_a par plan) — chemin rapide
 _chrome_dirty = True             # force la 1re composition du chrome
-# Cache de la couche PER-FRAME (horloge) : YUV+bbox réutilisés tant que la valeur affichée ne change
-# pas (re-render+convert DÉTERMINISTE, 1×/s sans le champ images). Réinitialisé quand meters présents.
+# Cache de la couche PER-FRAME des HORLOGES (les VU-mètres ont leur propre chemin par tuiles, jamais
+# caché) : YUV+bbox réutilisés tant que la valeur affichée ne change pas (re-render+convert
+# DÉTERMINISTE, 1×/s sans le champ images).
 _pf_cache_sig = None
 _pf_cache     = None
 
@@ -2273,21 +2287,21 @@ while True:
                            255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
             _chrome_dirty = False
 
-        # Habillage = chrome STATIQUE (caché) + couche PER-FRAME (VU + horloge).
+        # Habillage = chrome STATIQUE (caché) + VU-mètres (tuiles per-frame) + horloges (cachées).
         _ts_ov0 = time.time_ns()
-        _meters = render_meters(now)
-        # La couche per-frame n'est RE-RENDUE+RECONVERTIE que quand son contenu change. VU-mètres =
-        # changent à chaque trame → reconstruction systématique (_pf_sig=None). Sinon (horloges seules),
-        # signature = valeurs AFFICHÉES des horloges (déterministe) → re-render 1×/s sans le champ images,
-        # per-frame seulement si l'horloge montre les images (FF). Le blend, lui, reste à chaque trame.
-        if _meters is not None:
-            _pf_sig = None
-        else:
-            _pf_sig = tuple(_format_clock(ov, now) for ov in OVERLAYS
-                            if (not ov.get("hidden")) and ov.get("kind") == "clock")
-        _render_pf = (_pf_sig is None) or (_pf_sig != _pf_cache_sig)
+        # VU-mètres : rendus + convertis en TUILES locales (une bbox par meter, cf. render_meters).
+        # Inhérents per-frame (le niveau change à chaque trame) → jamais cachés, mais chaque tuile ne
+        # couvre que la bande VU d'une cellule (≪ bbox-union quasi plein écran de l'ancien chemin).
+        _meter_tiles = render_meters(now)
+        # Couche PER-FRAME des overlays fg = HORLOGES seules (texte/images fixes bakés dans le chrome).
+        # Re-rendue+reconvertie seulement quand la VALEUR affichée change — signature = chaînes
+        # formatées des horloges (déterministe) → re-render 1×/s sans le champ images (FF), per-frame
+        # seulement si l'horloge montre les images. Le blend, lui, reste à chaque trame (sur sa bbox).
+        _pf_sig = tuple(_format_clock(ov, now) for ov in OVERLAYS
+                        if (not ov.get("hidden")) and ov.get("kind") == "clock")
+        _render_pf = (_pf_sig != _pf_cache_sig)
         _ovfg = render_overlays_fg(now) if _render_pf else None
-        _ts_ov1 = time.time_ns()   # fin rendu PIL (≈0 si réutilisation du cache horloge)
+        _ts_ov1 = time.time_ns()   # fin rendu PIL + conversion YUV des tuiles VU (≈0 si pas de meter)
         # 1) Chrome statique : TOUJOURS blendé via opérandes pré-calculés (plein écran, SANS conversion).
         if _chrome_pre is not None:
             _piY, _saY, _piC, _saU, _saV = _chrome_pre
@@ -2295,21 +2309,24 @@ while True:
             canvas_u = blend_pre(canvas_u, _piC, _saU)
             canvas_v = blend_pre(canvas_v, _piC, _saV)
         _ts_ov2 = time.time_ns()   # fin du blend chrome
-        # 2) Couche PER-FRAME : convertie en YUV (bbox) SEULEMENT au changement (cache), puis blendée à
-        #    chaque trame sur sa bounding-box. Bornes alignées sur grille chroma paire.
+        # 2) VU-mètres : blend de chaque tuile sur sa propre bbox (sous le fg, comme l'ancien z-ordre).
+        if _meter_tiles:
+            for (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) in _meter_tiles:
+                canvas_y[by0:by1, bx0:bx1] = blend(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
+                cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
+                canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
+                canvas_v[cy0:cy1, cx0:cx1] = blend(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
+        # 3) Horloges : converties en YUV (bbox) SEULEMENT au changement (cache), blendées à chaque trame.
         if _render_pf:
             _pf_cache_sig = _pf_sig; _pf_cache = None
-            if _meters is not None or _ovfg is not None:
-                _pf = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-                if _meters is not None: _pf.alpha_composite(_meters)
-                if _ovfg   is not None: _pf.alpha_composite(_ovfg)
-                _bb = _pf.getbbox()
+            if _ovfg is not None:
+                _bb = _ovfg.getbbox()
                 if _bb:
                     bx0, by0, bx1, by1 = _bb
-                    bx0 -= bx0 % 2; by0 -= by0 % 2
-                    if bx1 % 2: bx1 = min(OUT_WIDTH, bx1 + 1)
-                    if by1 % 2: by1 = min(OUT_HEIGHT, by1 + 1)
-                    _oy, _ou, _ov, _oa, _oa2 = rgba_to_yuv(_pf.crop((bx0, by0, bx1, by1)))
+                    bx0 -= bx0 % _CW; by0 -= by0 % _CH
+                    if bx1 % _CW: bx1 = min(OUT_WIDTH, bx1 + (_CW - bx1 % _CW))
+                    if by1 % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - by1 % _CH))
+                    _oy, _ou, _ov, _oa, _oa2 = rgba_to_yuv(_ovfg.crop((bx0, by0, bx1, by1)))
                     _pf_cache = (_oy, _ou, _ov, _oa, _oa2, bx0, by0, bx1, by1)
         if _pf_cache is not None:
             _oy, _ou, _ov, _oa, _oa2, bx0, by0, bx1, by1 = _pf_cache
@@ -2318,7 +2335,7 @@ while True:
             canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
             canvas_v[cy0:cy1, cx0:cx1] = blend(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
-        _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=overlays per-frame (bbox)
+        _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=blend VU+horloges (bbox)
         _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
         _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
         _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
