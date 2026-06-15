@@ -95,6 +95,13 @@ FRAME_INTERVAL = _FD / _FN                # période exacte (cadence rationnelle
 # (CLOCK_REALTIME, disciplinée phc2sys) → write_ts = instant de grille. off → cadence libre héritée.
 _gl = CONFIG.get("genlock", True)
 GENLOCK = _gl if isinstance(_gl, bool) else str(_gl).strip().lower() in ("1", "true", "yes", "on")
+# CADENCE : "genlock" (défaut, attend la grille PTP) | "input" (DATA-DRIVEN : émet dès qu'une
+# entrée a une nouvelle trame, propage le timestamp, n'attend PAS la grille). Le mode "input" est
+# destiné aux nœuds INTERMÉDIAIRES d'un tissu de composition (shards/assembleur chaînés) : il évite
+# d'ajouter une trame de latence par étage (la latence cumulée = Σ calcul du chemin critique, pas
+# N×intervalle) et le slip sur grille (33 fps au lieu de 25 quand own≈30 ms).
+CADENCE = str(CONFIG.get("cadence", "genlock")).strip().lower()
+INPUT_LOCKED = (CADENCE == "input")
 def _grid_next(now_s, interval_s):
     import math as _m
     return (_m.floor(now_s / interval_s) + 1) * interval_s
@@ -2119,6 +2126,19 @@ start_time = time.time()
 _fps_last_idx = 0          # fps en fenêtre glissante (delta depuis le dernier report)
 _fps_last_t   = start_time
 next_frame_time = _grid_next(start_time, FRAME_INTERVAL) if GENLOCK else start_time
+_last_in_fi = {{}}         # mode input-locked : dernier frame_index COMPOSÉ par source (barrière)
+
+def _peek_inputs():
+    """frame_index courants des sources OUVERTES (mode input-locked). Lit les 8 premiers octets de
+    chaque mmap déjà ouvert (peu coûteux, sans rouvrir) ; -1 si fermée."""
+    sig = []
+    for _s in sources:
+        if _s is not None:
+            try: sig.append(struct.unpack("Q", bytes(_s["shm"][0:8]))[0])
+            except Exception: sig.append(-1)
+        else:
+            sig.append(-1)
+    return sig
 
 # SIGBUS : indispensable pour un multiview CHAÎNÉ (qui lit le shm d'un autre plugin). Quand le
 # producteur amont recrée/redimensionne son shm (redéploiement, changement de format), une lecture
@@ -2147,9 +2167,34 @@ while True:
             _in_track.clear()
         time.sleep(0.02)
         continue   # source(s) refermée(s) → ensure_input rouvre proprement à la frame suivante
-    wait = next_frame_time - now
-    if wait > 0:
-        time.sleep(wait)
+    if INPUT_LOCKED:
+        # DATA-DRIVEN avec BARRIÈRE d'alignement : on émet une trame quand CHAQUE entrée ouverte a
+        # avancé (≥1 nouvelle image) depuis la dernière composition → on produit au rythme de
+        # l'entrée la PLUS LENTE, une composition par jeu de trames aligné (pas de sur-production
+        # aux jointures à N entrées indépendantes). Filet « branche en retard » : la deadline (2×
+        # l'intervalle) débloque si une source meurt/traîne (on n'attend plus l'absente). Pas
+        # d'attente de grille → latence cumulée du DAG = Σ calcul, pas N×intervalle.
+        _deadline = now + 2.0 * FRAME_INTERVAL
+        while True:
+            _cur = _peek_inputs()
+            _any_open = False
+            _ready = True
+            for _i, _fi in enumerate(_cur):
+                if _fi < 0:
+                    continue
+                _any_open = True
+                if _fi <= _last_in_fi.get(_i, -1):
+                    _ready = False
+            if (not _any_open) or (_any_open and _ready) or time.time() >= _deadline:
+                for _i, _fi in enumerate(_cur):
+                    if _fi >= 0:
+                        _last_in_fi[_i] = _fi
+                break
+            time.sleep(0.0008)
+    else:
+        wait = next_frame_time - now
+        if wait > 0:
+            time.sleep(wait)
 
     ts_cycle_start = time.time_ns()   # début du compositing (après l'attente de grille) → own_latency
     canvas_y = np.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT)
@@ -2348,8 +2393,9 @@ while True:
         _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)
         _t_overlays.push((_t_after_overlays - _t_after_inputs) / 1e6)
         _t_output.push((ts_out - _t_after_overlays) / 1e6)
-        # write_ts = instant de présentation (grille PTP) en genlock, sinon horloge mur.
-        _wts = int(next_frame_time * 1e9) if GENLOCK else ts_out
+        # write_ts = instant de présentation (grille PTP) en genlock-grille, sinon horloge mur.
+        # En input-locked (data-driven) il n'y a pas de grille → horloge mur.
+        _wts = int(next_frame_time * 1e9) if (GENLOCK and not INPUT_LOCKED) else ts_out
         shm_out[0:16] = struct.pack("QQ", out_frame_index, _wts)
     except Exception as _e:
         # Garde-fou : une exception transitoire (rendu overlay/chrome, écriture sortie…) ne doit
