@@ -1486,11 +1486,20 @@ def _draw_text_overlay(d, ov, text):
         fs = max(6, int(h * 0.7))
     fkey = ov.get("font") or "dejavu-sans-bold"
     font = _overlay_font(fkey, fs)
+    # Multiligne : le texte peut contenir des sauts de ligne (\n). multiline_text gère aussi le
+    # mono-ligne. Police ajustée pour tenir en largeur ET en hauteur (le bloc grandit en vertical).
+    maxw = w - 2 * pad
+    maxh = h - 2 * pad
     try:
-        tw = d.textlength(text, font=font)
-        maxw = w - 2 * pad
+        bb = d.multiline_textbbox((0, 0), text, font=font)
+        tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        scale = 1.0
         if tw > maxw > 0:
-            fs = max(6, int(fs * maxw / tw))
+            scale = min(scale, maxw / tw)
+        if th > maxh > 0:
+            scale = min(scale, maxh / th)
+        if scale < 1.0:
+            fs = max(6, int(fs * scale))
             font = _overlay_font(fkey, fs)
     except Exception:
         pass
@@ -1498,11 +1507,11 @@ def _draw_text_overlay(d, ov, text):
     cy = y + h // 2
     align = ov.get("align") or "center"
     if align == "left":
-        d.text((x + pad, cy), text, font=font, fill=fill, anchor="lm")
+        d.multiline_text((x + pad, cy), text, font=font, fill=fill, anchor="lm", align="left")
     elif align == "right":
-        d.text((x + w - pad, cy), text, font=font, fill=fill, anchor="rm")
+        d.multiline_text((x + w - pad, cy), text, font=font, fill=fill, anchor="rm", align="right")
     else:
-        d.text((x + w // 2, cy), text, font=font, fill=fill, anchor="mm")
+        d.multiline_text((x + w // 2, cy), text, font=font, fill=fill, anchor="mm", align="center")
 
 def _overlay_text_value(ov):
     if (ov.get("text_source") or "local") == "tsl":

@@ -1571,7 +1571,11 @@ function drawOverlayLayer(ctx, layer) {
             const tx = o.align === 'left' ? o.x + 4 : o.align === 'right' ? o.x + o.w - 4 : o.x + o.w / 2;
             ctx.save();
             ctx.beginPath(); ctx.rect(o.x, o.y, o.w, o.h); ctx.clip();
-            ctx.fillText(txt, tx, o.y + o.h / 2);
+            // Multiligne : aperçu cohérent avec le rendu baké (bloc centré verticalement).
+            const lines = String(txt).split('\n');
+            const lh = fs * 1.2;
+            const startY = o.y + o.h / 2 - (lines.length - 1) * lh / 2;
+            lines.forEach((ln, li) => ctx.fillText(ln, tx, startY + li * lh));
             ctx.restore();
             ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
         }

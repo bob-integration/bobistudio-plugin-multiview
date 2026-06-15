@@ -1,7 +1,10 @@
 {
-  "version": "0.14.28",
-  "date": "2026-06-14",
+  "version": "0.14.29",
+  "date": "2026-06-15",
   "changes": {
+    "Nouveautés (0.14.29)": [
+      "Overlays texte MULTILIGNES : le champ « Texte » est désormais une zone de saisie (Entrée = saut de ligne) et le rendu gère plusieurs lignes (multiline_text). La police s'ajuste pour tenir à la fois en largeur ET en hauteur de la boîte ; l'alignement (gauche/centre/droite) justifie aussi les lignes. Mono-ligne inchangé."
+    ],
     "Nouveautés (0.14.28)": [
       "Composer : déplacement de GROUPE — quand plusieurs fenêtres sont sélectionnées, glisser l'une les déplace toutes ensemble (même delta, clampé pour qu'aucune ne sorte du cadre).",
       "Composer : outils « Remplir largeur / hauteur » (remplir(axis)) — les fenêtres sélectionnées se tuilent en parts égales pour couvrir toute la largeur (ou hauteur) de la sortie, dans leur ordre courant ; l'autre dimension est conservée.",
