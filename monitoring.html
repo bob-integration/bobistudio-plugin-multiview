@@ -1,33 +1,42 @@
 <!-- Panneau Monitoring du plugin multiview : « Détail Multiviews ».
      Monté par la page Monitoring via window.MXLMonitorPanels["multiview"] (monitoring.js).
-     Affiche le chemin complet des multiviews découpés par le tissu de composition :
-     sources → shards parallèles → assembleur, avec formats et latences. -->
+     Représentation en graphe (façon page Câbles) : pour chaque multiview shardé, les SOURCES
+     (dédupliquées) alimentent EN PARALLÈLE les shards, qui alimentent tous l'assembleur → sortie.
+     Arêtes SVG en courbe ; latences propres par nœud + latence cumulée du chemin critique. -->
 <style>
-.mv-fabric .fab-assembler { border:1px solid var(--border); border-radius:8px; padding:var(--space-3);
-    margin-bottom:var(--space-3); background:var(--bg-card); }
-.mv-fabric .fab-assembler-head { display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap;
+.mvg .meta { color:var(--text-muted); }
+.mvg-graph { position:relative; border:1px solid var(--border); border-radius:8px;
+    padding:var(--space-3); margin-bottom:var(--space-3); background:var(--bg-card); }
+.mvg-head { display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap;
     margin-bottom:var(--space-3); }
-.mv-fabric .fab-chain { display:flex; align-items:stretch; gap:6px; overflow-x:auto; padding-bottom:4px; }
-.mv-fabric .fab-step { flex:0 0 auto; min-width:140px; max-width:220px; border:1px solid var(--border);
-    border-radius:6px; padding:8px 10px; background:var(--bg); }
-.mv-fabric .fab-step-src   { border-left:3px solid var(--accent, #5b8def); }
-.mv-fabric .fab-step-shard { border-left:3px solid var(--status-running-fg, #3aa657); }
-.mv-fabric .fab-step-shared{ border-left:3px solid #b07cd8; }
-.mv-fabric .fab-step-asm   { border-left:3px solid #d8a23a; }
-.mv-fabric .fab-step-head { font-weight:600; font-size:0.9em; margin-bottom:6px; display:flex;
-    align-items:center; gap:6px; flex-wrap:wrap; }
-.mv-fabric .fab-step-n { font-weight:400; font-size:0.82em; color:var(--text-muted); }
-.mv-fabric .fab-step-body code { display:block; font-size:0.82em; word-break:break-all; margin-bottom:4px; }
-.mv-fabric .fab-meta { font-size:0.8em; color:var(--text-muted); margin-top:2px; }
-.mv-fabric .fab-arrow { align-self:center; color:var(--text-muted); font-size:1.2em; padding:0 2px; }
-.mv-fabric .fab-proxies { margin-top:var(--space-2); font-size:0.9em; display:flex; flex-wrap:wrap;
+.mvg-cols { position:relative; z-index:1; display:flex; align-items:center;
+    justify-content:space-between; gap:64px; overflow-x:auto; padding:4px 0; }
+.mvg-col { display:flex; flex-direction:column; gap:var(--space-3); justify-content:center;
+    flex:0 0 auto; }
+.mvg-col-label { font-size:0.75em; text-transform:uppercase; letter-spacing:0.04em;
+    color:var(--text-muted); text-align:center; margin-bottom:2px; }
+.mvg-node { border:1px solid var(--border); border-left-width:3px; border-radius:6px;
+    padding:7px 10px; background:var(--bg); min-width:150px; max-width:230px; }
+.mvg-src   { border-left-color:var(--accent, #5b8def); }
+.mvg-shard { border-left-color:var(--status-running-fg, #3aa657); }
+.mvg-shared{ border-left-color:#b07cd8; }
+.mvg-asm   { border-left-color:#d8a23a; }
+.mvg-node-title { font-weight:600; font-size:0.9em; display:flex; align-items:center; gap:6px;
+    flex-wrap:wrap; margin-bottom:3px; }
+.mvg-node-title .mvg-n { font-weight:400; font-size:0.82em; color:var(--text-muted); }
+.mvg-node code { display:block; font-size:0.8em; word-break:break-all; }
+.mvg-node-meta { font-size:0.78em; color:var(--text-muted); margin-top:3px; }
+.mvg-edges { position:absolute; inset:0; width:100%; height:100%; pointer-events:none;
+    z-index:0; overflow:visible; }
+.mvg-edge { fill:none; stroke:var(--border); stroke-width:1.6; }
+.mvg-edge-active { stroke:var(--status-running-fg, #3aa657); }
+.mvg-proxies { margin-top:var(--space-2); font-size:0.9em; display:flex; flex-wrap:wrap;
     align-items:center; gap:8px; }
-.mv-fabric .fab-proxies-label { color:var(--text-muted); }
-.mv-fabric .fab-proxy { display:inline-flex; align-items:center; gap:5px; }
 </style>
-<div class="mv-fabric">
-    <p class="meta">Chemin complet des multiviews découpés par le tissu de composition :
-        sources → shards parallèles → assembleur. La latence cumulée est celle du chemin critique
-        (shard le plus lent + assembleur), à garder sous le budget de trame.</p>
+<div class="mvg">
+    <p class="meta">Représentation des signaux d'un multiview découpé par le tissu de composition.
+        Les sources (à gauche) alimentent <strong>en parallèle</strong> les shards (au centre), qui
+        alimentent tous l'assembleur → sortie (à droite). La latence cumulée est celle du chemin
+        critique (shard le plus lent + assembleur), à garder sous le budget de trame.</p>
     <div id="mv-fabric-body"><div class="meta">…</div></div>
 </div>

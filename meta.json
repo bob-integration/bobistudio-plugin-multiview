@@ -1,7 +1,10 @@
 {
-  "version": "0.14.34",
+  "version": "0.14.35",
   "date": "2026-06-16",
   "changes": {
+    "Nouveautés (0.14.35)": [
+      "Panneau Monitoring « Détail Multiviews » : représentation en GRAPHE (façon page Câbles) au lieu de la chaîne horizontale qui laissait croire que les shards se succédaient en série. 3 colonnes — Sources (dédupliquées) | Shards EMPILÉS VERTICALEMENT (= parallèles) | Assembleur → sortie — reliées par des arêtes SVG en courbe : chaque source alimente son/ses shard(s), et tous les shards alimentent l'assembleur. Latence propre par nœud + latence cumulée du chemin critique vs budget. Arêtes redessinées au redimensionnement."
+    ],
     "Nouveautés (0.14.34)": [
       "Panneau Monitoring « Détail Multiviews » porté par le plugin (manifest.monitoring + ui.monitoring_html/monitoring_js). La page Monitoring ne code plus en dur ce panneau : elle interroge /api/monitoring/panels et charge, pour chaque plugin présent, son fragment + JS (window.MXLMonitorPanels[type]). L'onglet n'apparaît que s'il existe au moins un multiview (when=\"instances\"). Affiche le chemin complet des multiviews shardés : sources → shards parallèles → assembleur, formats et latences (cumulée = chemin critique vs budget de trame). Déplacé depuis l'ancien « Diagnostic du tissu » des Réglages."
     ],
