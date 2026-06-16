@@ -1,7 +1,10 @@
 {
-  "version": "0.14.33",
+  "version": "0.14.34",
   "date": "2026-06-16",
   "changes": {
+    "Nouveautés (0.14.34)": [
+      "Panneau Monitoring « Détail Multiviews » porté par le plugin (manifest.monitoring + ui.monitoring_html/monitoring_js). La page Monitoring ne code plus en dur ce panneau : elle interroge /api/monitoring/panels et charge, pour chaque plugin présent, son fragment + JS (window.MXLMonitorPanels[type]). L'onglet n'apparaît que s'il existe au moins un multiview (when=\"instances\"). Affiche le chemin complet des multiviews shardés : sources → shards parallèles → assembleur, formats et latences (cumulée = chemin critique vs budget de trame). Déplacé depuis l'ancien « Diagnostic du tissu » des Réglages."
+    ],
     "Corrections (0.14.33)": [
       "Crash de boucle corrigé : quand un rendu de trame échouait (garde-fou), la boucle tombait sur own_lat.push((ts_out − ts_cycle_start)) avec ts_out NON défini (jamais atteint) → NameError NON rattrapé → la boucle mourait (le process tournait mais ne produisait plus rien : conteneur « stoppé »). ts_out est désormais initialisé AVANT le try → un rendu raté saute la trame proprement sans tuer le script. Exhibé par les shards du tissu sur murs réels (combiné à l'alignement chroma des shards côté orchestrateur)."
     ],

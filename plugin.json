@@ -18,7 +18,7 @@
     "memory": 2048,
     "pin": true
   },
-  "version": "0.14.33",
+  "version": "0.14.34",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
@@ -32,7 +32,14 @@
     "control_html": "control.html",
     "control_js": "control.js",
     "extra_js": "multiview.js",
-    "extra_css": "multiview.css"
+    "extra_css": "multiview.css",
+    "monitoring_html": "monitoring.html",
+    "monitoring_js": "monitoring.js"
+  },
+  "monitoring": {
+    "label": "Détail Multiviews",
+    "order": 10,
+    "when": "instances"
   },
   "deploy_defaults": {
     "flux_config": [],
