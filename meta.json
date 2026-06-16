@@ -1,7 +1,10 @@
 {
-  "version": "0.14.36",
+  "version": "0.14.37",
   "date": "2026-06-16",
   "changes": {
+    "Performance (0.14.37)": [
+      "Horloges : blend PER-HORLOGE (une bbox par horloge) au lieu de la bbox-UNION. Comme les VU-mètres en 0.14.30 : quand plusieurs horloges sont DISPERSÉES sur la sortie, leur rectangle englobant couvrait ~¾ d'écran → le blend per-frame (RGBA→YUV déjà caché 1×/s, mais le blend reste à chaque trame) coûtait ∝ cette surface, alors que chaque horloge ne fait que ~60 k px. render_clock_tiles rend+convertit chaque horloge sur sa propre petite bbox (au changement de valeur seulement) et blende chaque tuile localement. Mesuré sur un mur 4 horloges éparpillées (CT 2010) : ov_blend ~12 ms → ~4 ms, own_latency ~30 → ~22 ms. Z-ordre et cache 1×/s inchangés."
+    ],
     "Corrections (0.14.36)": [
       "Mode input-locked (nœuds du tissu : shards/assembleur) : une entrée morte/en retard ne bride plus la cadence. La barrière attendait que TOUTES les entrées aient avancé, avec une deadline ré-armée à 2× l'intervalle → une seule source HS faisait attendre la deadline complète à CHAQUE trame → ~½ cadence (25 fps au lieu de 50). Désormais : on compose dès que toutes les entrées ouvertes ont avancé (chemin rapide, latence minimale), MAIS au plus tard 1 image après l'émission précédente ; au-delà on n'attend plus, l'entrée en retard est décalée d'une image (sa tuile garde sa dernière trame) et rattrape au tick suivant. Une entrée morte = figée, sans jamais ralentir la sortie. Latence ajoutée par étage bornée à < 1 image (= budget du tissu)."
     ],
