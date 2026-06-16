@@ -2221,7 +2221,12 @@ while True:
                 _any_open = True
                 if _fi <= _last_in_fi.get(_i, -1):
                     _all_advanced = False
-            if (not _any_open) or _all_advanced or time.monotonic() >= _deadline:
+            # Compose dès que toutes les entrées OUVERTES ont avancé (chemin rapide), sinon au plus tard
+            # à la deadline (1 image). PAS de compose immédiat quand AUCUNE entrée n'est ouverte (ou
+            # toutes gelées) : on se cale sur la deadline → ~cadence nominale. Sinon un nœud sans entrée
+            # (sources absentes) FREE-RUN à plusieurs centaines de fps → sature la bande passante mémoire
+            # et ralentit tout le nœud aval (assembleur). Cf. shard sans sources → 480 fps observé.
+            if (_any_open and _all_advanced) or time.monotonic() >= _deadline:
                 # Commit : MAJ du dernier frame_index composé + retard par shm (0 si avancé, sinon +1).
                 for _i, _fi in enumerate(_cur):
                     if _fi < 0:

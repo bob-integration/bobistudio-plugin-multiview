@@ -1,7 +1,10 @@
 {
-  "version": "0.14.38",
+  "version": "0.14.39",
   "date": "2026-06-16",
   "changes": {
+    "Corrections (0.14.39)": [
+      "Input-locked : un nœud SANS entrée ouverte (sources absentes/non créées) ne FREE-RUN plus. La barrière avait un raccourci `(not _any_open)` qui composait IMMÉDIATEMENT quand aucune entrée n'était ouverte → le nœud spinnait à plusieurs centaines de fps (480 fps observé sur un shard dont les proxies n'existaient pas), saturant la bande passante mémoire du nœud et ralentissant TOUT l'assembleur aval (lectures + blend chrome). Désormais on compose dès que les entrées ouvertes ont avancé, sinon on se cale sur la deadline (1 image) → ~cadence nominale même sans entrée. Complète l'intention de 0.14.36 (cadence bornée à 1 image). Effet de bord majeur : sur un assembleur dont un shard free-runnait, own_latency chute (la contention mémoire disparaît)."
+    ],
     "Performance (0.14.38)": [
       "Chrome (habillage caché) blendé sur sa BBOX réelle au lieu de plein écran. _chrome_pre était TOUJOURS un jeu d'opérandes plein écran (1920×1080×3 plans) → blend_pre coûtait ~13 ms/trame même quand l'habillage est épars (ex. assembleur du tissu = 0 ou 1 texte fixe : le coût plein écran persistait alors que le contenu fait ~60 k px). Désormais on borne à la bbox du chrome (chroma-alignée) ; chrome entièrement transparent → _chrome_pre None → blend totalement sauté. Sur l'assembleur 2010 (1 texte + 4 horloges) : ov_convert ~13 → ~0,5 ms, own_latency ~22 → ~9 ms → 50 fps. Aucun changement pour un mur dense (labels sur 16 cellules → bbox ≈ plein écran, comme avant)."
     ],
