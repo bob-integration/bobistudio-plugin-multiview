@@ -403,6 +403,9 @@ def _refresh_lat_metrics():
     for shm_name, rm in lat_in.items():
         out[shm_name] = rm.avg()
     metrics["inputs_latency_ms"] = out
+    # Retard par entrée (mode input-locked) : nb d'images de décalage par shm (0 = synchrone).
+    # Restreint aux shms réellement câblés (lat_in) pour ne pas exposer d'anciennes entrées.
+    metrics["inputs_lag_frames"] = {{k: _lag_frames.get(k, 0) for k in out}}
     metrics["own_latency_ms"] = own_lat.avg()
     metrics["proxy_needs"] = _compute_proxy_needs()
     metrics["proxy_usage"] = dict(_proxy_usage_latest)   # idx → {{src,read,cost,kind}}
@@ -2127,6 +2130,8 @@ _fps_last_idx = 0          # fps en fenêtre glissante (delta depuis le dernier 
 _fps_last_t   = start_time
 next_frame_time = _grid_next(start_time, FRAME_INTERVAL) if GENLOCK else start_time
 _last_in_fi = {{}}         # mode input-locked : dernier frame_index COMPOSÉ par source (barrière)
+_lag_frames = {{}}         # mode input-locked : retard par shm = nb de composes consécutifs SANS
+                           # avancement du frame_index source (0 = synchrone). Exposé inputs_lag_frames.
 
 def _peek_inputs():
     """frame_index courants des sources OUVERTES (mode input-locked). Lit les 8 premiers octets de
@@ -2152,6 +2157,7 @@ try:
 except (ValueError, OSError):
     pass   # pas dans le thread principal / plateforme sans SIGBUS
 _last_frame_err = 0.0   # throttle du log du garde-fou de boucle (try/except du corps per-frame)
+_last_emit_m = time.monotonic()   # mode input-locked : instant (monotone) de la dernière émission
 
 while True:
     now = time.time()
@@ -2168,29 +2174,38 @@ while True:
         time.sleep(0.02)
         continue   # source(s) refermée(s) → ensure_input rouvre proprement à la frame suivante
     if INPUT_LOCKED:
-        # DATA-DRIVEN avec BARRIÈRE d'alignement : on émet une trame quand CHAQUE entrée ouverte a
-        # avancé (≥1 nouvelle image) depuis la dernière composition → on produit au rythme de
-        # l'entrée la PLUS LENTE, une composition par jeu de trames aligné (pas de sur-production
-        # aux jointures à N entrées indépendantes). Filet « branche en retard » : la deadline (2×
-        # l'intervalle) débloque si une source meurt/traîne (on n'attend plus l'absente). Pas
-        # d'attente de grille → latence cumulée du DAG = Σ calcul, pas N×intervalle.
-        _deadline = now + 2.0 * FRAME_INTERVAL
+        # DATA-DRIVEN, cadence BORNÉE À 1 IMAGE : on compose dès que TOUTES les entrées ouvertes ont
+        # avancé (chemin rapide, latence minimale, alignement des tuiles), MAIS au plus tard 1 image
+        # après l'émission précédente. On n'attend JAMAIS une entrée au-delà de ce budget : une
+        # entrée en retard/morte est simplement DÉCALÉE d'1 image (sa tuile garde sa dernière trame,
+        # la passe de compositing relit son frame_index courant) et rattrape au tick suivant. Ainsi
+        # une seule entrée HS ne bride plus la cadence (avant : deadline 2× ré-armée → ~½ cadence),
+        # et la latence ajoutée par étage reste < 1 image (= budget du tissu). Pas d'attente de grille.
+        _deadline = _last_emit_m + FRAME_INTERVAL
         while True:
             _cur = _peek_inputs()
             _any_open = False
-            _ready = True
+            _all_advanced = True
             for _i, _fi in enumerate(_cur):
                 if _fi < 0:
                     continue
                 _any_open = True
                 if _fi <= _last_in_fi.get(_i, -1):
-                    _ready = False
-            if (not _any_open) or (_any_open and _ready) or time.time() >= _deadline:
+                    _all_advanced = False
+            if (not _any_open) or _all_advanced or time.monotonic() >= _deadline:
+                # Commit : MAJ du dernier frame_index composé + retard par shm (0 si avancé, sinon +1).
                 for _i, _fi in enumerate(_cur):
-                    if _fi >= 0:
-                        _last_in_fi[_i] = _fi
+                    if _fi < 0:
+                        continue
+                    _src = sources[_i] if _i < len(sources) else None
+                    _p = (_src or {{}}).get("path") or ""
+                    _key = _p[len("/dev/shm/"):] if _p.startswith("/dev/shm/") else _p
+                    if _key:
+                        _lag_frames[_key] = 0 if _fi > _last_in_fi.get(_i, -1) else _lag_frames.get(_key, 0) + 1
+                    _last_in_fi[_i] = _fi
                 break
-            time.sleep(0.0008)
+            time.sleep(0.0005)
+        _last_emit_m = time.monotonic()
     else:
         wait = next_frame_time - now
         if wait > 0:

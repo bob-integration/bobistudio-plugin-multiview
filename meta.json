@@ -1,7 +1,13 @@
 {
-  "version": "0.14.35",
+  "version": "0.14.36",
   "date": "2026-06-16",
   "changes": {
+    "Corrections (0.14.36)": [
+      "Mode input-locked (nœuds du tissu : shards/assembleur) : une entrée morte/en retard ne bride plus la cadence. La barrière attendait que TOUTES les entrées aient avancé, avec une deadline ré-armée à 2× l'intervalle → une seule source HS faisait attendre la deadline complète à CHAQUE trame → ~½ cadence (25 fps au lieu de 50). Désormais : on compose dès que toutes les entrées ouvertes ont avancé (chemin rapide, latence minimale), MAIS au plus tard 1 image après l'émission précédente ; au-delà on n'attend plus, l'entrée en retard est décalée d'une image (sa tuile garde sa dernière trame) et rattrape au tick suivant. Une entrée morte = figée, sans jamais ralentir la sortie. Latence ajoutée par étage bornée à < 1 image (= budget du tissu)."
+    ],
+    "Nouveautés (0.14.36)": [
+      "Retard par entrée exposé sur :8080 (inputs_lag_frames : {shm: nb d'images de décalage}, 0 = synchrone). Affiché page Câbles sur le port d'entrée concerné (« +N img ») → on voit d'un coup d'œil quelles sources sont synchrones et lesquelles sont décalées."
+    ],
     "Nouveautés (0.14.35)": [
       "Panneau Monitoring « Détail Multiviews » : représentation en GRAPHE (façon page Câbles) au lieu de la chaîne horizontale qui laissait croire que les shards se succédaient en série. 3 colonnes — Sources (dédupliquées) | Shards EMPILÉS VERTICALEMENT (= parallèles) | Assembleur → sortie — reliées par des arêtes SVG en courbe : chaque source alimente son/ses shard(s), et tous les shards alimentent l'assembleur. Latence propre par nœud + latence cumulée du chemin critique vs budget. Arêtes redessinées au redimensionnement."
     ],
