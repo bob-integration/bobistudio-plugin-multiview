@@ -1,7 +1,10 @@
 {
-  "version": "0.14.32",
-  "date": "2026-06-15",
+  "version": "0.14.33",
+  "date": "2026-06-16",
   "changes": {
+    "Corrections (0.14.33)": [
+      "Crash de boucle corrigé : quand un rendu de trame échouait (garde-fou), la boucle tombait sur own_lat.push((ts_out − ts_cycle_start)) avec ts_out NON défini (jamais atteint) → NameError NON rattrapé → la boucle mourait (le process tournait mais ne produisait plus rien : conteneur « stoppé »). ts_out est désormais initialisé AVANT le try → un rendu raté saute la trame proprement sans tuer le script. Exhibé par les shards du tissu sur murs réels (combiné à l'alignement chroma des shards côté orchestrateur)."
+    ],
     "Nouveautés (0.14.32)": [
       "Composer : champ « Cadence visée » (fps_target : Auto / 50 / 25) par multiview. Intention de performance lue par l'orchestrateur (tissu de composition) : si le mur sature, il est auto-shardé pour tenir cette cadence (Auto = budget global du cluster). Persisté dans deploy_config (hot-apply, pas de redéploiement) ; aucun effet sur le script de rendu."
     ],
