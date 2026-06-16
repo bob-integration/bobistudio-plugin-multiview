@@ -1,7 +1,10 @@
 {
-  "version": "0.14.37",
+  "version": "0.14.38",
   "date": "2026-06-16",
   "changes": {
+    "Performance (0.14.38)": [
+      "Chrome (habillage caché) blendé sur sa BBOX réelle au lieu de plein écran. _chrome_pre était TOUJOURS un jeu d'opérandes plein écran (1920×1080×3 plans) → blend_pre coûtait ~13 ms/trame même quand l'habillage est épars (ex. assembleur du tissu = 0 ou 1 texte fixe : le coût plein écran persistait alors que le contenu fait ~60 k px). Désormais on borne à la bbox du chrome (chroma-alignée) ; chrome entièrement transparent → _chrome_pre None → blend totalement sauté. Sur l'assembleur 2010 (1 texte + 4 horloges) : ov_convert ~13 → ~0,5 ms, own_latency ~22 → ~9 ms → 50 fps. Aucun changement pour un mur dense (labels sur 16 cellules → bbox ≈ plein écran, comme avant)."
+    ],
     "Performance (0.14.37)": [
       "Horloges : blend PER-HORLOGE (une bbox par horloge) au lieu de la bbox-UNION. Comme les VU-mètres en 0.14.30 : quand plusieurs horloges sont DISPERSÉES sur la sortie, leur rectangle englobant couvrait ~¾ d'écran → le blend per-frame (RGBA→YUV déjà caché 1×/s, mais le blend reste à chaque trame) coûtait ∝ cette surface, alors que chaque horloge ne fait que ~60 k px. render_clock_tiles rend+convertit chaque horloge sur sa propre petite bbox (au changement de valeur seulement) et blende chaque tuile localement. Mesuré sur un mur 4 horloges éparpillées (CT 2010) : ov_blend ~12 ms → ~4 ms, own_latency ~30 → ~22 ms. Z-ordre et cache 1×/s inchangés."
     ],

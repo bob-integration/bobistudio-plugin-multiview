@@ -2369,13 +2369,24 @@ while True:
             for _lyr in (_info_layer, border_rgba, static_rgba, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé (overlays fixes au-dessus)
                 if _lyr is not None:
                     _ch.alpha_composite(_lyr)
-            _chrome_rgba = _ch
-            _chrome_yuv  = rgba_to_yuv(_chrome_rgba)
-            # Pré-calcul des opérandes de blend du chrome (statiques jusqu'au prochain changement) :
-            # inv_a=(255−α) et src_a=src·α par plan (Y, puis U/V via l'alpha sous-échantillonnée).
-            _cy, _cu, _cv, _ca, _ca2 = _chrome_yuv
-            _chrome_pre = (255 - _ca.astype(_ACC),  _cy.astype(_ACC) * _ca,
-                           255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
+            # Bornage à la BBOX réelle du chrome (chroma-alignée) : on ne blende plus tout l'écran à
+            # chaque trame quand l'habillage est ÉPARS (ex. assembleur du tissu = 0 ou 1 texte). Chrome
+            # entièrement transparent → _chrome_pre None → blend totalement sauté (cas assembleur).
+            _cbb = _ch.getbbox()
+            if _cbb is None:
+                _chrome_rgba = None; _chrome_pre = None
+            else:
+                bx0, by0, bx1, by1 = _cbb
+                bx0 -= bx0 % _CW; by0 -= by0 % _CH
+                if bx1 % _CW: bx1 = min(OUT_WIDTH, bx1 + (_CW - bx1 % _CW))
+                if by1 % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - by1 % _CH))
+                _chrome_rgba = _ch
+                # Opérandes de blend pré-calculés sur la BBOX (statiques jusqu'au prochain changement) :
+                # inv_a=(255−α) et src_a=src·α par plan (Y, puis U/V via l'alpha sous-échantillonnée).
+                _cy, _cu, _cv, _ca, _ca2 = rgba_to_yuv(_ch.crop((bx0, by0, bx1, by1)))
+                _chrome_pre = (bx0, by0, bx1, by1,
+                               255 - _ca.astype(_ACC),  _cy.astype(_ACC) * _ca,
+                               255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
             _chrome_dirty = False
 
         # Habillage = chrome STATIQUE (caché) + VU-mètres (tuiles per-frame) + horloges (cachées).
@@ -2395,12 +2406,14 @@ while True:
             _pf_cache_sig = _pf_sig
             _pf_tiles = render_clock_tiles(now)
         _ts_ov1 = time.time_ns()   # fin rendu PIL + conversion YUV (tuiles VU + horloges AU CHANGEMENT)
-        # 1) Chrome statique : TOUJOURS blendé via opérandes pré-calculés (plein écran, SANS conversion).
+        # 1) Chrome statique : blendé via opérandes pré-calculés sur sa BBOX (SANS conversion). Borné à
+        # la zone réellement habillée → un assembleur sans chrome (bbox None) ne paie RIEN ici.
         if _chrome_pre is not None:
-            _piY, _saY, _piC, _saU, _saV = _chrome_pre
-            canvas_y = blend_pre(canvas_y, _piY, _saY)
-            canvas_u = blend_pre(canvas_u, _piC, _saU)
-            canvas_v = blend_pre(canvas_v, _piC, _saV)
+            bx0, by0, bx1, by1, _piY, _saY, _piC, _saU, _saV = _chrome_pre
+            canvas_y[by0:by1, bx0:bx1] = blend_pre(canvas_y[by0:by1, bx0:bx1], _piY, _saY)
+            cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
+            canvas_u[cy0:cy1, cx0:cx1] = blend_pre(canvas_u[cy0:cy1, cx0:cx1], _piC, _saU)
+            canvas_v[cy0:cy1, cx0:cx1] = blend_pre(canvas_v[cy0:cy1, cx0:cx1], _piC, _saV)
         _ts_ov2 = time.time_ns()   # fin du blend chrome
         # 2) VU-mètres puis 3) horloges : blend de chaque TUILE sur sa propre bbox (z-ordre conservé :
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
