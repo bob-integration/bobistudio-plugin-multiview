@@ -1413,6 +1413,7 @@ OVERLAYS = CONFIG.get("overlays") or []
 overlay_dirty = threading.Event()
 overlay_dirty.set()
 overlay_bg_layer = None              # couche images de fond (cachée, re-bakée sur overlay_dirty)
+_base_y = _base_u = _base_v = None   # canvas de base PRÉ-BLENDÉ avec le fond (copié par trame ; None = fond absent → neutre)
 _overlay_img_cache = {{}}            # id → (signature_b64, PIL RGBA)
 _chrono_state = {{}}                 # id → {{"running": bool, "base": s, "since": epoch|None}}
 
@@ -2248,9 +2249,6 @@ while True:
     ts_cycle_start = time.time_ns()   # début du compositing (après l'attente de grille) → own_latency
     ts_out = ts_cycle_start           # défini AVANT le try : si le rendu plante (garde-fou), own_lat.push
                                       # ci-dessous ne lève plus NameError (le crash qui tuait la boucle).
-    canvas_y = np.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT)
-    canvas_u = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
-    canvas_v = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
     ts_in_per_input = {{}}  # path → transit_ms (âge à la lecture), rempli par les lectures réussies
     _statuses = []          # (idx, statut, chip format, proxy) → signature de la couche info
     _pu = {{}}              # idx → {{src, read, cost, kind}} (monitoring pyramide, cette frame)
@@ -2261,7 +2259,10 @@ while True:
 
     # Images de fond (layer=background) : sous la vidéo. Couche cachée, re-bakée sur changement.
     # Idem couche overlay PREMIER-PLAN cachée (texte/images fixes) → re-bakée ici (édition / MAJ TSL),
-    # puis intégrée au chrome (coût par-trame nul).
+    # puis intégrée au chrome (coût par-trame nul). Le fond étant STATIQUE, on le PRÉ-BLENDE une seule
+    # fois (à la re-bake) dans un canvas de base caché `_base_*` ; la boucle par-trame fait alors une
+    # simple COPIE de ce base au lieu de re-blender plein écran 3 plans À CHAQUE trame (≈30 ms → ≈1 ms,
+    # le coût dominant des assembleurs/murs avec image de fond). Cf. caching du chrome premier-plan.
     if overlay_dirty.is_set():
         with state_lock:
             _bg_rgba = render_overlays_bg()
@@ -2269,11 +2270,22 @@ while True:
         overlay_bg_layer = rgba_to_yuv(_bg_rgba) if _bg_rgba is not None else None
         overlay_dirty.clear()
         _chrome_dirty = True
-    if overlay_bg_layer is not None:
-        _oby, _obu, _obv, _oba, _oba2 = overlay_bg_layer
-        canvas_y = blend(canvas_y, _oby, _oba)
-        canvas_u = blend(canvas_u, _obu, _oba2)
-        canvas_v = blend(canvas_v, _obv, _oba2)
+        if overlay_bg_layer is not None:
+            _oby, _obu, _obv, _oba, _oba2 = overlay_bg_layer
+            _base_y = blend(np.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT), _oby, _oba)
+            _base_u = blend(np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _obu, _oba2)
+            _base_v = blend(np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _obv, _oba2)
+        else:
+            _base_y = _base_u = _base_v = None
+
+    # Canvas de la trame : COPIE du base pré-blendé (fond) si présent, sinon neutre (cas sans fond,
+    # inchangé/rapide). Une copie d'un buffer existant est ~1 ms vs ~30 ms de blend plein écran.
+    if _base_y is not None:
+        canvas_y = _base_y.copy(); canvas_u = _base_u.copy(); canvas_v = _base_v.copy()
+    else:
+        canvas_y = np.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT)
+        canvas_u = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
+        canvas_v = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
 
     for i, cfg in enumerate(_fc):
         if cfg.get("hidden"):
