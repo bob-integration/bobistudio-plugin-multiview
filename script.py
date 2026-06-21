@@ -1898,10 +1898,8 @@ def _select_input(i, cfg, target_w, target_h):
     with state_lock:
         base = mv_state["inputs"][i] if i < len(mv_state["inputs"]) else ""
     base_w = cfg.get("in_w", 640); base_h = cfg.get("in_h", 360)
-    # MIGRATION MXL : proxies pyramide DÉSACTIVÉS tant que la pyramide n'est pas migrée MXL
-    # (sinon on ouvrirait un flux MXL inexistant → tuile noire). On lit toujours la source pleine.
-    # Réactiver en migrant la pyramide + en énumérant les flux proxy du domaine MXL.
-    return base, base_w, base_h, _classify(base, base, base_w, base_h, target_w or base_w, target_h or base_h)
+    if target_w <= 0 or target_h <= 0:
+        return base, base_w, base_h, _classify(base, base, base_w, base_h, target_w or base_w, target_h or base_h)
     cands = [(base, base_w, base_h)]
     for p in (cfg.get("proxies") or []):
         try:
@@ -1909,7 +1907,9 @@ def _select_input(i, cfg, target_w, target_h):
         except (TypeError, ValueError):
             continue
         pp = p.get("path") or ""
-        if pp and pw > 0 and ph > 0 and os.path.exists(pp):
+        # Existence = le FLUX MXL du proxy est présent (≠ fichier shm) — la pyramide migrée
+        # produit des flux MXL ; un proxy retiré (drop) cesse d'être candidat → repli source pleine.
+        if pp and pw > 0 and ph > 0 and _flow_exists(pp.removeprefix("/dev/shm/")):
             cands.append((pp, pw, ph))
     min_w = target_w / (1.0 + _PROXY_UPSCALE_TOL)
     min_h = target_h / (1.0 + _PROXY_UPSCALE_TOL)
@@ -1925,40 +1925,40 @@ def _select_input(i, cfg, target_w, target_h):
     return best[0], best[1], best[2], _classify(best[0], base, best[1], best[2], target_w, target_h)
 
 
+def _flow_exists(name):
+    """Le flux MXL `name` est-il présent ? (dossier <uuid>.mxl-flow dans le domaine)."""
+    try:
+        return os.path.exists(os.path.join(inst.domain, bobimxl.flow_id(name) + ".mxl-flow"))
+    except Exception:
+        return False
+
 def _scan_proxies_for(cfg):
-    """Découvre les proxies pyramide DISPONIBLES pour la source d'une fenêtre, en scrutant
-    /dev/shm (nommage déterministe `<src>__pL` octave / `<src>__s<w>x<h>` sur-mesure). Renvoie
-    [{{path,w,h}}] ou None si la source n'est pas résolue. Dims octave = MÊME formule que la
-    pyramide (_proxy_dims, alignée chroma) ; sur-mesure = lue du nom (exacte)."""
+    """Découvre les proxies pyramide DISPONIBLES pour la source d'une fenêtre en énumérant les
+    FLUX MXL du domaine (le `flow_def.json` porte le NOM dans `label` → on retrouve `<src>__…`).
+    Octaves `<src>__pL` + sur-mesure `<src>__s<w>x<h>` ; dims = frame_width/height du flow_def
+    (exactes). Renvoie [{{path,w,h}}] ou None si la source n'est pas résolue."""
     path = cfg.get("path") or ""
-    src = path[len("/dev/shm/"):] if path.startswith("/dev/shm/") else path
+    src = path.removeprefix("/dev/shm/") if path.startswith("/dev/shm/") else path
     if not src:
         return None
-    in_w = int(cfg.get("in_w") or 0); in_h = int(cfg.get("in_h") or 0)
     pref = src + "__"
     try:
-        names = os.listdir("/dev/shm")
+        entries = os.listdir(inst.domain)
     except OSError:
         return None
     out = []
-    for name in names:
+    for ent in entries:
+        if not ent.endswith(".mxl-flow"):
+            continue
+        try:
+            with open(os.path.join(inst.domain, ent, "flow_def.json")) as _f:
+                fd = json.load(_f)
+        except Exception:
+            continue
+        name = fd.get("label") or ""
         if not name.startswith(pref):
             continue
-        suf = name[len(pref):]
-        w = h = 0
-        if suf.startswith("s") and "x" in suf:
-            try:
-                ws, hs = suf[1:].split("x", 1); w = int(ws); h = int(hs)
-            except ValueError:
-                continue
-        elif suf.startswith("p"):
-            try:
-                L = int(suf[1:])
-            except ValueError:
-                continue
-            if L > 0 and in_w and in_h:
-                w = max(2, in_w // L); w -= w % max(2, _CW)
-                h = max(2, in_h // L); h -= h % max(2, _CH)
+        w = int(fd.get("frame_width") or 0); h = int(fd.get("frame_height") or 0)
         if w >= 2 and h >= 2:
             out.append({{"path": "/dev/shm/" + name, "w": w, "h": h}})
     return out

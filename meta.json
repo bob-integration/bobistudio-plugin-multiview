@@ -1,7 +1,10 @@
 {
-  "version": "0.15.0",
+  "version": "0.15.1",
   "date": "2026-06-21",
   "changes": {
+    "Nouveautés (0.15.1)": [
+      "Proxies pyramide RÉACTIVÉS sur MXL : _select_input choisit à nouveau le proxy le mieux dimensionné par tuile ; _scan_proxies_for énumère les FLUX MXL du domaine (via le label du flow_def) au lieu de lister /dev/shm ; existence vérifiée sur le flux MXL (_flow_exists). Boucle pyramide↔multiview complète en MXL."
+    ],
     "Nouveautés (0.15.0)": [
       "Migration MXL (Phase 1, sans double-écriture) : entrées VIDÉO (N tuiles) et ANC (timecode ATC) lues via bobimxl.Reader, sortie (mur) écrite via bobimxl.Writer (flux planar video/x-mxl-planar), zéro-copie. Format de chaque tuile LU DU flow_def du producteur (source de vérité) au lieu des dims injectées. Cadence input-locked (data-driven) via Reader.head_index() par source. ANC : le grain MXL data porte la payload ANC (meta+UDW), décodage inchangé. Requiert bobi-compute >= 0.5 (bobimxl Reader.format/flow_def).",
       "AUDIO (VU-mètres) encore en legacy (mmap) : différé jusqu'au producteur audio MXL (Phase 2, samples float32). PROXIES pyramide désactivés tant que la pyramide n'est pas migrée MXL (lecture de la source pleine) ; à réactiver en énumérant les flux proxy du domaine MXL."
