@@ -1,7 +1,11 @@
 {
-  "version": "0.14.40",
-  "date": "2026-06-17",
+  "version": "0.15.0",
+  "date": "2026-06-21",
   "changes": {
+    "Nouveautés (0.15.0)": [
+      "Migration MXL (Phase 1, sans double-écriture) : entrées VIDÉO (N tuiles) et ANC (timecode ATC) lues via bobimxl.Reader, sortie (mur) écrite via bobimxl.Writer (flux planar video/x-mxl-planar), zéro-copie. Format de chaque tuile LU DU flow_def du producteur (source de vérité) au lieu des dims injectées. Cadence input-locked (data-driven) via Reader.head_index() par source. ANC : le grain MXL data porte la payload ANC (meta+UDW), décodage inchangé. Requiert bobi-compute >= 0.5 (bobimxl Reader.format/flow_def).",
+      "AUDIO (VU-mètres) encore en legacy (mmap) : différé jusqu'au producteur audio MXL (Phase 2, samples float32). PROXIES pyramide désactivés tant que la pyramide n'est pas migrée MXL (lecture de la source pleine) ; à réactiver en énumérant les flux proxy du domaine MXL."
+    ],
     "Performance (0.14.40)": [
       "Image de FOND (overlay layer=background) PRÉ-BLENDÉE une seule fois au lieu d'être re-blendée plein écran à chaque trame. Le calque de fond est statique (re-baké seulement sur édition/MAJ), mais la boucle faisait `canvas = np.zeros` puis `blend(canvas, fond)` sur les 3 plans (Y 1920×1080 + U/V) À CHAQUE trame → ~28-30 ms/trame, le coût DOMINANT d'un mur/assembleur avec image de fond. Pire : ce bloc se trouve AVANT la boucle des fenêtres, donc le profilage interne l'attribuait à tort à la phase « inputs » (38 ms « inputs » mesurés sur l'assembleur 2002 alors que la lecture des bandes ne pèse ~2%). Désormais le fond est pré-blendé dans un canvas de base caché `_base_*` à la re-bake, et chaque trame fait une simple COPIE de ce base (≈0,3 ms vs ≈29 ms — mesuré, résultat BIT-IDENTIQUE). Sans image de fond : canvas neutre comme avant (cas rapide inchangé). Diagnostic py-spy sur conteneur live ; complète le caching du chrome premier-plan (0.14.30/37/38)."
     ],

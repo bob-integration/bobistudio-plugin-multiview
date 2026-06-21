@@ -7,6 +7,8 @@ import mmap, socket, struct, time, numpy as np, threading, json, os, re, base64,
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
+import bobimxl   # migration MXL Phase 1 : entrées vidéo+ANC via Reader, sortie via Writer
+# (mmap/struct conservés : audio VU encore en legacy — différé jusqu'au producteur audio MXL).
 
 # ─── Latence : Δ ts_out - ts_in_PiP (rolling avg par input) ────
 class RollingMs:
@@ -32,7 +34,9 @@ HOSTNAME       = "{hostname}"
 PLUGIN_VERSION = "{plugin_version}"
 
 FLUX_CONFIG   = CONFIG.get("flux_config") or []
-SHM_OUT       = "/dev/shm/" + (CONFIG.get("shm_out") or "mxl_mix")
+SHM_OUT_NAME  = CONFIG.get("shm_out") or "mxl_mix"
+SHM_OUT       = "/dev/shm/" + SHM_OUT_NAME   # conservé pour l'audio legacy / dérivations de noms
+inst          = bobimxl.Instance()           # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
 OUT_WIDTH     = int(CONFIG.get("out_width") or CONFIG.get("width") or 1280)
 OUT_HEIGHT    = int(CONFIG.get("out_height") or CONFIG.get("height") or 720)
 def _as_bool(v):
@@ -494,30 +498,21 @@ threading.Thread(
     target=lambda: HTTPServer(("0.0.0.0", 8080), Handler).serve_forever(),
     daemon=True).start()
 
-# ─── Préparation du shm de sortie ────────────────────────────
-
-with open(SHM_OUT, "wb") as f:
-    f.write(b"\x00" * OUT_TOTAL)
-
 # ─── Helpers ─────────────────────────────────────────────────
 
 def open_source(cfg):
+    """Ouvre une source comme flux MXL (Reader). Le NOM = chemin sans le préfixe /dev/shm/.
+    Format LU DU flow_def du producteur (source de vérité) → in_w/in_h/chroma/bit_depth."""
     try:
-        in_w = cfg.get("in_w", 640)
-        in_h = cfg.get("in_h", 360)
+        name = cfg["path"].removeprefix("/dev/shm/")
+        rd = bobimxl.Reader(inst, name)        # lève si le flux n'existe pas encore
+        fmt = rd.format()
+        if not fmt:
+            rd.close(); return None
+        in_w, in_h = fmt["width"], fmt["height"]
         frame_size = (in_w * in_h + 2 * (in_w // _CW) * (in_h // _CH)) * _BPS
-        # Ring du PRODUCTEUR DÉRIVÉ de la taille RÉELLE du shm (≠ RING_SIZE figé) : un proxy
-        # pyramide a son propre ring (souvent 4), et supposer RING_SIZE mmapperait au-delà du
-        # fichier → SIGBUS, ou lirait le mauvais slot. cf. mxl-consumer-format-contract.
-        actual = os.path.getsize(cfg["path"])
-        ring   = max(1, (actual - HEADER_SIZE) // frame_size)
-        total  = HEADER_SIZE + frame_size * ring
-        f = open(cfg["path"], "r+b")
-        shm = mmap.mmap(f.fileno(), total)
-        return {{"f": f, "shm": shm, "view": memoryview(shm),
-                 "in_w": in_w, "in_h": in_h, "frame_size": frame_size, "ring": ring}}
-    except Exception as e:
-        print(f"Erreur ouverture {{cfg['path']}}: {{e}}")
+        return {{"reader": rd, "in_w": in_w, "in_h": in_h, "frame_size": frame_size}}
+    except Exception:
         return None
 
 def resize_plane(plane, target_h, target_w):
@@ -1593,36 +1588,37 @@ def _derive_anc_shm_path(video_path):
 
 def _open_anc_state(video_path):
     p = _derive_anc_shm_path(video_path)
-    if not p or not os.path.exists(p):
+    if not p:
         return None
     try:
-        if os.path.getsize(p) < ANC_TOTAL:
-            return None
-        f = open(p, "r+b")
-        return {{"shm_f": f, "shm": mmap.mmap(f.fileno(), ANC_TOTAL), "path": p}}
+        rd = bobimxl.Reader(inst, p.removeprefix("/dev/shm/"))  # flux ANC data MXL (lève si absent)
+        return {{"reader": rd, "path": p}}
     except Exception:
         return None
 
-def _decode_anc_tc(shm):
-    """Dernier grain ANC → ATC RP188 (DID/SDID 0x60, 16 UDW BCD) → (hh,mm,ss,ff,df) ou None."""
+def _decode_anc_tc(reader):
+    """Dernier grain ANC (flux MXL data) → ATC RP188 (DID/SDID 0x60, 16 UDW BCD) → (hh,mm,ss,ff,df).
+    Le grain = UNE payload ANC à l'offset 0 : [u32 meta_num][u32 udw_fill][meta×16][udw]
+    (le ring/header sont gérés par MXL, plus de slot à calculer)."""
     try:
-        idx = struct.unpack("<Q", bytes(shm[0:8]))[0]
-        slot = idx % ANC_RING                       # l'en-tête pointe le DERNIER grain écrit
-        base = ANC_HDR + slot * ANC_SLOT
-        mn, _fill = struct.unpack_from("<II", shm, base)
+        got = reader.get_latest()
+        if got is None:
+            return None
+        v = bytes(got[2])
+        mn, _fill = struct.unpack_from("<II", v, 0)
         if mn == 0 or mn > 256:
             return None
-        meta_off = base + 8
+        meta_off = 8
         udw_base = meta_off + mn * ANC_META_REC
         for m in range(mn):
             did, sdid, _line, _hori, udw_size, udw_offset, _c, _s = struct.unpack_from(
-                "<8H", shm, meta_off + m * ANC_META_REC)
+                "<8H", v, meta_off + m * ANC_META_REC)
             if did != 0x60 or sdid != 0x60 or udw_size < 16:
                 continue
             w = udw_base + udw_offset
-            if w + 16 > base + ANC_SLOT:
+            if w + 16 > len(v):
                 return None
-            b = [(shm[w + 2*i] & 0x0f) | ((shm[w + 2*i + 1] & 0x0f) << 4) for i in range(8)]
+            b = [(v[w + 2*i] & 0x0f) | ((v[w + 2*i + 1] & 0x0f) << 4) for i in range(8)]
             frames  = (b[0] & 0x0f) + ((b[0] >> 4) & 0x03) * 10
             seconds = (b[2] & 0x0f) + ((b[2] >> 4) & 0x07) * 10
             minutes = (b[4] & 0x0f) + ((b[4] >> 4) & 0x07) * 10
@@ -1645,11 +1641,11 @@ def _anc_tc_for(ov):
     # (ré)ouvre si l'entrée a changé de source, ou tant que le flux ANC n'est pas encore là.
     if rec is None or rec["for_path"] != vpath or rec["state"] is None:
         if rec and rec["state"]:
-            try: rec["state"]["shm"].close(); rec["state"]["shm_f"].close()
+            try: rec["state"]["reader"].close()
             except Exception: pass
         rec = {{"for_path": vpath, "state": _open_anc_state(vpath) if vpath else None}}
         anc_states[idx] = rec
-    return _decode_anc_tc(rec["state"]["shm"]) if rec["state"] else None
+    return _decode_anc_tc(rec["state"]["reader"]) if rec["state"] else None
 
 def _fmt_clock_fields(ov, hh, mm, ss, ff, df=False, dash=False):
     """Met en forme HH/MM/SS/II selon les cases activées ; séparateur images ';' si drop-frame.
@@ -1843,7 +1839,7 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
             cfg_ih = FLUX_CONFIG[i].get("in_h", 640) if i < len(FLUX_CONFIG) else 360
     if not wanted:
         if cur is not None:
-            try: cur["shm"].close(); cur["f"].close()
+            try: cur["reader"].close()
             except Exception: pass
             with state_lock:
                 if i < len(sources): sources[i] = None
@@ -1851,7 +1847,7 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
     if cur is not None and cur.get("path") == wanted:
         return cur
     if cur is not None:
-        try: cur["shm"].close(); cur["f"].close()
+        try: cur["reader"].close()
         except Exception: pass
         with state_lock:
             if i < len(sources): sources[i] = None
@@ -1902,8 +1898,10 @@ def _select_input(i, cfg, target_w, target_h):
     with state_lock:
         base = mv_state["inputs"][i] if i < len(mv_state["inputs"]) else ""
     base_w = cfg.get("in_w", 640); base_h = cfg.get("in_h", 360)
-    if target_w <= 0 or target_h <= 0:
-        return base, base_w, base_h, _classify(base, base, base_w, base_h, target_w or base_w, target_h or base_h)
+    # MIGRATION MXL : proxies pyramide DÉSACTIVÉS tant que la pyramide n'est pas migrée MXL
+    # (sinon on ouvrirait un flux MXL inexistant → tuile noire). On lit toujours la source pleine.
+    # Réactiver en migrant la pyramide + en énumérant les flux proxy du domaine MXL.
+    return base, base_w, base_h, _classify(base, base, base_w, base_h, target_w or base_w, target_h or base_h)
     cands = [(base, base_w, base_h)]
     for p in (cfg.get("proxies") or []):
         try:
@@ -2082,7 +2080,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
         with state_lock:
             for src in list(sources):
                 if src is not None:
-                    try: src["shm"].close(); src["f"].close()
+                    try: src["reader"].close()
                     except Exception: pass
             FLUX_CONFIG[:] = new_fc
             mv_state["inputs"][:] = [cfg.get("path", "") for cfg in new_fc]
@@ -2151,9 +2149,10 @@ threading.Thread(
 # Injection de proxies pyramide À CHAUD : scrute /dev/shm en continu (cf. _proxy_scan_loop).
 threading.Thread(target=_proxy_scan_loop, daemon=True).start()
 
-f_out = open(SHM_OUT, "r+b")
-shm_out = mmap.mmap(f_out.fileno(), OUT_TOTAL)
-shm_out_view = memoryview(shm_out)
+# Sortie MXL : index tai en genlock-grille, sinon compteur libre (input-locked / cadence libre).
+_out_mode  = "tai" if (GENLOCK and not INPUT_LOCKED) else "free"
+out_writer = bobimxl.Writer(inst, SHM_OUT_NAME, OUT_WIDTH, OUT_HEIGHT, CHROMA, BIT_DEPTH,
+                            _FN, _FD, index_mode=_out_mode)
 out_frame_index = 0
 start_time = time.time()
 _fps_last_idx = 0          # fps en fenêtre glissante (delta depuis le dernier report)
@@ -2169,7 +2168,9 @@ def _peek_inputs():
     sig = []
     for _s in sources:
         if _s is not None:
-            try: sig.append(struct.unpack("Q", bytes(_s["shm"][0:8]))[0])
+            try:
+                _hi = _s["reader"].head_index()
+                sig.append(-1 if _hi == bobimxl.MXL_UNDEFINED_INDEX else _hi)
             except Exception: sig.append(-1)
         else:
             sig.append(-1)
@@ -2197,7 +2198,7 @@ while True:
         with state_lock:
             for _s in sources:
                 if _s is not None:
-                    try: _s["shm"].close(); _s["f"].close()
+                    try: _s["reader"].close()
                     except Exception: pass
             sources[:] = [None] * len(sources)
             _in_track.clear()
@@ -2311,16 +2312,20 @@ while True:
             continue
 
         try:
-            shm     = src["shm"]
-            shm_view = src["view"]
+            rd      = src["reader"]
             in_w    = src["in_w"]
             in_h    = src["in_h"]
             frame_size = src["frame_size"]
-            fi, ts_in = struct.unpack("QQ", bytes(shm[0:16]))
-            # TRANSIT (arrivée) = âge de la trame d'entrée À LA LECTURE (avant compositing).
-            if ts_in:
-                ts_in_per_input[src.get("path", cfg["path"])] = (time.time_ns() - ts_in) / 1e6
-            # Suivi freeze : t = dernier instant où le frame_index source a avancé.
+            got = rd.get_latest()
+            if got is None:        # flux ouvert mais aucun grain encore lisible
+                canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
+                if SHOW_NO_SIGNAL:
+                    _statuses.append((i, "nosignal", "", None))
+                continue
+            fi = got[0]; src_view = got[2]
+            # TRANSIT (arrivée) = âge de la trame d'entrée (now_tai − dernière écriture producteur).
+            ts_in_per_input[src.get("path", cfg["path"])] = (bobimxl.now_tai() - rd.last_write_time()) / 1e6
+            # Suivi freeze : t = dernier instant où l'index de grain a avancé.
             tr = _in_track.get(i)
             if tr is None or tr.get("path") != src["path"]:
                 tr = {{"path": src["path"], "fi": fi, "t": now_m}}
@@ -2331,16 +2336,14 @@ while True:
             _chip = _fmt_chip_txt(cfg, src) if SHOW_FORMAT else ""
             if _st or _chip or _proxy_chip:
                 _statuses.append((i, _st, _chip, _proxy_chip))
-            slot   = fi % src.get("ring", RING_SIZE)
-            offset = HEADER_SIZE + slot * frame_size
 
             _yb  = in_w * in_h * _BPS               # octets du plan Y
             _uvb = (in_w // _CW) * (in_h // _CH) * _BPS   # octets d'un plan chroma
-            src_y = np.frombuffer(bytes(shm_view[offset:offset + _yb]),
+            src_y = np.frombuffer(bytes(src_view[:_yb]),
                                   dtype=_NP_DT).reshape(in_h, in_w)
-            src_u = np.frombuffer(bytes(shm_view[offset + _yb:offset + _yb + _uvb]),
+            src_u = np.frombuffer(bytes(src_view[_yb:_yb + _uvb]),
                                   dtype=_NP_DT).reshape(in_h//_CH, in_w//_CW)
-            src_v = np.frombuffer(bytes(shm_view[offset + _yb + _uvb:offset + frame_size]),
+            src_v = np.frombuffer(bytes(src_view[_yb + _uvb:_yb + 2 * _uvb]),
                                   dtype=_NP_DT).reshape(in_h//_CH, in_w//_CW)
 
             dst_y = resize_plane(src_y, vh,      video_w)
@@ -2448,18 +2451,16 @@ while True:
         _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
         _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
         out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
-        slot   = out_frame_index % RING_SIZE
-        offset = HEADER_SIZE + slot * OUT_FRAME_SIZE
-        shm_out_view[offset:offset + OUT_FRAME_SIZE] = out_frame.tobytes()
+        # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). En genlock-grille,
+        # l'index tai vient du Writer ; en input-locked/libre, compteur interne du Writer.
+        _gidx, _gi_o, _vw_o = out_writer.open_grain()
+        _vw_o[:OUT_FRAME_SIZE] = out_frame.view(np.uint8)
+        out_writer.commit(_gi_o)
         ts_out = time.time_ns()
         # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
         _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)
         _t_overlays.push((_t_after_overlays - _t_after_inputs) / 1e6)
         _t_output.push((ts_out - _t_after_overlays) / 1e6)
-        # write_ts = instant de présentation (grille PTP) en genlock-grille, sinon horloge mur.
-        # En input-locked (data-driven) il n'y a pas de grille → horloge mur.
-        _wts = int(next_frame_time * 1e9) if (GENLOCK and not INPUT_LOCKED) else ts_out
-        shm_out[0:16] = struct.pack("QQ", out_frame_index, _wts)
     except Exception as _e:
         # Garde-fou : une exception transitoire (rendu overlay/chrome, écriture sortie…) ne doit
         # PAS tuer le process. On saute cette frame (la sortie garde sa dernière image via le ring)
