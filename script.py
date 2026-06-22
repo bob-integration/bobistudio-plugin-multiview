@@ -194,54 +194,45 @@ METER_TICK_W         = 16
 METER_MIN_DB         = -60.0
 METER_DECAY_DB_PER_S = 20.0    # vitesse de chute du peak hold
 
-# audio_states[flux_idx] = {{shm_f, shm, last_chunk, peaks (np), holds (np), hold_ts (np)}}
+# audio_states[flux_idx] = {{ar (bobimxl.AudioReader), name, peaks (np), holds (np), hold_ts (np)}}
 audio_states = {{}}
 
-def _derive_audio_shm_path(video_path):
-    """`/dev/shm/mire1_0` → `/dev/shm/mire1_audio_0`. None si aucun match."""
-    m = re.match(r"(/dev/shm/.+?)_(\d+)$", video_path)
-    if m:
-        return f"{{m.group(1)}}_audio_{{m.group(2)}}"
-    return None
+def _derive_audio_name(video_path):
+    """`mire1_0` (ou `/dev/shm/mire1_0`) → nom de flux audio `mire1_audio_0`. None si pas de _N final."""
+    name = (video_path or "").removeprefix("/dev/shm/")
+    m = re.match(r"(.+?)_(\d+)$", name)
+    return f"{{m.group(1)}}_audio_{{m.group(2)}}" if m else None
 
 def _open_audio_state(flux_idx, video_path):
-    """Tente d'ouvrir le shm audio dérivé du shm vidéo. Renvoie le dict state ou None."""
-    p = _derive_audio_shm_path(video_path)
-    if not p or not os.path.exists(p):
+    """Ouvre le FLUX MXL audio dérivé du flux vidéo (bobimxl.AudioReader). Renvoie state ou None."""
+    nm = _derive_audio_name(video_path)
+    if not nm:
         return None
     try:
-        if os.path.getsize(p) < A_TOTAL_SIZE:
-            return None
-        f = open(p, "r+b")
-        shm = mmap.mmap(f.fileno(), A_TOTAL_SIZE)
-        return {{"shm_f": f, "shm": shm, "last_chunk": -1,
-                 "peaks": None, "holds": None, "hold_ts": None,
-                 "path": p}}
+        ar = bobimxl.AudioReader(inst, nm)   # lève si le flux n'existe pas encore
     except Exception:
         return None
+    return {{"ar": ar, "name": nm, "peaks": None, "holds": None, "hold_ts": None}}
 
 def _update_peaks(state, n_channels, now):
-    """Lit le dernier chunk audio et met à jour peaks + holds (avec decay)."""
-    shm = state["shm"]
-    try:
-        chunk_index, _ = struct.unpack("QQ", bytes(shm[0:16]))
-    except Exception:
+    """Lit le dernier bloc audio (float32 MXL) et met à jour peaks + holds (avec decay)."""
+    ar = state.get("ar")
+    if ar is None:
         return None, None
-    # Lit le chunk le plus récent (même si == last_chunk, on a quand même un signal valide)
-    slot = chunk_index % A_RING_SIZE
-    off  = A_HEADER_SIZE + slot * A_CHUNK_SIZE
-    chunk = bytes(shm[off:off + A_CHUNK_SIZE])
-    # 3 bytes per sample, BIG-endian signed (wire-native), 8 channels interleaved
-    arr = np.frombuffer(chunk, dtype=np.uint8).reshape(A_SAMPLES_PER_CHUNK, A_CHANNELS_MAX, 3)
-    samples = ((arr[:, :, 0].astype(np.int32) << 16)
-               | (arr[:, :, 1].astype(np.int32) << 8)
-               | arr[:, :, 2].astype(np.int32))
-    samples = np.where(samples & 0x800000, samples - (1 << 24), samples)
-    peaks_lin = np.max(np.abs(samples), axis=0).astype(np.float64)  # (channels,)
-    full_scale = float(1 << (A_BIT_DEPTH - 1))
-    peak_db = np.where(peaks_lin > 0,
-                       20.0 * np.log10(peaks_lin / full_scale),
-                       METER_MIN_DB - 1)
+    try:
+        r = ar.read_latest(A_SAMPLES_PER_CHUNK)   # (≤48, channels) float32 normalisé [-1,1]
+    except Exception:
+        # flux invalidé (producteur recréé) → on tente de rouvrir au tour suivant
+        try: ar.close()
+        except Exception: pass
+        try: state["ar"] = bobimxl.AudioReader(inst, state["name"])
+        except Exception: state["ar"] = None
+        return None, None
+    if r is None:
+        return None, None
+    # float32 déjà normalisé → 0 dBFS = |1.0| (plus de dépack s24be / full_scale).
+    peaks_lin = np.max(np.abs(r), axis=0).astype(np.float64)  # (channels,)
+    peak_db = np.where(peaks_lin > 0, 20.0 * np.log10(peaks_lin), METER_MIN_DB - 1)
     peak_db = np.clip(peak_db, METER_MIN_DB, 0.0)
     peak_db = peak_db[:n_channels]
     # Holds avec decay
@@ -257,7 +248,6 @@ def _update_peaks(state, n_channels, now):
             elapsed = max(0.0, now - hold_ts[ch])
             holds[ch] = max(peak_db[ch], holds[ch] - METER_DECAY_DB_PER_S * elapsed)
         hold_ts[ch] = now
-    state["last_chunk"] = chunk_index
     state["peaks"] = peak_db
     state["holds"] = holds
     state["hold_ts"] = hold_ts
