@@ -18,7 +18,7 @@
     "memory": 2048,
     "pin": true
   },
-  "version": "0.16.0",
+  "version": "0.17.0",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
@@ -56,9 +56,21 @@
     "show_no_signal": true,
     "freeze_detect_s": 2.0,
     "show_format": false,
-    "show_proxy": false
+    "show_proxy": false,
+    "orientation": "landscape"
   },
   "config_schema": [
+    {
+      "key": "orientation",
+      "type": "select",
+      "label": "Orientation",
+      "default": "landscape",
+      "options": [
+        { "value": "landscape", "label": "Paysage" },
+        { "value": "portrait_cw", "label": "Portrait ↻ (horaire)" },
+        { "value": "portrait_ccw", "label": "Portrait ↺ (anti-horaire)" }
+      ]
+    },
     {
       "key": "shm_out",
       "type": "text",

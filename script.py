@@ -39,6 +39,13 @@ SHM_OUT       = "/dev/shm/" + SHM_OUT_NAME   # conservé pour l'audio legacy / d
 inst          = bobimxl.Instance()           # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
 OUT_WIDTH     = int(CONFIG.get("out_width") or CONFIG.get("width") or 1280)
 OUT_HEIGHT    = int(CONFIG.get("out_height") or CONFIG.get("height") or 720)
+# Orientation : en portrait, on COMPOSE dans OUT_WIDTH×OUT_HEIGHT (canevas logique vertical, ex.
+# 1080×1920) puis on tourne 90° le résultat → trame de sortie PAYSAGE (panneau physiquement incliné).
+# Le transport/l'aval ne voient que les dims TOURNÉES (cf app.scripts.multiview_output_dims).
+ORIENTATION   = (CONFIG.get("orientation") or "landscape").strip().lower()
+_PORTRAIT     = ORIENTATION in ("portrait_cw", "portrait_ccw")
+OUTPUT_W      = OUT_HEIGHT if _PORTRAIT else OUT_WIDTH    # largeur du flux émis (après rotation)
+OUTPUT_H      = OUT_WIDTH  if _PORTRAIT else OUT_HEIGHT   # hauteur du flux émis (après rotation)
 def _as_bool(v):
     # bool("False") == True : on parse explicitement les chaînes de CONFIG.
     if isinstance(v, str):
@@ -78,7 +85,23 @@ _CW = {{"420": 2, "422": 2, "444": 1}}.get(CHROMA, 2)   # diviseur largeur chrom
 _CH = {{"420": 2, "422": 1, "444": 1}}.get(CHROMA, 1)   # diviseur hauteur chroma
 PIX_FMT = ({{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}.get(CHROMA, "yuv422p")
            + (("12le" if BIT_DEPTH >= 12 else "10le") if _DEEP else ""))
-OUT_FRAME_SIZE = (OUT_WIDTH * OUT_HEIGHT + 2 * (OUT_WIDTH // _CW) * (OUT_HEIGHT // _CH)) * _BPS
+OUT_FRAME_SIZE = (OUTPUT_W * OUTPUT_H + 2 * (OUTPUT_W // _CW) * (OUTPUT_H // _CH)) * _BPS
+
+def _rotate_out(cy, cu, cv):
+    # Tourne le canevas portrait (OUT_WIDTH×OUT_HEIGHT logique) de 90° vers la trame paysage
+    # (OUTPUT_W×OUTPUT_H). La chroma 4:2:x ne se tourne PAS directement (les axes de
+    # sous-échantillonnage permutent) : on upsample en 4:4:4, on tourne, on re-sous-échantillonne
+    # vers la chroma cible → formes correctes (Y OUTPUT_H×OUTPUT_W, U/V OUTPUT_H//_CH × OUTPUT_W//_CW).
+    # np.rot90 : k=1 = sens anti-horaire (CCW), k=-1 = horaire (CW). Vue → ascontiguousarray.
+    k = 1 if ORIENTATION == "portrait_ccw" else -1
+    ry = np.ascontiguousarray(np.rot90(cy, k))
+    if _CW == 1 and _CH == 1:                    # 4:4:4 : rotation directe des 3 plans
+        return ry, np.ascontiguousarray(np.rot90(cu, k)), np.ascontiguousarray(np.rot90(cv, k))
+    uf = np.rot90(np.repeat(np.repeat(cu, _CH, axis=0), _CW, axis=1), k)   # → 4:4:4 paysage
+    vf = np.rot90(np.repeat(np.repeat(cv, _CH, axis=0), _CW, axis=1), k)
+    ru = np.ascontiguousarray(uf[::_CH, ::_CW])  # re-sous-échantillonne à la chroma cible
+    rv = np.ascontiguousarray(vf[::_CH, ::_CW])
+    return ry, ru, rv
 HEADER_SIZE    = 64
 RING_SIZE   = CONFIG.get("shm_video_ring", 10)
 OUT_TOTAL      = HEADER_SIZE + (OUT_FRAME_SIZE * RING_SIZE)
@@ -2141,7 +2164,7 @@ threading.Thread(target=_proxy_scan_loop, daemon=True).start()
 
 # Sortie MXL : index tai en genlock-grille, sinon compteur libre (input-locked / cadence libre).
 _out_mode  = "tai" if (GENLOCK and not INPUT_LOCKED) else "free"
-out_writer = bobimxl.Writer(inst, SHM_OUT_NAME, OUT_WIDTH, OUT_HEIGHT, CHROMA, BIT_DEPTH,
+out_writer = bobimxl.Writer(inst, SHM_OUT_NAME, OUTPUT_W, OUTPUT_H, CHROMA, BIT_DEPTH,
                             _FN, _FD, index_mode=_out_mode)
 out_frame_index = 0
 start_time = time.time()
@@ -2440,6 +2463,8 @@ while True:
         _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
         _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
         _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
+        if _PORTRAIT:                            # compose en portrait → tourne 90° vers la trame paysage
+            canvas_y, canvas_u, canvas_v = _rotate_out(canvas_y, canvas_u, canvas_v)
         out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
         # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). En genlock-grille,
         # l'index tai vient du Writer ; en input-locked/libre, compteur interne du Writer.

@@ -306,6 +306,7 @@ function renderEditor(hostname) {
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     document.getElementById('ed_snap').checked          = snapEnabled;
     try { populateOutFormatSelect(); } catch (e) { /* sélecteur de format non bloquant */ }
+    try { populateOrientationSelect(); } catch (e) { /* sélecteur d'orientation non bloquant */ }
     // Réglages de sortie (colonne latérale) : visibles dès qu'une instance est chargée
     const settings = document.getElementById('mw-settings');
     if (settings) settings.hidden = false;
@@ -412,16 +413,44 @@ function populateOutFormatSelect() {
     sel.innerHTML = html;
 }
 
+function _mwIsPortrait(o) { return o === 'portrait_cw' || o === 'portrait_ccw'; }
+
+// Reflète l'orientation courante dans le sélecteur (à l'ouverture de l'éditeur).
+function populateOrientationSelect() {
+    const sel = document.getElementById('ed_orientation');
+    if (!sel) return;
+    sel.value = _mwIsPortrait(editorParams.orientation) ? editorParams.orientation : 'landscape';
+}
+
 // Changement de format de sortie : structurel (résolution/cadence) → exige un redéploiement.
+// out_width/out_height = canevas LOGIQUE : en portrait on swappe (le mur se compose en vertical).
 function onFormatChange() {
     const sel = document.getElementById('ed_out_format');
     if (!sel) return;
     const f = (window._videoFormats || []).find(x => x.label === sel.value);
     if (!f) return;   // « (actuel) » : rien à changer
-    editorParams.out_width  = f.w;
-    editorParams.out_height = f.h;
+    const portrait = _mwIsPortrait(editorParams.orientation);
+    editorParams.out_width  = portrait ? f.h : f.w;
+    editorParams.out_height = portrait ? f.w : f.h;
     editorParams.fps        = f.fps;
     editorParams.scan       = f.scan || 'p';
+    resizeCanvas();
+    dessiner();
+    mwFlash(T('plugin.multiview.format_changed_redeploy'));
+}
+
+// Changement d'orientation : structurel (recrée le flux). Bascule paysage↔portrait → swap des dims
+// du canevas logique ; cw↔ccw → mêmes dims (seul le sens de rotation change).
+function onOrientationChange() {
+    const sel = document.getElementById('ed_orientation');
+    if (!sel) return;
+    const next = sel.value;
+    const toggling = _mwIsPortrait(editorParams.orientation) !== _mwIsPortrait(next);
+    editorParams.orientation = next;
+    if (toggling) {
+        const w = editorParams.out_width, h = editorParams.out_height;
+        editorParams.out_width = h; editorParams.out_height = w;
+    }
     resizeCanvas();
     dessiner();
     mwFlash(T('plugin.multiview.format_changed_redeploy'));

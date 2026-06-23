@@ -1,7 +1,13 @@
 {
-  "version": "0.16.0",
-  "date": "2026-06-22",
+  "version": "0.17.0",
+  "date": "2026-06-23",
   "changes": {
+    "Multiviews verticaux (portrait) — option par-mur (0.17.0)": [
+      "Nouveau param `orientation` (landscape / portrait_cw / portrait_ccw) PAR multiview. En portrait, le mur se COMPOSE en vertical (canevas logique out_width×out_height, ex. 1080×1920 — fenêtres/labels arrangés à la verticale) puis le moteur TOURNE le résultat de 90° dans une trame PAYSAGE 1920×1080 juste avant l'émission. Pour un panneau 1920×1080 physiquement incliné 90° : il ré-affiche droit. Le flux émis (et tout l'aval : 2110/TX, NMOS, câblage, gating de format, preview) reste 1920×1080 — rien à changer en aval.",
+      "Moteur (script.py) : OUTPUT_W/OUTPUT_H = swap(out_width,out_height) en portrait ; out_writer + OUT_FRAME_SIZE aux dims de sortie ; `_rotate_out` tourne Y/U/V de 90° (np.rot90, sens cw/ccw). La chroma 4:2:2/4:2:0 ne se tourne pas directement (axes de sous-échantillonnage permutés) → upsample 4:4:4, rotation, re-sous-échantillonnage (formes correctes validées 422/420/444). Compositing/overlays/fabric INCHANGÉS (canevas logique). Progressif paysage strictement inchangé (rotation court-circuitée).",
+      "Orchestrateur : helper `app.scripts.multiview_output_dims` (dims tournées) ; `plugins.derive_wiring` + `monitor._shm_fmt` exposent les dims SWAPPÉES → l'aval voit 1920×1080. Fabric : la rotation vit sur l'ASSEMBLEUR du mur (émet le flux externe), les shards composent des régions portrait non tournées. `orientation` ajouté à `_MULTIVIEW_STRUCTURAL` (un changement redéploie, pas de hot-apply — recrée le flux/sens).",
+      "UI composer : sélecteur d'orientation (Réglages → Sortie) ; le canevas de design devient vertical automatiquement (ratio out_width/out_height). Basculer paysage↔portrait swappe les dims ; cw↔ccw garde les dims (sens seul). i18n FR/EN. REBUILD IMAGE REQUIS (script.py)."
+    ],
     "Bascule audio MXL (0.16.0)": [
       "Migration MXL Phase 3 : VU-mètres lus depuis le FLUX MXL audio float32 (AudioReader.read_latest, plus de dépack s24be ; 0 dBFS = |1.0|). L'ANC (RP188) était déjà sur flux data MXL. REBUILD IMAGE REQUIS."
     ],

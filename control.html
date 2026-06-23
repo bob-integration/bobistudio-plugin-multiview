@@ -209,6 +209,11 @@
         <h2 id="mw-settings-title" data-i18n="plugin.multiview.settings_title">Sortie &amp; habillage</h2>
         <div class="row">
             <div class="field"><label for="ed_out_format" title="Résolution/cadence de sortie. Vient du réglage système (Formats vidéo) ; param structurel : un changement redéploie le container." data-i18n="plugin.multiview.out_format" data-i18n-title="plugin.multiview.out_format_title">Format de sortie</label><select id="ed_out_format" onchange="onFormatChange()"></select></div>
+            <div class="field"><label for="ed_orientation" title="Mur portrait : on compose en vertical (1080×1920) puis le moteur tourne 90° l'image dans la trame paysage (panneau physiquement incliné). Le flux émis reste 1920×1080. Param structurel : redéploiement." data-i18n="plugin.multiview.orientation" data-i18n-title="plugin.multiview.orientation_title">Orientation</label><select id="ed_orientation" onchange="onOrientationChange()">
+                <option value="landscape" data-i18n="plugin.multiview.orientation_landscape">Paysage</option>
+                <option value="portrait_cw" data-i18n="plugin.multiview.orientation_portrait_cw">Portrait ↻ (horaire)</option>
+                <option value="portrait_ccw" data-i18n="plugin.multiview.orientation_portrait_ccw">Portrait ↺ (anti-horaire)</option>
+            </select></div>
         </div>
         <div class="row">
             <div class="field"><label for="ed_max" data-i18n="plugin.multiview.max_inputs">Max entrées</label><input type="number" id="ed_max" min="1" max="32" onchange="onMaxChange()"></div>
