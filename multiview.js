@@ -439,16 +439,17 @@ function onFormatChange() {
     mwFlash(T('plugin.multiview.format_changed_redeploy'));
 }
 
-// Changement d'orientation : structurel (recrée le flux). Bascule paysage↔portrait → swap des dims
-// du canevas logique ; cw↔ccw → mêmes dims (seul le sens de rotation change).
+// Changement d'orientation : structurel (recrée le flux). Le canevas LOGIQUE doit être « haut »
+// (h>w) en portrait, « large » (w>h) en paysage. On corrige les dims SEULEMENT si elles ne
+// correspondent pas à l'orientation cible → robuste même si l'état persisté était incohérent
+// (ex. orientation perdue par un ancien déploiement éditeur). cw↔ccw : mêmes dims, pas de swap.
 function onOrientationChange() {
     const sel = document.getElementById('ed_orientation');
     if (!sel) return;
     const next = sel.value;
-    const toggling = _mwIsPortrait(editorParams.orientation) !== _mwIsPortrait(next);
     editorParams.orientation = next;
-    if (toggling) {
-        const w = editorParams.out_width, h = editorParams.out_height;
+    const w = editorParams.out_width, h = editorParams.out_height;
+    if (_mwIsPortrait(next) !== (h > w)) {
         editorParams.out_width = h; editorParams.out_height = w;
     }
     resizeCanvas();
@@ -2013,6 +2014,7 @@ async function deployerEditor() {
         shm_out:       editorParams.shm_out,
         out_width:     editorParams.out_width,
         out_height:    editorParams.out_height,
+        orientation:   editorParams.orientation || 'landscape',
         fps:           editorParams.fps,
         scan:          editorParams.scan || 'p',
         border_w:      editorParams.border_w,
