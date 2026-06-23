@@ -1219,6 +1219,7 @@ function canvasMouseDown(e) {
             pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
             selectedOverlay = -1;
             dragMode = 'resize'; dragOverlay = false; dragStart = pos; dragOrigRect = {...f};
+            _setCanvasCursor('nwse-resize');
             return;
         }
         if (pos.x >= f.x && pos.x <= f.x + f.w &&
@@ -1229,6 +1230,7 @@ function canvasMouseDown(e) {
             if (!(isSelected(i) && !e.shiftKey)) toggleSelection(i, e.shiftKey);
             dragMode = 'move'; dragOverlay = false; dragStart = pos; dragOrigRect = {...editorParams.flux_config[primaryIdx()]};
             dragGroupOrig = selectedIdxs.map(j => ({ j, x: editorParams.flux_config[j].x, y: editorParams.flux_config[j].y }));
+            _setCanvasCursor('move');
             dessiner();
             return;
         }
@@ -1266,6 +1268,7 @@ function beginOverlayDrag(hit, pos) {
     dragMode = hit.mode;
     dragStart = pos;
     dragOrigRect = {...editorParams.overlays[hit.i]};
+    _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
     dessiner();
 }
 
@@ -1283,10 +1286,37 @@ function toggleSelection(i, additive) {
     }
 }
 
+// Curseur attendu à une position donnée (hors drag) : coin bas-droite d'une fenêtre/overlay
+// SÉLECTIONNÉ → redimensionnement ; corps → déplacement ; vide → défaut. Mire la logique de
+// canvasMouseDown/hitOverlay pour que l'aspect du curseur corresponde TOUJOURS à l'action réelle.
+function _cursorForPos(pos) {
+    let hit = hitOverlay(pos, 'foreground');
+    if (hit) return hit.mode === 'resize' ? 'nwse-resize' : 'move';
+    const primary = primaryIdx();
+    for (let i = editorParams.flux_config.length - 1; i >= 0; i--) {
+        const f = editorParams.flux_config[i];
+        if (f.hidden) continue;
+        if (i === primary && pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE)
+            return 'nwse-resize';
+        if (pos.x >= f.x && pos.x <= f.x + f.w && pos.y >= f.y && pos.y <= f.y + f.h)
+            return 'move';
+    }
+    hit = hitOverlay(pos, 'background');
+    if (hit) return hit.mode === 'resize' ? 'nwse-resize' : 'move';
+    return 'default';
+}
+
+function _setCanvasCursor(c) {
+    const cv = document.getElementById('ed_canvas');
+    if (cv) cv.style.cursor = c;
+}
+
 function canvasMouseMove(e) {
+    // Hors drag : retour visuel au survol (déplacement vs redimensionnement) pour lever l'ambiguïté.
+    if (!dragMode) { _setCanvasCursor(_cursorForPos(getCanvasPos(e))); return; }
     if (dragOverlay) return overlayMouseMove(e);
     const primary = primaryIdx();
-    if (!dragMode || primary < 0) return;
+    if (primary < 0) return;
     const pos = getCanvasPos(e);
     const dx = pos.x - dragStart.x;
     const dy = pos.y - dragStart.y;
@@ -1354,6 +1384,7 @@ function overlayMouseMove(e) {
 }
 
 function canvasMouseUp() {
+    _setCanvasCursor('default');   // le prochain survol réévaluera (move/resize/défaut)
     if (dragOverlay) {
         dragOverlay = false; dragMode = null; dessiner();
         hotApplyFull();   // résout l'image base64 + hot-apply /overlays (pas de coupure)

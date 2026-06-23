@@ -1,7 +1,10 @@
 {
-  "version": "0.18.0",
+  "version": "0.18.1",
   "date": "2026-06-23",
   "changes": {
+    "Composer : curseur selon l'action (0.18.1)": [
+      "Le curseur du canevas reflète l'action : ↔ redimensionnement (nwse-resize) sur le coin bas-droite d'une fenêtre/overlay sélectionné, ✥ déplacement (move) sur le corps, défaut sur le vide — au survol comme pendant le drag. Lève l'ambiguïté déplacement vs redimensionnement. (Helper _cursorForPos miroir de la logique de hit ; reset au relâchement.)"
+    ],
     "Décompte : alerte couleur en approche de 0 + Ember+ chronos (0.18.0)": [
       "Un overlay horloge de type DÉCOMPTE passe en couleur d'alerte près de 0 : orange à partir de cd_warn_orange s (défaut 10), rouge à partir de cd_warn_red s (défaut 5), et reste rouge à 0. Couleurs configurables (cd_color_orange/cd_color_red) et désactivable par overlay (cd_warn). L'override prime sur la couleur normale et la couleur Tally On.",
       "Moteur : helpers _countdown_remaining/_countdown_color ; _draw_text_overlay accepte color_override ; render_clock_tiles + render_overlays_fg passent l'override ; la signature de cache per-frame des horloges inclut la couleur d'alerte (re-rendu au franchissement de seuil même si le texte affiché est identique).",

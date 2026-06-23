@@ -18,7 +18,7 @@
     "memory": 2048,
     "pin": true
   },
-  "version": "0.18.0",
+  "version": "0.18.1",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
