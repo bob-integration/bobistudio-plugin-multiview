@@ -1706,8 +1706,8 @@ def _format_clock(ov, now):
         elapsed = _chrono_elapsed(ov, now)
         if src == "countdown":
             val = max(0.0, _parse_tc_seconds(ov.get("chrono_start")) - elapsed)
-        else:
-            val = elapsed
+        else:  # chrono : compte À PARTIR de la valeur de départ (0 par défaut)
+            val = _parse_tc_seconds(ov.get("chrono_start")) + elapsed
     else:  # ptp : heure du jour (CLOCK_REALTIME disciplinée phc2sys) + offset signé
         val = (now + int(_overlay_get(ov, "offset_ms", 0)) / 1000.0) % 86400
     hh = int(val // 3600)
@@ -2164,8 +2164,10 @@ class MvControlHandler(BaseHTTPRequestHandler):
                 st["running"] = False; st["since"] = None
                 ok = True
             elif action == "reset":
+                # Raz = retour à la valeur de départ ET arrêt (jamais de relance auto).
                 st["base"] = 0.0
-                st["since"] = now if st["running"] else None
+                st["running"] = False
+                st["since"] = None
                 ok = True
         self.send_response(200 if ok else 400)
         self.send_header("Content-Type", "application/json"); self.end_headers()

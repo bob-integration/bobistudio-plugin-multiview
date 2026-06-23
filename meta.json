@@ -1,7 +1,12 @@
 {
-  "version": "0.18.1",
+  "version": "0.18.2",
   "date": "2026-06-23",
   "changes": {
+    "Chronos / décomptes : raz, départ chrono, report Ember+ (0.18.2)": [
+      "Raz d'un chrono/décompte = retour à la valeur de départ ET arrêt — ne relance plus automatiquement (script `_do_chrono` reset : running=False ; bouton éditeur aligne aussi l'état local).",
+      "Un CHRONO (compte ascendant) part désormais de la valeur de départ (chrono_start) au lieu de toujours partir de 00:00:00 (le décompte l'utilisait déjà).",
+      "Ember+ : après un SetValue accepté (départ, texte d'overlay, marche/raz), le provider renvoie un report CIBLÉ du paramètre modifié à l'émetteur → l'arbre de gadgets rafraîchit enfin sa valeur affichée (le broadcast full-tree débouncé ne suffisait pas). Raz Ember+ persiste aussi marche=false. (Provider emberplus 0.3.1.)"
+    ],
     "Composer : curseur selon l'action (0.18.1)": [
       "Le curseur du canevas reflète l'action : ↔ redimensionnement (nwse-resize) sur le coin bas-droite d'une fenêtre/overlay sélectionné, ✥ déplacement (move) sur le corps, défaut sur le vide — au survol comme pendant le drag. Lève l'ambiguïté déplacement vs redimensionnement. (Helper _cursorForPos miroir de la logique de hit ; reset au relâchement.)"
     ],

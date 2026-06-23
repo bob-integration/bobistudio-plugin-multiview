@@ -1817,6 +1817,7 @@ function chronoAction(action) {
     if (!o || o.kind !== 'clock') return;
     if (action === 'start') o.chrono_running = true;
     if (action === 'stop')  o.chrono_running = false;
+    if (action === 'reset') o.chrono_running = false;  // raz = retour départ + arrêt
     fetch(`/api/containers/${editorVmid}/plugin/chrono`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ id: o.id, action })
