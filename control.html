@@ -173,6 +173,13 @@
                 <button type="button" class="btn" onclick="chronoAction('stop')" data-i18n="plugin.multiview.chrono_btn_stop">⏸ Arrêter</button>
                 <button type="button" class="btn" onclick="chronoAction('reset')" data-i18n="plugin.multiview.chrono_btn_reset">⟲ Réinitialiser</button>
             </div>
+            <div class="mw-editor-row" id="ov_cdwarn_grp" hidden>
+                <label class="field field-inline" for="ov_cd_warn" title="Décompte : passe en couleur d'alerte en approchant de 0"><input type="checkbox" class="ios-toggle" id="ov_cd_warn" onchange="onOverlayChange()"> <span data-i18n="plugin.multiview.cd_warn">Alerte fin de décompte</span></label>
+                <div class="field field-narrow"><label for="ov_cd_warn_orange" data-i18n="plugin.multiview.cd_warn_orange">Orange à (s)</label><input type="number" id="ov_cd_warn_orange" min="0" max="3600" onchange="onOverlayChange()"></div>
+                <div class="field field-color"><label for="ov_cd_color_orange" data-i18n="plugin.multiview.cd_color_orange">Couleur orange</label><input type="color" id="ov_cd_color_orange" onchange="onOverlayChange()"></div>
+                <div class="field field-narrow"><label for="ov_cd_warn_red" data-i18n="plugin.multiview.cd_warn_red">Rouge à (s)</label><input type="number" id="ov_cd_warn_red" min="0" max="3600" onchange="onOverlayChange()"></div>
+                <div class="field field-color"><label for="ov_cd_color_red" data-i18n="plugin.multiview.cd_color_red">Couleur rouge</label><input type="color" id="ov_cd_color_red" onchange="onOverlayChange()"></div>
+            </div>
             <!-- Image -->
             <div class="mw-editor-row ov-grp" data-kind="image">
                 <label class="btn" for="ov_image_file" style="cursor:pointer" data-i18n="plugin.multiview.import_image">Importer une image…</label>

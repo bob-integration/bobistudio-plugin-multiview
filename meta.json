@@ -1,7 +1,13 @@
 {
-  "version": "0.17.0",
+  "version": "0.18.0",
   "date": "2026-06-23",
   "changes": {
+    "Décompte : alerte couleur en approche de 0 + Ember+ chronos (0.18.0)": [
+      "Un overlay horloge de type DÉCOMPTE passe en couleur d'alerte près de 0 : orange à partir de cd_warn_orange s (défaut 10), rouge à partir de cd_warn_red s (défaut 5), et reste rouge à 0. Couleurs configurables (cd_color_orange/cd_color_red) et désactivable par overlay (cd_warn). L'override prime sur la couleur normale et la couleur Tally On.",
+      "Moteur : helpers _countdown_remaining/_countdown_color ; _draw_text_overlay accepte color_override ; render_clock_tiles + render_overlays_fg passent l'override ; la signature de cache per-frame des horloges inclut la couleur d'alerte (re-rendu au franchissement de seuil même si le texte affiché est identique).",
+      "UI éditeur : groupe « Alerte fin de décompte » (toggle + seuils orange/rouge + sélecteurs de couleur), visible uniquement en source Décompte. i18n FR/EN.",
+      "Ember+ : nouveau sous-arbre « Chronos / décomptes » (1.<vmid>.103.<idx>) exposant le réglage de départ (string RW) et les déclenchements marche (bool RW start/stop) + raz (bool RW reset) — câblé sur :8082/chrono et :8082/overlays. (Provider emberplus 0.3.0.)"
+    ],
     "Multiviews verticaux (portrait) — option par-mur (0.17.0)": [
       "Nouveau param `orientation` (landscape / portrait_cw / portrait_ccw) PAR multiview. En portrait, le mur se COMPOSE en vertical (canevas logique out_width×out_height, ex. 1080×1920 — fenêtres/labels arrangés à la verticale) puis le moteur TOURNE le résultat de 90° dans une trame PAYSAGE 1920×1080 juste avant l'émission. Pour un panneau 1920×1080 physiquement incliné 90° : il ré-affiche droit. Le flux émis (et tout l'aval : 2110/TX, NMOS, câblage, gating de format, preview) reste 1920×1080 — rien à changer en aval.",
       "Moteur (script.py) : OUTPUT_W/OUTPUT_H = swap(out_width,out_height) en portrait ; out_writer + OUT_FRAME_SIZE aux dims de sortie ; `_rotate_out` tourne Y/U/V de 90° (np.rot90, sens cw/ccw). La chroma 4:2:2/4:2:0 ne se tourne pas directement (axes de sous-échantillonnage permutés) → upsample 4:4:4, rotation, re-sous-échantillonnage (formes correctes validées 422/420/444). Compositing/overlays/fabric INCHANGÉS (canevas logique). Progressif paysage strictement inchangé (rotation court-circuitée).",

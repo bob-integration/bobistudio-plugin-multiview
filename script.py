@@ -1499,10 +1499,10 @@ def _overlay_active(ov):
         return False
     return _tsl_index_dominant(ti) != "off"
 
-def _draw_text_overlay(d, ov, text):
+def _draw_text_overlay(d, ov, text, color_override=None):
     x, y, w, h = _overlay_geom(ov)
     active = _overlay_active(ov)
-    col = _hex_rgb(ov.get("color_on") if active else ov.get("color"), (255, 255, 255))
+    col = _hex_rgb(color_override or (ov.get("color_on") if active else ov.get("color")), (255, 255, 255))
     bg_hex = (ov.get("bg_color_on") if active else ov.get("bg_color")) or ""
     bg_op = max(0, min(100, int(_overlay_get(ov, "bg_opacity", 100))))
     pad = max(2, h // 12)
@@ -1579,6 +1579,27 @@ def _chrono_elapsed(ov, now):
     if st["running"] and st["since"] is not None:
         base += now - st["since"]
     return base
+
+def _countdown_remaining(ov, now):
+    """Secondes restantes d'un décompte, ou None si l'overlay n'est pas un décompte."""
+    if (ov.get("clock_source") or "ptp") != "countdown":
+        return None
+    return max(0.0, _parse_tc_seconds(ov.get("chrono_start")) - _chrono_elapsed(ov, now))
+
+def _countdown_color(ov, now):
+    """Couleur d'ALERTE d'un décompte proche de 0 (hex), ou None pour garder la couleur normale.
+    Orange de cd_warn_orange→cd_warn_red s, rouge en deçà (terminé = rouge). Activé par cd_warn
+    (défaut on). Les seuils par défaut suivent la demande : orange à 10 s, rouge à 5 s."""
+    rem = _countdown_remaining(ov, now)
+    if rem is None or not _as_bool(_overlay_get(ov, "cd_warn", True)):
+        return None
+    t_red    = float(_overlay_get(ov, "cd_warn_red", 5) or 0)
+    t_orange = float(_overlay_get(ov, "cd_warn_orange", 10) or 0)
+    if rem <= t_red:
+        return _overlay_get(ov, "cd_color_red", "#ff3030") or "#ff3030"
+    if rem <= t_orange:
+        return _overlay_get(ov, "cd_color_orange", "#ff9000") or "#ff9000"
+    return None
 
 # ── Horloge source ANC : timecode embarqué (RP188/ATC) lu du flux ANC (2110-40) ──
 # MXL-aligné : l'ANC est un FLUX DE DONNÉES séparé (futur ST 2038), pas un champ de l'en-tête
@@ -1775,7 +1796,7 @@ def render_overlays_fg(now):
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     d = ImageDraw.Draw(img, "RGBA")
     for ov in clk:
-        _draw_text_overlay(d, ov, _format_clock(ov, now))
+        _draw_text_overlay(d, ov, _format_clock(ov, now), color_override=_countdown_color(ov, now))
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def render_clock_tiles(now):
@@ -1802,7 +1823,7 @@ def render_clock_tiles(now):
         tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
         dd = ImageDraw.Draw(tile, "RGBA")
         ovs = dict(ov); ovs["x"] = x - bx0; ovs["y"] = y - by0   # même horloge, coords LOCALES à la tuile
-        _draw_text_overlay(dd, ovs, _format_clock(ov, now))
+        _draw_text_overlay(dd, ovs, _format_clock(ov, now), color_override=_countdown_color(ov, now))
         oy, ou, ovv, oa, oa2 = rgba_to_yuv(tile)
         tiles.append((bx0, by0, bx1, by1, oy, ou, ovv, oa, oa2))
     return tiles or None
@@ -2433,7 +2454,7 @@ while True:
         # changement de VALEUR (signature = chaînes formatées, déterministe → 1×/s sans le champ images
         # FF) ; le blend, lui, se fait par PETITE bbox d'horloge à chaque trame (au lieu de la bbox-UNION
         # quasi plein écran quand les horloges sont dispersées → gros gain de blend per-frame).
-        _pf_sig = tuple(_format_clock(ov, now) for ov in OVERLAYS
+        _pf_sig = tuple((_format_clock(ov, now), _countdown_color(ov, now)) for ov in OVERLAYS
                         if (not ov.get("hidden")) and ov.get("kind") == "clock")
         if _pf_sig != _pf_cache_sig:
             _pf_cache_sig = _pf_sig

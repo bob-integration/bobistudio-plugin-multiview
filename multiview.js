@@ -1469,6 +1469,8 @@ function newOverlay(kind) {
         clock_source: 'ptp', show_hh: true, show_mm: true, show_ss: true, show_ff: false,
         offset_ms: 0, chrono_start: '00:00:00', chrono_running: false,
         tc_source: 0,   // index d'entrée vidéo dont on lit le timecode ANC
+        cd_warn: true, cd_warn_orange: 10, cd_warn_red: 5,
+        cd_color_orange: '#ff9000', cd_color_red: '#ff3030',
         bg_color: '#000000', bg_opacity: 60 });
     if (kind === 'image') Object.assign(o, { image_b64: '', image_name: '', fit: 'contain', opacity: 100 });
     return o;
@@ -1513,7 +1515,12 @@ function serializeOverlays() {
             show_ss: o.show_ss !== false, show_ff: !!o.show_ff,
             offset_ms: parseInt(o.offset_ms) || 0,
             chrono_start: o.chrono_start || '00:00:00', chrono_running: !!o.chrono_running,
-            tc_source: parseInt(o.tc_source) || 0 });
+            tc_source: parseInt(o.tc_source) || 0,
+            cd_warn: o.cd_warn !== false,
+            cd_warn_orange: parseInt(o.cd_warn_orange ?? 10),
+            cd_warn_red: parseInt(o.cd_warn_red ?? 5),
+            cd_color_orange: o.cd_color_orange || '#ff9000',
+            cd_color_red: o.cd_color_red || '#ff3030' });
         if (o.kind === 'image') Object.assign(base, {
             image_b64: o.image_b64 || '', image_name: o.image_name || '',
             fit: o.fit || 'contain', opacity: clamp(o.opacity, 100) });
@@ -1671,6 +1678,11 @@ function refreshOverlayPanel() {
     _ovSetChk('ov_show_ff', !!o.show_ff);
     _ovSetVal('ov_offset_ms', o.offset_ms || 0);
     _ovSetVal('ov_chrono_start', o.chrono_start || '00:00:00');
+    _ovSetChk('ov_cd_warn', o.cd_warn !== false);
+    _ovSetVal('ov_cd_warn_orange', o.cd_warn_orange ?? 10);
+    _ovSetVal('ov_cd_warn_red', o.cd_warn_red ?? 5);
+    _ovSetVal('ov_cd_color_orange', o.cd_color_orange || '#ff9000');
+    _ovSetVal('ov_cd_color_red', o.cd_color_red || '#ff3030');
     _ovFillTcSources(o.tc_source);
     _ovSetVal('ov_layer', o.layer || 'foreground');
     _ovSetVal('ov_fit', o.fit || 'contain');
@@ -1680,6 +1692,7 @@ function refreshOverlayPanel() {
     const sub = (id, on) => { const e = document.getElementById(id); if (e) e.hidden = !on; };
     sub('ov_text_tsl_grp', o.kind === 'text' && o.text_source === 'tsl');
     sub('ov_chrono_grp',   o.kind === 'clock' && (o.clock_source === 'chrono' || o.clock_source === 'countdown'));
+    sub('ov_cdwarn_grp',   o.kind === 'clock' && o.clock_source === 'countdown');
     sub('ov_ptp_grp',      o.kind === 'clock' && o.clock_source === 'ptp');
     sub('ov_anc_grp',      o.kind === 'clock' && o.clock_source === 'anc');
 }
@@ -1725,6 +1738,13 @@ function onOverlayChange() {
         o.offset_ms = parseInt(g('ov_offset_ms').value) || 0;
         o.chrono_start = g('ov_chrono_start').value || '00:00:00';
         o.tc_source = parseInt(g('ov_tc_source').value) || 0;
+        o.cd_warn = g('ov_cd_warn').checked;
+        o.cd_warn_orange = parseInt(g('ov_cd_warn_orange').value);
+        if (isNaN(o.cd_warn_orange)) o.cd_warn_orange = 10;
+        o.cd_warn_red = parseInt(g('ov_cd_warn_red').value);
+        if (isNaN(o.cd_warn_red)) o.cd_warn_red = 5;
+        o.cd_color_orange = g('ov_cd_color_orange').value;
+        o.cd_color_red = g('ov_cd_color_red').value;
     }
     if (o.kind === 'image') {
         o.layer = g('ov_layer').value;
