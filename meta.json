@@ -1,7 +1,10 @@
 {
-  "version": "0.18.2",
-  "date": "2026-06-23",
+  "version": "0.18.3",
+  "date": "2026-06-25",
   "changes": {
+    "Entrées entrelacées champ-natif → bob progressif stable (0.18.3)": [
+      "Chantier « 1 grain = 1 champ » : les entrées (proxies pyramide / sources) sont désormais des CHAMPS (½ hauteur). Le multiview sort TOUJOURS en progressif (mur de monitoring) : un champ scalé à la tuile (resize_plane) = désentrelacement par bob, suffisant pour un preview. On VERROUILLE la parité sur le champ HAUT (index pair) : sans ça get_latest alterne top/bottom (50/s) → décalage vertical d'½ ligne entre champs scalés → scintillement des bords ; verrou top = bob STABLE à la cadence trame. open_source porte le flag `interlaced` (lu de reader.format()). Aucune autre géométrie touchée (sortie progressive inchangée)."
+    ],
     "Chronos / décomptes : raz, départ chrono, report Ember+ (0.18.2)": [
       "Raz d'un chrono/décompte = retour à la valeur de départ ET arrêt — ne relance plus automatiquement (script `_do_chrono` reset : running=False ; bouton éditeur aligne aussi l'état local).",
       "Un CHRONO (compte ascendant) part désormais de la valeur de départ (chrono_start) au lieu de toujours partir de 00:00:00 (le décompte l'utilisait déjà).",

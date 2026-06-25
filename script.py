@@ -522,9 +522,13 @@ def open_source(cfg):
         fmt = rd.format()
         if not fmt:
             rd.close(); return None
+        # ENTRELACÉ NATIF : un grain = 1 CHAMP (½ hauteur ; in_h = hauteur de CHAMP via format()).
+        # Le multiview sort TOUJOURS en PROGRESSIF (mur de monitoring) → on « bobe » : un champ scalé
+        # à la hauteur de tuile (resize_plane) = désentrelacement par champ, suffisant pour un preview.
         in_w, in_h = fmt["width"], fmt["height"]
         frame_size = (in_w * in_h + 2 * (in_w // _CW) * (in_h // _CH)) * _BPS
-        return {{"reader": rd, "in_w": in_w, "in_h": in_h, "frame_size": frame_size}}
+        return {{"reader": rd, "in_w": in_w, "in_h": in_h, "frame_size": frame_size,
+                 "interlaced": bool(fmt.get("interlaced"))}}
     except Exception:
         return None
 
@@ -2353,6 +2357,14 @@ while True:
             in_h    = src["in_h"]
             frame_size = src["frame_size"]
             got = rd.get_latest()
+            # ENTRELACÉ : on VERROUILLE la PARITÉ sur le champ HAUT (index pair). Sans ça, get_latest
+            # renvoie alternativement top/bottom (50/s) → scalés à la tuile, les deux champs ont un
+            # décalage vertical d'½ ligne → SCINTILLEMENT des bords horizontaux. Un seul champ (top) →
+            # bob progressif STABLE à la cadence trame (25/s), suffisant pour un mur de monitoring.
+            if got is not None and src.get("interlaced") and (got[0] % 2 == 1):
+                _gt = rd.get(got[0] - 1)        # champ haut apparié (déjà commité → retour immédiat)
+                if _gt is not None:
+                    got = _gt
             if got is None:        # flux ouvert mais aucun grain encore lisible
                 canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
                 if SHOW_NO_SIGNAL:
