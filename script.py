@@ -10,6 +10,34 @@ from PIL import Image, ImageDraw, ImageFont
 import bobimxl   # migration MXL Phase 1 : entrées vidéo+ANC via Reader, sortie via Writer
 # (mmap/struct conservés : audio VU encore en legacy — différé jusqu'au producteur audio MXL).
 
+# ─── Accélération GPU (cupy) auto-détectée ───────────────────────────────────
+# `xp` = backend de calcul du HOT PATH compositing (lecture plans → resize → blend) : cupy si un
+# GPU NVIDIA est visible (image bobi-compute-gpu + `docker run --gpus`), sinon numpy. MÊME script.py
+# CPU/GPU (cf. chantier multiview-GPU). L'habillage PIL reste HÔTE/numpy (caché, optimisé en tuiles) ;
+# seules ses tuiles YUV résultantes sont uploadées pour le blend. Repli numpy = OCTET-IDENTIQUE à
+# avant (xp is np). Le gain GPU EXIGE le transfert épinglé+groupé (banc Phase 0 : sinon régression).
+try:
+    import cupy as cp
+    cp.cuda.runtime.getDeviceCount()      # lève si aucun device (pas de --gpus / image CPU)
+    xp = cp
+    GPU = True
+    try:
+        _GPU_NAME = cp.cuda.runtime.getDeviceProperties(0)["name"].decode("utf-8", "replace")
+    except Exception:
+        _GPU_NAME = "GPU"
+except Exception:
+    xp = np
+    GPU = False
+    _GPU_NAME = None
+
+def _to_xp(a):
+    """numpy hôte → tableau backend (device si GPU, identité si CPU)."""
+    return xp.asarray(a) if GPU else a
+
+def _from_xp(a):
+    """tableau backend → numpy hôte (download si GPU, identité si CPU)."""
+    return cp.asnumpy(a) if GPU else a
+
 # ─── Latence : Δ ts_out - ts_in_PiP (rolling avg par input) ────
 class RollingMs:
     def __init__(self, n=30):
@@ -93,14 +121,16 @@ def _rotate_out(cy, cu, cv):
     # sous-échantillonnage permutent) : on upsample en 4:4:4, on tourne, on re-sous-échantillonne
     # vers la chroma cible → formes correctes (Y OUTPUT_H×OUTPUT_W, U/V OUTPUT_H//_CH × OUTPUT_W//_CW).
     # np.rot90 : k=1 = sens anti-horaire (CCW), k=-1 = horaire (CW). Vue → ascontiguousarray.
+    # _xp = backend du canvas (cupy si GPU) → rotation 100 % en VRAM (xp=np en CPU, inchangé).
+    _xp = cp if (GPU and isinstance(cy, cp.ndarray)) else np
     k = 1 if ORIENTATION == "portrait_ccw" else -1
-    ry = np.ascontiguousarray(np.rot90(cy, k))
+    ry = _xp.ascontiguousarray(_xp.rot90(cy, k))
     if _CW == 1 and _CH == 1:                    # 4:4:4 : rotation directe des 3 plans
-        return ry, np.ascontiguousarray(np.rot90(cu, k)), np.ascontiguousarray(np.rot90(cv, k))
-    uf = np.rot90(np.repeat(np.repeat(cu, _CH, axis=0), _CW, axis=1), k)   # → 4:4:4 paysage
-    vf = np.rot90(np.repeat(np.repeat(cv, _CH, axis=0), _CW, axis=1), k)
-    ru = np.ascontiguousarray(uf[::_CH, ::_CW])  # re-sous-échantillonne à la chroma cible
-    rv = np.ascontiguousarray(vf[::_CH, ::_CW])
+        return ry, _xp.ascontiguousarray(_xp.rot90(cu, k)), _xp.ascontiguousarray(_xp.rot90(cv, k))
+    uf = _xp.rot90(_xp.repeat(_xp.repeat(cu, _CH, axis=0), _CW, axis=1), k)   # → 4:4:4 paysage
+    vf = _xp.rot90(_xp.repeat(_xp.repeat(cv, _CH, axis=0), _CW, axis=1), k)
+    ru = _xp.ascontiguousarray(uf[::_CH, ::_CW])  # re-sous-échantillonne à la chroma cible
+    rv = _xp.ascontiguousarray(vf[::_CH, ::_CW])
     return ry, ru, rv
 HEADER_SIZE    = 64
 RING_SIZE   = CONFIG.get("shm_video_ring", 10)
@@ -382,7 +412,8 @@ _tsl_slots = {{}}
 _tsl_combined = {{}}         # index → True si le contrôleur envoie des paquets combinés
 TSL_SLOT_TTL_FACTOR = 2.5   # TTL = factor × intervalle keepalive mesuré
 TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
-metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None}}
+metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
+           "gpu": GPU, "gpu_name": _GPU_NAME}}   # GPU = compositing accéléré cupy (sinon numpy CPU)
 
 def _compute_proxy_needs():
     """Besoins de tailles par source câblée pour la pyramide, AVEC le nombre de tuiles qui
@@ -542,9 +573,12 @@ def resize_plane(plane, target_h, target_w):
     # Sinon (ratio non entier / upscale), repli sur le gather générique.
     if from_h % target_h == 0 and from_w % target_w == 0:
         return plane[::from_h // target_h, ::from_w // target_w]
-    row_idx = (np.arange(target_h) * from_h / target_h).astype(int)
-    col_idx = (np.arange(target_w) * from_w / target_w).astype(int)
-    return plane[np.ix_(row_idx, col_idx)]
+    # Gather (ratio non entier/upscale) : indices via le MÊME backend que `plane` (xp) — un index
+    # numpy sur un tableau cupy lèverait. xp=np en CPU → comportement inchangé (octet-identique).
+    _xp = cp if (GPU and isinstance(plane, cp.ndarray)) else np
+    row_idx = (_xp.arange(target_h) * from_h / target_h).astype(int)
+    col_idx = (_xp.arange(target_w) * from_w / target_w).astype(int)
+    return plane[_xp.ix_(row_idx, col_idx)]
 
 def rgba_to_yuv(img):
     """Image PIL RGBA → (Y full-res, U sub 2x2, V sub 2x2, alpha full, alpha sub 2x2)."""
@@ -587,6 +621,50 @@ def blend_pre(dst, inv_a, src_a):
     ~2× moins de passes mémoire que blend() (plus de (255−α), src·α, ni cast d'alpha). Résultat
     numériquement IDENTIQUE à blend() (vérifié 8 et 10 bits)."""
     return ((dst.astype(_ACC) * inv_a + src_a) // 255).astype(_NP_DT)
+
+# ─── Placement groupé des tuiles vidéo (CPU direct / GPU upload épinglé groupé) ───────────────
+_pin = {{"host": None, "dev": None, "cap": 0}}   # buffers persistants GPU (staging épinglé entrées + device)
+_outpin = {{"buf": None}}                        # buffer hôte ÉPINGLÉ persistant pour le download sortie (GPU)
+
+def _place_batch(cy, cu, cv, batch):
+    """Resize + place les tuiles vidéo collectées dans le canvas (cy/cu/cv, backend xp).
+    CPU : resize numpy direct (octet-identique à l'inline d'origine). GPU : UN seul upload H2D des
+    plans collectés via un buffer hôte ÉPINGLÉ persistant (1 H2D/trame — sinon régression, banc
+    Phase 0), puis resize+place en VRAM. Tuiles disjointes → l'ordre de placement n'importe pas."""
+    if not batch:
+        return
+    if not GPU:
+        for (sy, su, sv, vy, vh, vx, vw) in batch:
+            cy[vy:vy+vh, vx:vx+vw] = resize_plane(sy, vh, vw)
+            cu[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(su, vh//_CH, vw//_CW)
+            cv[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(sv, vh//_CH, vw//_CW)
+        return
+    total = 0
+    for it in batch:
+        total += it[0].size + it[1].size + it[2].size
+    if _pin["cap"] < total:                     # (ré)alloue le staging épinglé + device (croissance ×2)
+        cap = max(total, (_pin["cap"] * 2) or total)
+        _pin["host"] = np.frombuffer(cp.cuda.alloc_pinned_memory(cap * _BPS), dtype=_NP_DT, count=cap)
+        _pin["dev"] = cp.empty(cap, dtype=_NP_DT)
+        _pin["cap"] = cap
+    host = _pin["host"]; dev = _pin["dev"]
+    off = 0; meta = []
+    for (sy, su, sv, vy, vh, vx, vw) in batch:   # concatène les plans dans le buffer hôte épinglé
+        ny, nu = sy.size, su.size
+        host[off:off+ny] = sy.ravel()
+        host[off+ny:off+ny+nu] = su.ravel()
+        host[off+ny+nu:off+ny+2*nu] = sv.ravel()
+        meta.append((off, sy.shape, su.shape, sv.shape, vy, vh, vx, vw))
+        off += ny + 2 * nu
+    dev[:total].set(host[:total])                # UN seul H2D (épinglé → device)
+    for (o, shy, shu, shv, vy, vh, vx, vw) in meta:
+        ny = shy[0] * shy[1]; nu = shu[0] * shu[1]
+        gy = dev[o:o+ny].reshape(shy)
+        gu = dev[o+ny:o+ny+nu].reshape(shu)
+        gv = dev[o+ny+nu:o+ny+2*nu].reshape(shv)
+        cy[vy:vy+vh, vx:vx+vw] = resize_plane(gy, vh, vw)
+        cu[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(gu, vh//_CH, vw//_CW)
+        cv[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(gv, vh//_CH, vw//_CW)
 
 # ─── Rendu d'overlay (PIL) ───────────────────────────────────
 
@@ -2349,21 +2427,24 @@ while True:
         overlay_dirty.clear()
         _chrome_dirty = True
         if overlay_bg_layer is not None:
+            # _base pré-blendé RÉSIDENT BACKEND (device si GPU) : uploadé une seule fois à la re-bake
+            # (rare), la boucle par-trame n'en fait qu'une copie. _to_xp uploade les plans d'overlay.
             _oby, _obu, _obv, _oba, _oba2 = overlay_bg_layer
-            _base_y = blend(np.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT), _oby, _oba)
-            _base_u = blend(np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _obu, _oba2)
-            _base_v = blend(np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _obv, _oba2)
+            _base_y = blend(xp.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT), _to_xp(_oby), _to_xp(_oba))
+            _base_u = blend(xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _to_xp(_obu), _to_xp(_oba2))
+            _base_v = blend(xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _to_xp(_obv), _to_xp(_oba2))
         else:
             _base_y = _base_u = _base_v = None
 
-    # Canvas de la trame : COPIE du base pré-blendé (fond) si présent, sinon neutre (cas sans fond,
-    # inchangé/rapide). Une copie d'un buffer existant est ~1 ms vs ~30 ms de blend plein écran.
+    # Canvas de la trame (RÉSIDENT BACKEND : VRAM si GPU) : COPIE du base pré-blendé (fond) si présent,
+    # sinon neutre (cas sans fond, inchangé/rapide). Une copie d'un buffer existant est ~1 ms vs ~30 ms.
     if _base_y is not None:
         canvas_y = _base_y.copy(); canvas_u = _base_u.copy(); canvas_v = _base_v.copy()
     else:
-        canvas_y = np.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT)
-        canvas_u = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
-        canvas_v = np.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
+        canvas_y = xp.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT)
+        canvas_u = xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
+        canvas_v = xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
+    _gpu_batch = []   # entrées lues cette trame : (src_y,src_u,src_v numpy, géométrie) → upload groupé
 
     for i, cfg in enumerate(_fc):
         if cfg.get("hidden"):
@@ -2448,18 +2529,18 @@ while True:
                                   dtype=_NP_DT).reshape(in_h//_CH, in_w//_CW)
             src_v = np.frombuffer(bytes(src_view[_yb + _uvb:_yb + 2 * _uvb]),
                                   dtype=_NP_DT).reshape(in_h//_CH, in_w//_CW)
-
-            dst_y = resize_plane(src_y, vh,      video_w)
-            dst_u = resize_plane(src_u, vh//_CH, video_w//_CW)
-            dst_v = resize_plane(src_v, vh//_CH, video_w//_CW)
-
-            canvas_y[vy:vy+vh,                     video_x:video_x+video_w]                  = dst_y
-            canvas_u[vy//_CH:vy//_CH+vh//_CH,      video_x//_CW:video_x//_CW+video_w//_CW]   = dst_u
-            canvas_v[vy//_CH:vy//_CH+vh//_CH,      video_x//_CW:video_x//_CW+video_w//_CW]   = dst_v
+            # On COLLECTE (plans numpy depuis le shm + géométrie de destination) au lieu de
+            # resize+place inline. Le placement se fait APRÈS la boucle : en GPU, un seul upload
+            # GROUPÉ épinglé des plans collectés (1 H2D/trame, sinon le GPU régresse — banc Phase 0) ;
+            # en CPU, simple report (resize+place identiques, tuiles disjointes → octet-identique).
+            _gpu_batch.append((src_y, src_u, src_v, vy, vh, video_x, video_w))
         except Exception:
             canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
             if SHOW_NO_SIGNAL:
                 _statuses.append((i, "nosignal", "", None))
+
+    # Placement des tuiles vidéo collectées : 1 upload GPU groupé épinglé (ou resize numpy direct en CPU).
+    _place_batch(canvas_y, canvas_u, canvas_v, _gpu_batch)
 
     # Publication du monitoring proxy de cette frame (swap de référence = atomique pour le lecteur).
     _proxy_usage_latest = _pu
@@ -2507,9 +2588,11 @@ while True:
                 # Opérandes de blend pré-calculés sur la BBOX (statiques jusqu'au prochain changement) :
                 # inv_a=(255−α) et src_a=src·α par plan (Y, puis U/V via l'alpha sous-échantillonnée).
                 _cy, _cu, _cv, _ca, _ca2 = rgba_to_yuv(_ch.crop((bx0, by0, bx1, by1)))
+                # Opérandes UPLOADÉS au backend (device si GPU) UNE fois ici (chrome caché, re-bake rare)
+                # → le blend_pre par-trame reste 100 % en VRAM. _to_xp = identité en CPU (inchangé).
                 _chrome_pre = (bx0, by0, bx1, by1,
-                               255 - _ca.astype(_ACC),  _cy.astype(_ACC) * _ca,
-                               255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2)
+                               _to_xp(255 - _ca.astype(_ACC)),  _to_xp(_cy.astype(_ACC) * _ca),
+                               _to_xp(255 - _ca2.astype(_ACC)), _to_xp(_cu.astype(_ACC) * _ca2), _to_xp(_cv.astype(_ACC) * _ca2))
             _chrome_dirty = False
 
         # Habillage = chrome STATIQUE (caché) + VU-mètres (tuiles per-frame) + horloges (cachées).
@@ -2544,6 +2627,8 @@ while True:
             if not _src_tiles:
                 continue
             for (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) in _src_tiles:
+                # Petites tuiles per-frame : uploadées au backend pour le blend en VRAM (_to_xp=identité CPU).
+                _oy, _ou, _ov, _oa, _oa2 = (_to_xp(_oy), _to_xp(_ou), _to_xp(_ov), _to_xp(_oa), _to_xp(_oa2))
                 canvas_y[by0:by1, bx0:bx1] = blend(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
                 cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
                 canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
@@ -2555,11 +2640,20 @@ while True:
         _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
         if _PORTRAIT:                            # compose en portrait → tourne 90° vers la trame paysage
             canvas_y, canvas_u, canvas_v = _rotate_out(canvas_y, canvas_u, canvas_v)
-        out_frame = np.concatenate([canvas_y.flatten(), canvas_u.flatten(), canvas_v.flatten()])
+        out_frame = xp.concatenate([canvas_y.ravel(), canvas_u.ravel(), canvas_v.ravel()])
         # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). En genlock-grille,
         # l'index tai vient du Writer ; en input-locked/libre, compteur interne du Writer.
         _gidx, _gi_o, _vw_o = out_writer.open_grain()
-        _vw_o[:OUT_FRAME_SIZE] = out_frame.view(np.uint8)
+        if GPU:
+            # Download D2H ÉPINGLÉ (.get(out=pinned), rapide) puis copie vers la vue grain. Un .get
+            # direct dans le grain (non épinglé) serait ~4× plus lent (banc Phase 0 : dl 5,8→1,3 ms).
+            _n = out_frame.size
+            if _outpin["buf"] is None or _outpin["buf"].size < _n:
+                _outpin["buf"] = np.frombuffer(cp.cuda.alloc_pinned_memory(_n * _BPS), dtype=_NP_DT, count=_n)
+            out_frame.get(out=_outpin["buf"][:_n])
+            _vw_o[:OUT_FRAME_SIZE] = _outpin["buf"][:_n].view(np.uint8)
+        else:
+            _vw_o[:OUT_FRAME_SIZE] = out_frame.view(np.uint8)
         out_writer.commit(_gi_o)
         ts_out = time.time_ns()
         # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.

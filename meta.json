@@ -1,7 +1,12 @@
 {
-  "version": "0.18.5",
-  "date": "2026-06-25",
+  "version": "0.19.0",
+  "date": "2026-06-26",
   "changes": {
+    "Compositing accéléré GPU (cupy) — auto-détecté, octet-identique au CPU (0.19.0)": [
+      "Le HOT PATH du compositing (lecture des plans YUV → resize des tuiles → blend chrome/VU/horloges → assemblage de la trame) tourne désormais sur GPU NVIDIA via cupy quand l'image GPU (bobi-compute-gpu) et `docker run --gpus` sont présents, sinon sur numpy (CPU) — MÊME script.py. Abstraction `xp` auto-détectée (cupy si un device est visible, sinon numpy) ; repli CPU OCTET-IDENTIQUE à 0.18.5 (vérifié : resize entier/non-entier + blend //255, uint8 et uint16). Le canvas est résident en VRAM toute la trame ; l'habillage PIL reste hôte (caché/optimisé), seules ses tuiles YUV sont uploadées pour le blend.",
+      "Transfert host↔device optimisé (EXIGENCE du gain, cf. banc Phase 0 : un transfert naïf régresse sous le CPU) : les plans d'entrée collectés sont uploadés en UN SEUL H2D groupé via un buffer hôte ÉPINGLÉ persistant (_place_batch) ; la trame de sortie est ramenée par un D2H ÉPINGLÉ (.get(out=pinned)). Mesuré au banc sur Tesla T4 : 2,5× (mur 1080p) à 4,8× (4K) vs CPU, et ~15 % d'occupation T4 pour 22 multiviews 1080p50 (8×16 PiP + 14×4 PiP).",
+      "Manifeste : resources.gpu=1 (préférence GPU si le nœud est gpu_capable + image GPU ; repli CPU transparent sinon). Métriques :8080 exposent gpu (bool) + gpu_name. Garde-fous (SIGBUS, try/except boucle) inchangés. Déploiement GPU : nécessite l'image bobi-compute-gpu sur un nœud gpu_capable + l'agent-nœud honorant le champ spec `gpus` (cf. NODE_AGENT.md)."
+    ],
     "Ajout/déplacement de PiP ne fige plus les autres tuiles (0.18.5)": [
       "À chaque ajout (ou déplacement/retrait) de PiP, TOUTES les autres tuiles se figeaient — il fallait défaire/refaire le câble pour revoir les flux. Cause : _do_reconfigure (reconfiguration à chaud) fermait SYSTÉMATIQUEMENT tous les Readers et remettait toutes les sources à None, y compris les tuiles INCHANGÉES → elles se figeaient le temps de la ré-ouverture (et ne récupéraient pas toujours seules).",
       "Fix : _do_reconfigure ne ferme désormais QUE les Readers dont la source (chemin câblé) a changé ou qui disparaissent ; les tuiles dont la source est inchangée conservent leur Reader VIVANT (appariement par index — les indices de banque sont stables depuis 0.9.0). Plus aucun clignotement/gel des autres PiP à l'ajout. _stale_since purgé aussi à la reconfig."
