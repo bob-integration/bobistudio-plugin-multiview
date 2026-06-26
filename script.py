@@ -1896,6 +1896,17 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
             if i < len(sources): sources[i] = src
     return src
 
+def _drop_input(i, rd):
+    """Ferme le Reader de l'entrée i et oublie la source (→ ensure_input la ROUVRE à la frame
+    suivante sur la génération courante du flux). Utilisé pour reconnecter un Reader périmé
+    (flux amont recréé sous le même nom) que le cache de ensure_input ne rouvrirait jamais."""
+    try: rd.close()
+    except Exception: pass
+    with state_lock:
+        if i < len(sources): sources[i] = None
+    _in_track.pop(i, None)
+    _stale_since.pop(i, None)
+
 _PROXY_UPSCALE_TOL = 0.08   # un proxy jusqu'à ~8% trop petit peut être AGRANDI (zoom léger) au
 
 _OCT_GLYPH = {{2: "½", 4: "¼", 8: "⅛", 16: "1/16"}}
@@ -2116,14 +2127,30 @@ class MvControlHandler(BaseHTTPRequestHandler):
         b = self._json()
         new_fc = b.get("flux_config") or []
         with state_lock:
-            for src in list(sources):
+            # PRÉSERVATION des Readers inchangés : un ajout/déplacement/retrait de PiP ne doit PAS
+            # figer les AUTRES tuiles. L'ancien code fermait TOUS les Readers + remettait sources à
+            # None → chaque tuile inchangée se figeait le temps de la ré-ouverture (et ne récupérait
+            # pas toujours seule → re-câblage manuel). On ne ferme désormais QUE les Readers dont la
+            # source (chemin câblé) a changé ou qui disparaissent ; les tuiles inchangées gardent
+            # leur Reader VIVANT. Les indices de banque sont stables (0.9.0) → appariement par index.
+            old_sources = list(sources)
+            old_inputs  = list(mv_state["inputs"])
+            new_inputs  = [cfg.get("path", "") for cfg in new_fc]
+            new_sources = [None] * len(new_fc)
+            for i in range(len(new_fc)):
+                if (i < len(old_sources) and old_sources[i] is not None
+                        and i < len(old_inputs) and old_inputs[i] == new_inputs[i] and new_inputs[i]):
+                    new_sources[i] = old_sources[i]   # même source → Reader conservé (pas de gel)
+                    old_sources[i] = None             # marqué conservé → pas fermé ci-dessous
+            for src in old_sources:                   # Readers non conservés (source changée/retirée)
                 if src is not None:
                     try: src["reader"].close()
                     except Exception: pass
             FLUX_CONFIG[:] = new_fc
-            mv_state["inputs"][:] = [cfg.get("path", "") for cfg in new_fc]
-            sources[:] = [None] * len(new_fc)
+            mv_state["inputs"][:] = new_inputs
+            sources[:] = new_sources
             _in_track.clear()
+            _stale_since.clear()
             geom_dirty.set()
             tally_dirty.set()
         self.send_response(200)
@@ -2229,6 +2256,16 @@ except (ValueError, OSError):
     pass   # pas dans le thread principal / plateforme sans SIGBUS
 _last_frame_err = 0.0   # throttle du log du garde-fou de boucle (try/except du corps per-frame)
 _last_emit_m = time.monotonic()   # mode input-locked : instant (monotone) de la dernière émission
+# RÉ-OUVERTURE des Readers PÉRIMÉS : un producteur amont (2110_io RX (re)sub/relock, redeploy d'une
+# source…) DÉTRUIT puis RECRÉE son flux MXL SOUS LE MÊME NOM. ensure_input garde alors le handle en
+# cache (path inchangé → jamais rouvert) et get_latest() reste bloqué sur l'ancien ring détruit →
+# « No Signal » (ou freeze) PERMANENT, sans SIGBUS pour déclencher la reconnexion. On suit donc par
+# entrée l'instant (monotone) où elle est devenue « stale » (aucun grain lisible OU index figé) et,
+# au-delà de REOPEN_STALE_S, on FERME + ré-ouvre le Reader (recrée mxlCreateFlowReader sur la
+# génération courante du flux). Idempotent : si le flux est réellement absent, open_source échoue et
+# on retentera au prochain palier. Couvre la disparition silencieuse (recréation sans SIGBUS).
+_stale_since = {{}}   # i → instant monotone où l'entrée est devenue stale (None tant qu'elle lit)
+REOPEN_STALE_S = 2.0
 
 while True:
     now = time.time()
@@ -2365,11 +2402,21 @@ while True:
                 _gt = rd.get(got[0] - 1)        # champ haut apparié (déjà commité → retour immédiat)
                 if _gt is not None:
                     got = _gt
-            if got is None:        # flux ouvert mais aucun grain encore lisible
+            if got is None:        # flux ouvert mais aucun grain lisible (vide OU Reader périmé)
                 canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
                 if SHOW_NO_SIGNAL:
                     _statuses.append((i, "nosignal", "", None))
+                # Reconnexion : si le « No Signal » persiste au-delà de REOPEN_STALE_S, le Reader
+                # est probablement périmé (flux amont recréé sous le même nom → handle sur l'ancien
+                # ring) ; ensure_input ne le rouvrirait jamais (path inchangé). On le DROP → rouvert
+                # à la frame suivante. Réarmé en boucle → retente tant que le flux est absent.
+                _t0 = _stale_since.get(i)
+                if _t0 is None:
+                    _stale_since[i] = now_m
+                elif now_m - _t0 > REOPEN_STALE_S:
+                    _drop_input(i, rd)
                 continue
+            _stale_since.pop(i, None)   # lecture réussie → réarme le compteur de péremption
             fi = got[0]; src_view = got[2]
             # TRANSIT (arrivée) = âge de la trame d'entrée (now_tai − dernière écriture producteur).
             ts_in_per_input[src.get("path", cfg["path"])] = (bobimxl.now_tai() - rd.last_write_time()) / 1e6
@@ -2384,6 +2431,14 @@ while True:
             _chip = _fmt_chip_txt(cfg, src) if SHOW_FORMAT else ""
             if _st or _chip or _proxy_chip:
                 _statuses.append((i, _st, _chip, _proxy_chip))
+            # Freeze PROLONGÉ : même cause racine que le « No Signal » (Reader périmé sur flux amont
+            # recréé) — l'ancien ring peut renvoyer indéfiniment son dernier grain (index figé) au
+            # lieu de None. Au-delà de FREEZE_DETECT_S + REOPEN_STALE_S, on reconnecte le Reader.
+            # Sans danger pour une source légitimement statique : elle relit simplement son dernier
+            # grain après ré-ouverture. (drop = continue : la tuile garde sa dernière trame.)
+            if FREEZE_DETECT_S > 0 and now_m - tr["t"] > FREEZE_DETECT_S + REOPEN_STALE_S:
+                _drop_input(i, rd)
+                continue
 
             _yb  = in_w * in_h * _BPS               # octets du plan Y
             _uvb = (in_w // _CW) * (in_h // _CH) * _BPS   # octets d'un plan chroma

@@ -1,7 +1,15 @@
 {
-  "version": "0.18.3",
+  "version": "0.18.5",
   "date": "2026-06-25",
   "changes": {
+    "Ajout/déplacement de PiP ne fige plus les autres tuiles (0.18.5)": [
+      "À chaque ajout (ou déplacement/retrait) de PiP, TOUTES les autres tuiles se figeaient — il fallait défaire/refaire le câble pour revoir les flux. Cause : _do_reconfigure (reconfiguration à chaud) fermait SYSTÉMATIQUEMENT tous les Readers et remettait toutes les sources à None, y compris les tuiles INCHANGÉES → elles se figeaient le temps de la ré-ouverture (et ne récupéraient pas toujours seules).",
+      "Fix : _do_reconfigure ne ferme désormais QUE les Readers dont la source (chemin câblé) a changé ou qui disparaissent ; les tuiles dont la source est inchangée conservent leur Reader VIVANT (appariement par index — les indices de banque sont stables depuis 0.9.0). Plus aucun clignotement/gel des autres PiP à l'ajout. _stale_since purgé aussi à la reconfig."
+    ],
+    "Reconnexion auto des Readers MXL périmés (No Signal/freeze permanent) (0.18.4)": [
+      "Une tuile pouvait rester bloquée en « No Signal » (ou figée) DÉFINITIVEMENT après quelques instants, alors que le flux source était toujours routé — re-câbler la même source ne corrigeait rien, seul un désabonnement/réabonnement du flux 2110 le rétablissait par hasard (via un SIGBUS). Cause : quand un producteur amont DÉTRUIT puis RECRÉE son flux MXL SOUS LE MÊME NOM (2110_io RX (re)sub/relock, redeploy d'une source), le Reader du multiview gardait un handle sur l'ANCIEN ring détruit. ensure_input met le Reader en cache à vie tant que le path est inchangé → jamais ré-ouvert → get_latest() bloqué (None ou index figé). Aucun SIGBUS ne se déclenche de façon déterministe (l'ancien shm reste mmap), donc le handler SIGBUS existant ne couvrait pas ce cas. Indépendant de l'entrelacement (i comme p).",
+      "Fix : on suit par entrée l'instant (monotone) où elle devient « stale » (aucun grain lisible OU index figé au-delà du seuil freeze) et, au-delà de REOPEN_STALE_S (2 s), on FERME + ré-ouvre le Reader (_drop_input → ensure_input recrée mxlCreateFlowReader sur la génération courante du flux à la frame suivante). Compteur réarmé en boucle → retente toutes les 2 s tant que le flux est absent ; lecture réussie = réarme. Sans danger pour une source légitimement statique (relit son dernier grain après ré-ouverture). Aucun changement du chemin nominal (sources qui lisent) ni de l'affichage NO SIGNAL/FREEZE."
+    ],
     "Entrées entrelacées champ-natif → bob progressif stable (0.18.3)": [
       "Chantier « 1 grain = 1 champ » : les entrées (proxies pyramide / sources) sont désormais des CHAMPS (½ hauteur). Le multiview sort TOUJOURS en progressif (mur de monitoring) : un champ scalé à la tuile (resize_plane) = désentrelacement par bob, suffisant pour un preview. On VERROUILLE la parité sur le champ HAUT (index pair) : sans ça get_latest alterne top/bottom (50/s) → décalage vertical d'½ ligne entre champs scalés → scintillement des bords ; verrou top = bob STABLE à la cadence trame. open_source porte le flag `interlaced` (lu de reader.format()). Aucune autre géométrie touchée (sortie progressive inchangée)."
     ],
