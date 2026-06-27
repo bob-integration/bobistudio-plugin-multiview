@@ -1,7 +1,11 @@
 {
-  "version": "0.20.0",
-  "date": "2026-06-27",
+  "version": "0.20.1",
+  "date": "2026-06-28",
   "changes": {
+    "VU-mètres : fraîcheur audio + étiquette SILENCE / ABSENCE (0.20.1)": [
+      "Correction du FIGEAGE : couper le signal audio (producteur qui n'écrit plus) laissait les barres figées sur le dernier bloc (read_latest rejouait le dernier échantillon à l'infini). On vérifie désormais la fraîcheur via last_write_time() (TAI) : au-delà de 200 ms sans écriture, les barres retombent à MIN au lieu de figer.",
+      "Indication de la cause d'absence de son, en petites lettres VERTICALES sur la zone des barres : « ABSENCE » (rouge) = flux audio coupé / inexistant ; « SILENCE » (ambre) = flux présent mais niveau au plancher (holds ≤ −55 dBFS). Rendu en TUILE séparée (PIL→YUV) → identique sur les chemins GPU et CPU, et payé uniquement hors état normal. Cosmétique : protégé par try/except (ne casse jamais une trame)."
+    ],
     "VU-mètres rendus sur GPU + repli CPU forçable (force_cpu) (0.20.0)": [
       "Filet anti-régression : le param `force_cpu` (ou le réglage global `multiview_force_cpu`) force le backend numpy ÉPROUVÉ (xp=np) MÊME sur un nœud GPU, sans changer d'image — repli instantané (au redéploiement) si le chemin cupy posait souci. Inerte par défaut (auto-détection inchangée).",
       "Habillage VU sur GPU : `render_meters` ne paie plus de PIL PAR TRAME quand GPU. Les graduations/fond/labels dB/n° de canal (STATIQUES) sont rendus PIL UNE fois, convertis YUV et résidents backend (VRAM), cachés par config de meter ; les barres + peak-hold (DYNAMIQUES) sont PEINTES par trame en RGBA sur le backend (xp) puis converties en UNE passe (_rgba_to_yuv_xp). Plus aucune rastérisation PIL ni reconversion YUV par trame sur le chemin GPU.",

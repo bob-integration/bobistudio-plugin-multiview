@@ -275,11 +275,30 @@ def _open_audio_state(flux_idx, video_path):
         return None
     return {{"ar": ar, "name": nm, "peaks": None, "holds": None, "hold_ts": None}}
 
+# États audio. SILENCE = flux FRAIS mais niveau au plancher (signal présent, muet). ABSENCE =
+# producteur qui n'écrit plus (flux coupé) OU pas de flux audio du tout.
+SILENCE_DB = METER_MIN_DB + 5.0    # holds sous ce niveau (decay) = silence
+ABSENCE_MS = 200.0                 # pas d'écriture producteur depuis ce délai = flux coupé
+
 def _update_peaks(state, n_channels, now):
-    """Lit le dernier bloc audio (float32 MXL) et met à jour peaks + holds (avec decay)."""
+    """Lit le dernier bloc audio (float32 MXL) → (peaks, holds, statut) avec statut ∈ ok|silence|
+    absence. Fraîcheur via last_write_time() (TAI) : flux COUPÉ → barres ramenées à MIN (jamais
+    FIGÉES — sinon read_latest rejoue le dernier bloc à l'infini) + statut absence."""
     ar = state.get("ar")
     if ar is None:
-        return None, None
+        return None, None, "absence"
+    # Âge depuis la dernière écriture producteur (même base TAI que now_tai). Au-delà d'ABSENCE_MS,
+    # le shm ne reçoit plus rien → on NE LIT PAS le bloc périmé, on retombe à MIN (corrige le figeage).
+    try:
+        lwt = ar.last_write_time()
+        age_ms = (bobimxl.now_tai() - lwt) / 1e6 if lwt else 1e9
+    except Exception:
+        age_ms = 1e9
+    if age_ms > ABSENCE_MS:
+        mn = np.full(n_channels, METER_MIN_DB, dtype=np.float64)
+        state["peaks"] = mn; state["holds"] = mn
+        state["hold_ts"] = np.full(n_channels, now, dtype=np.float64)
+        return mn, mn, "absence"
     try:
         r = ar.read_latest(A_SAMPLES_PER_CHUNK)   # (≤48, channels) float32 normalisé [-1,1]
     except Exception:
@@ -288,9 +307,9 @@ def _update_peaks(state, n_channels, now):
         except Exception: pass
         try: state["ar"] = bobimxl.AudioReader(inst, state["name"])
         except Exception: state["ar"] = None
-        return None, None
+        return None, None, "absence"
     if r is None:
-        return None, None
+        return None, None, "absence"
     # float32 déjà normalisé → 0 dBFS = |1.0| (plus de dépack s24be / full_scale).
     peaks_lin = np.max(np.abs(r), axis=0).astype(np.float64)  # (channels,)
     peak_db = np.where(peaks_lin > 0, 20.0 * np.log10(peaks_lin), METER_MIN_DB - 1)
@@ -312,7 +331,9 @@ def _update_peaks(state, n_channels, now):
     state["peaks"] = peak_db
     state["holds"] = holds
     state["hold_ts"] = hold_ts
-    return peak_db, holds
+    # Flux frais mais tous les holds au plancher = signal présent mais muet.
+    status = "silence" if float(np.max(holds)) <= SILENCE_DB else "ok"
+    return peak_db, holds, status
 
 def _meter_layout(n_channels):
     """Renvoie (width, ...) pour un meter à N canaux. Sans bordure."""
@@ -1308,6 +1329,36 @@ def render_border():
                                 outline=BORDER_COLOR)
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
+def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
+    """TUILE YUV séparée : étiquette VERTICALE « SILENCE » (signal muet) ou « ABSENCE » (flux coupé),
+    petite, centrée sur la zone des barres — pour SAVOIR pourquoi il n'y a pas de son. Posée en tuile
+    INDÉPENDANTE (PIL→YUV), donc rendu IDENTIQUE sur les chemins GPU et CPU, et payée uniquement hors
+    état « ok ». Renvoie un tuple tuile (même bbox que le meter) ou None."""
+    txt = "ABSENCE" if status == "absence" else "SILENCE"
+    col = (236, 72, 60) if status == "absence" else (240, 184, 44)   # rouge / ambre
+    tw_, th_ = bx1 - bx0, by1 - by0
+    if tw_ <= 0 or th_ <= 0:
+        return None
+    bars_mh = max(20, mh - 12)
+    # Texte tourné de 90° → la HAUTEUR du glyphe doit tenir dans la largeur du meter (mw).
+    f = _font(max(7, min(13, mw - 3)))
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    bb = probe.textbbox((0, 0), txt, font=f)
+    gw, gh = bb[2] - bb[0], bb[3] - bb[1]
+    lab = Image.new("RGBA", (gw + 4, gh + 4), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(lab)
+    ld.text((2 - bb[0] + 1, 2 - bb[1] + 1), txt, font=f, fill=(8, 8, 10, 255))   # liseré sombre
+    ld.text((2 - bb[0], 2 - bb[1]), txt, font=f, fill=col + (255,))
+    lab = lab.rotate(90, expand=True)
+    if lab.width > tw_ or lab.height > th_:
+        return None
+    img = Image.new("RGBA", (tw_, th_), (0, 0, 0, 0))
+    cx = (mx - bx0) + (mw - lab.width) // 2
+    cy = (my - by0) + (bars_mh - lab.height) // 2
+    img.paste(lab, (int(max(0, cx)), int(max(0, cy))), lab)
+    oy, ou, ov, oa, oa2 = rgba_to_yuv(img)
+    return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
+
 def render_meters(now):
     """Re-rendu par frame des peak meters. Renvoie une LISTE de TUILES YUV prêtes à blender
     [(bx0, by0, bx1, by1, y, u, v, a, a2), ...] — UNE tuile par meter, sur sa propre bbox locale
@@ -1326,8 +1377,9 @@ def render_meters(now):
             st = _open_audio_state(i, cfg.get("path") or "")
             audio_states[i] = st  # peut être None (audio absent) → on dessine quand même un meter "vide"
         peaks = holds = None
+        status = "absence"   # pas de flux audio du tout → absence (st None)
         if st is not None:
-            peaks, holds = _update_peaks(st, n, now)
+            peaks, holds, status = _update_peaks(st, n, now)
         if peaks is None:
             peaks = np.full(n, METER_MIN_DB)
             holds = np.full(n, METER_MIN_DB)
@@ -1375,6 +1427,15 @@ def render_meters(now):
                         cfg.get("meter_scale") or "dbfs", opacity_pct)
             oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
         tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
+        # Étiquette SILENCE / ABSENCE par-dessus (tuile séparée, même bbox → blend après le meter).
+        # Cosmétique → ne jamais casser le rendu d'une trame si l'étiquette échoue.
+        if status in ("silence", "absence"):
+            try:
+                lab = _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh)
+            except Exception:
+                lab = None
+            if lab is not None:
+                tiles.append(lab)
     return tiles or None
 
 
