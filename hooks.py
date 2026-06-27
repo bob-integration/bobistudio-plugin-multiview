@@ -38,40 +38,43 @@ def topology_ports(hostname, params, ctx):
         if prod.get("format"):
             pp["format"] = prod["format"]
         produces.append(pp)
-    consumes = []
+    # Ordonné PAR TYPE DE SIGNAL (toutes les vidéos, puis tous les audios, puis tous les ANC) —
+    # harmonisé avec les autres conteneurs (ex. 2110_io). Le champ `group` (in<slot>) garde
+    # l'association visuelle vidéo↔audio↔ANC d'une même entrée.
+    vids, auds, ancs = [], [], []
     for spec in (w.get("consumes") or []):
         ess = spec.get("essence") or "video"
         slot = spec.get("slot")
         shm = spec.get("shm") or ""
-        grp = "in%s" % (slot if slot is not None else len(consumes))
+        grp = "in%s" % (slot if slot is not None else len(vids))
+        lbl = spec.get("label") or ""
         port = {"kind": ess, "group": grp}
         if slot is not None:
             port["slot"] = slot
-        if spec.get("label"):
-            port["label"] = spec["label"]
+        if lbl:
+            port["label"] = lbl
         if spec.get("format") and not adapts:
             port["format"] = spec["format"]
         if shm:
             port["shm"] = shm
         else:
             port["shm"] = ""; port["disconnected"] = True
-        consumes.append(port)
+        vids.append(port)
         # Audio + ANC dérivés (uniquement si la vidéo est câblée), groupés avec l'entrée.
         if shm:
-            lbl = spec.get("label") or ""
             an = _derive_essence_shm(shm, "audio")
             if an:
                 ap = {"kind": "audio", "group": grp, "shm": an, "derived": True}
                 if slot is not None: ap["slot"] = slot
                 if lbl: ap["label"] = lbl + " ♪"
-                consumes.append(ap)
+                auds.append(ap)
             nn = _derive_essence_shm(shm, "anc")
             if nn:
                 npp = {"kind": "data", "group": grp, "shm": nn, "derived": True}
                 if slot is not None: npp["slot"] = slot
                 if lbl: npp["label"] = lbl + " ANC"
-                consumes.append(npp)
-    return {"produces": produces, "consumes": consumes}
+                ancs.append(npp)
+    return {"produces": produces, "consumes": vids + auds + ancs}
 
 
 def _parse_video_formats(raw):

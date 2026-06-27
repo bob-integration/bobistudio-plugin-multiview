@@ -1,7 +1,12 @@
 {
-  "version": "0.20.2",
+  "version": "0.20.3",
   "date": "2026-06-28",
   "changes": {
+    "Étiquette VU discrète + ports Câbles ordonnés par type + câblage tissu correct (0.20.3)": [
+      "Étiquette SILENCE / ABSENCE BEAUCOUP plus petite et discrète (taille ≈ celle des numéros de canaux, ≤10 px), centrée sur la zone des barres.",
+      "Page Câbles : les ports du multiview sont désormais ordonnés PAR TYPE DE SIGNAL (toutes les vidéos, puis tous les audios, puis tous les ANC) au lieu d'être entrelacés par entrée — harmonisé avec les autres conteneurs. Le `group` conserve l'association vidéo↔audio↔ANC.",
+      "Câblage d'un mur SHARDÉ (abstraction tissu) : changer le câble d'une entrée modifie désormais la définition LOGIQUE (flux_config) puis re-réconcilie le tissu (re-planification du shald concerné sur la nouvelle source via pyramide), au lieu de hot-inputer l'assembleur — ce qui DÉBRANCHAIT le shard de la tuile. Câblage ET décâblage. Fix orchestrateur (routes.py _apply_wire/_apply_unwire), pas le script."
+    ],
     "Étiquette VU droite + entrées audio/ANC sur la page Câbles (0.20.2)": [
       "Étiquette SILENCE / ABSENCE : caractères DROITS empilés verticalement (1 par ligne, lisibles de haut en bas) au lieu du texte tourné à 90°.",
       "Page Câbles : les entrées AUDIO (lues pour les VU-mètres) et ANC de chaque source apparaissent désormais sur le multiview, groupées sous l'entrée vidéo. Ajout d'un hook topology_ports qui réutilise derive_wiring pour la vidéo (câblage inchangé) puis ajoute les ports audio/ANC DÉRIVÉS du nom de la source (`<src>_audio_<i>` / `<src>_anc_<i>`, mêmes noms que les sorties du producteur → l'arête se trace). Ports dérivés informatifs (suivent la vidéo, non câblables séparément)."

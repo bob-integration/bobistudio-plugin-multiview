@@ -1341,11 +1341,12 @@ def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
         return None
     bars_mh = max(20, mh - 12)
     # Caractères DROITS (non tournés), EMPILÉS verticalement (1 par ligne, lu de haut en bas).
-    # Hauteur de ligne dimensionnée pour que les N caractères tiennent dans la hauteur des barres ;
-    # largeur du glyphe ≤ largeur du meter.
+    # PETIT et DISCRET : taille ≈ celle des numéros de canaux (pas plus gros), bornée à la largeur
+    # du meter. Centré verticalement sur la zone des barres.
     nch = max(1, len(txt))
-    line_h = max(7, min(mw, bars_mh // nch))
-    f = _font(max(6, line_h - 1))
+    fsz = max(7, min(10, mw - 2, (bars_mh - 2) // nch))
+    f = _font(fsz)
+    line_h = fsz + 1
     img = Image.new("RGBA", (tw_, th_), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     cx = (mx - bx0) + mw // 2
