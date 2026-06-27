@@ -61,6 +61,14 @@ CONFIG         = {config}
 HOSTNAME       = "{hostname}"
 PLUGIN_VERSION = "{plugin_version}"
 
+# Filet anti-régression : `force_cpu` force le chemin numpy ÉPROUVÉ (xp=np) MÊME sur un nœud GPU,
+# sans changer d'image. Réassigne les globals AVANT toute boucle de rendu → repli instantané identique
+# au multiview 100% CPU si le chemin GPU posait souci. Absent/false → aucun effet (auto-détection).
+if CONFIG.get("force_cpu"):
+    xp = np
+    GPU = False
+    _GPU_NAME = None
+
 FLUX_CONFIG   = CONFIG.get("flux_config") or []
 SHM_OUT_NAME  = CONFIG.get("shm_out") or "mxl_mix"
 SHM_OUT       = "/dev/shm/" + SHM_OUT_NAME   # conservé pour l'audio legacy / dérivations de noms
@@ -395,6 +403,124 @@ def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opac
         ly = bars_bottom + 2
         d.text((lx, ly), ch_label,
                font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
+
+# ─── Peak meters : chemin GPU (cupy) ─────────────────────────────────────────
+# Graduations/fond/labels/n° de canal = STATIQUES → rendus PIL UNE fois (image), convertis YUV et
+# résidents backend (VRAM si GPU), cachés par config. Barres + peak-hold = DYNAMIQUES → composés par
+# trame en RGBA sur le backend (xp), puis UNE conversion RGBA→YUV. Plus aucun PIL par trame.
+# Le chemin CPU (GPU=False) n'utilise PAS ce code : render_meters garde la branche PIL d'origine VERBATIM.
+_meter_static_xp_cache = {{}}   # key -> RGBA backend float32 (rendu PIL une fois, uploadé une fois)
+_MET_GREEN = (60, 200, 60); _MET_YELLOW = (220, 180, 40); _MET_RED = (230, 60, 60); _MET_WHITE = (255, 255, 255)
+
+def _meter_scale_params(scale):
+    """(to_frac, green_top, yellow_top) selon l'échelle — réplique la logique de _draw_meter."""
+    if scale == "ppm":
+        def to_frac(dbfs):
+            ebu = dbfs + 18
+            return max(0.0, min(1.0, (ebu + 12) / 24.0))
+        return to_frac, to_frac(-12), to_frac(-3)
+    def to_frac(dbfs):
+        return max(0.0, min(1.0, (dbfs - METER_MIN_DB) / (-METER_MIN_DB)))
+    return to_frac, to_frac(-20.0), to_frac(-6.0)
+
+def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct):
+    """Partie STATIQUE du meter (fond + graduations + labels dB + n° de canal), SANS les barres —
+    identique à _draw_meter hors boucle barres/hold. Rendu une seule fois (caché)."""
+    d = ImageDraw.Draw(img, "RGBA")
+    a_bg = int(180 * opacity_pct / 100); a_text = int(255 * opacity_pct / 100)
+    bars_mh = max(20, mh - 12)
+    to_frac, _gt, _yt = _meter_scale_params(scale)
+    if scale == "ppm":
+        ticks = [(+12, "+12"), (+9, "+9"), (+6, "+6"), (+3, "+3"),
+                 (0, "0"), (-3, "-3"), (-6, "-6"), (-9, "-9"), (-12, "-12")]
+        ticks_dbfs = [(ebu - 18, lbl) for ebu, lbl in ticks]
+    else:
+        ticks_dbfs = [(0, "0"), (-3, "-3"), (-6, "-6"), (-9, "-9"), (-12, "-12"),
+                      (-18, "-18"), (-20, "-20"), (-30, "-30"), (-40, "-40"), (-50, "-50")]
+    d.rectangle([mx, my, mx + mw, my + mh], fill=(0, 0, 0, a_bg))
+    bars_bottom = my + bars_mh
+    last_label_y = -10
+    for tick_dbfs, lbl in ticks_dbfs:
+        y_tick = my + bars_mh - int(round(to_frac(tick_dbfs) * bars_mh))
+        d.line([mx + METER_TICK_W - 4, y_tick, mx + METER_TICK_W - 1, y_tick], fill=(180, 180, 180, a_text))
+        if abs(y_tick - last_label_y) >= 9 and y_tick - 4 >= my and y_tick + 4 <= bars_bottom:
+            d.text((mx + 1, y_tick - 4), lbl, font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
+            last_label_y = y_tick
+    for ch in range(n_channels):
+        bx = mx + METER_TICK_W + ch * (METER_BAR_W + METER_GAP)
+        d.text((bx + (METER_BAR_W // 2) - 2, bars_bottom + 2), str(ch + 1),
+               font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
+
+def _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct):
+    """RGBA statique (backend float32) cachée pour cette config de meter — l'idée 'graduations en VRAM'."""
+    key = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct)
+    arr = _meter_static_xp_cache.get(key)
+    if arr is None:
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        _draw_meter_static(img, rmx, rmy, mw, mh, n, scale, opacity_pct)
+        host = np.array(img).astype(np.float32)
+        arr = xp.asarray(host) if GPU else host
+        _meter_static_xp_cache[key] = arr
+    return arr
+
+def _rgba_to_yuv_xp(arr):
+    """rgba_to_yuv pour un RGBA backend (xp) float32 — réplique rgba_to_yuv sans PIL (xp=np en CPU)."""
+    r = arr[..., 0]; g = arr[..., 1]; b = arr[..., 2]; a = arr[..., 3]
+    y = (( 0.299 * r + 0.587 * g + 0.114 * b      ) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
+    u = ((-0.169 * r - 0.331 * g + 0.500 * b + 128) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
+    v = (( 0.500 * r - 0.419 * g - 0.081 * b + 128) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
+    def _sub_avg(p):
+        pp = p.astype(xp.uint32)
+        if _CW == 2: pp = (pp[:, 0::2] + pp[:, 1::2] + 1) // 2
+        if _CH == 2: pp = (pp[0::2, :] + pp[1::2, :] + 1) // 2
+        return pp.astype(_NP_DT)
+    def _sub_max(p):
+        if _CW == 2: p = xp.maximum(p[:, 0::2], p[:, 1::2])
+        if _CH == 2: p = xp.maximum(p[0::2, :], p[1::2, :])
+        return p
+    a8 = a.astype(_NP_DT)
+    return y, _sub_avg(u), _sub_avg(v), a8, _sub_max(a8)
+
+def _meter_comp_rect(tile, x0, y0, x1, y1, rgb, a):
+    """PEINT (remplace) une couleur pleine (rgb, a 0..255) sur la région RGBA `tile` (xp) — réplique
+    EXACTEMENT le comportement de PIL ImageDraw 'RGBA' (paint, pas un over-compositing : le pixel prend
+    la couleur+alpha du fill). Bornée aux dimensions de la tuile."""
+    Ht = tile.shape[0]; Wt = tile.shape[1]
+    x0 = max(0, x0); y0 = max(0, y0); x1 = min(Wt, x1); y1 = min(Ht, y1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    tile[y0:y1, x0:x1, 0] = rgb[0]
+    tile[y0:y1, x0:x1, 1] = rgb[1]
+    tile[y0:y1, x0:x1, 2] = rgb[2]
+    tile[y0:y1, x0:x1, 3] = a
+
+def _meter_tile_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct):
+    """Tuile YUV d'un meter (chemin GPU) : statique caché copié + barres/hold composées en RGBA (xp)."""
+    tile = _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct).copy()
+    a_bar = int(220 * opacity_pct / 100); a_hold = int(255 * opacity_pct / 100)
+    bars_mh = max(20, mh - 12); bars_bottom = rmy + bars_mh
+    to_frac, green_top, yellow_top = _meter_scale_params(scale)
+    green_top_px = int(round(green_top * bars_mh)); yellow_top_px = int(round(yellow_top * bars_mh))
+    for ch in range(n):
+        bx = rmx + METER_TICK_W + ch * (METER_BAR_W + METER_GAP)
+        peak_h = int(round(to_frac(peaks_db[ch]) * bars_mh))
+        hold_h = int(round(to_frac(holds_db[ch]) * bars_mh))
+        # NB : PIL d.rectangle est INCLUSIF sur (x1,y1) → bas +1 ici pour égaler les hauteurs.
+        gh = min(peak_h, green_top_px)
+        if gh > 0:
+            _meter_comp_rect(tile, bx, bars_bottom - gh, bx + METER_BAR_W, bars_bottom + 1, _MET_GREEN, a_bar)
+        if peak_h > green_top_px:
+            yh = min(peak_h, yellow_top_px) - green_top_px
+            if yh > 0:
+                _meter_comp_rect(tile, bx, bars_bottom - green_top_px - yh, bx + METER_BAR_W, bars_bottom - green_top_px + 1, _MET_YELLOW, a_bar)
+        if peak_h > yellow_top_px:
+            rh = peak_h - yellow_top_px
+            if rh > 0:
+                _meter_comp_rect(tile, bx, bars_bottom - yellow_top_px - rh, bx + METER_BAR_W, bars_bottom - yellow_top_px + 1, _MET_RED, a_bar)
+        if hold_h > 0:
+            yh = bars_bottom - hold_h
+            _meter_comp_rect(tile, bx, yh, bx + METER_BAR_W, yh + 1, _MET_WHITE, a_hold)
+    return _rgba_to_yuv_xp(tile)
 
 # état tally : {{"<idx>_L": "red"|"green"|"amber"|"off", "<idx>_R": ...}}
 tally_state = {{}}
@@ -1238,10 +1364,16 @@ def render_meters(now):
         if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - (by1 - by0) % _CH))
         if bx1 <= bx0 or by1 <= by0:
             continue
-        tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
-        _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds,
-                    cfg.get("meter_scale") or "dbfs", opacity_pct)
-        oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
+        if GPU:
+            # Chemin GPU : statique caché en VRAM + barres composées en RGBA (xp), aucune PIL par trame.
+            oy, ou, ov, oa, oa2 = _meter_tile_gpu(bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, n,
+                                                  peaks, holds, cfg.get("meter_scale") or "dbfs", opacity_pct)
+        else:
+            # Chemin CPU ÉPROUVÉ — INCHANGÉ (PIL par trame). Ne pas modifier (garantie 'sans GPU identique').
+            tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
+            _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds,
+                        cfg.get("meter_scale") or "dbfs", opacity_pct)
+            oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
         tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
     return tiles or None
 

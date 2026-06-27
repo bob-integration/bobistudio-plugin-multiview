@@ -70,6 +70,14 @@ def before_deploy(params, context):
     #    juste un id stable et un kind (le résolveur image base64 est dans deploy.py).
     params["overlays"] = normalize_overlays(params.get("overlays"))
 
+    # 5. Filet anti-régression : repli CPU forcé via le réglage global `multiview_force_cpu`
+    #    (le script lit le param `force_cpu` → xp=numpy même sur nœud GPU). Un param explicite
+    #    déjà posé (par-conteneur) reste prioritaire ; sinon on applique le réglage global.
+    if "force_cpu" not in params:
+        _fc = str(settings.get("multiview_force_cpu") or "").strip().lower()
+        if _fc in ("1", "true", "yes", "on"):
+            params["force_cpu"] = True
+
     return params
 
 
