@@ -1,7 +1,11 @@
 {
-  "version": "0.20.1",
+  "version": "0.20.2",
   "date": "2026-06-28",
   "changes": {
+    "Étiquette VU droite + entrées audio/ANC sur la page Câbles (0.20.2)": [
+      "Étiquette SILENCE / ABSENCE : caractères DROITS empilés verticalement (1 par ligne, lisibles de haut en bas) au lieu du texte tourné à 90°.",
+      "Page Câbles : les entrées AUDIO (lues pour les VU-mètres) et ANC de chaque source apparaissent désormais sur le multiview, groupées sous l'entrée vidéo. Ajout d'un hook topology_ports qui réutilise derive_wiring pour la vidéo (câblage inchangé) puis ajoute les ports audio/ANC DÉRIVÉS du nom de la source (`<src>_audio_<i>` / `<src>_anc_<i>`, mêmes noms que les sorties du producteur → l'arête se trace). Ports dérivés informatifs (suivent la vidéo, non câblables séparément)."
+    ],
     "VU-mètres : fraîcheur audio + étiquette SILENCE / ABSENCE (0.20.1)": [
       "Correction du FIGEAGE : couper le signal audio (producteur qui n'écrit plus) laissait les barres figées sur le dernier bloc (read_latest rejouait le dernier échantillon à l'infini). On vérifie désormais la fraîcheur via last_write_time() (TAI) : au-delà de 200 ms sans écriture, les barres retombent à MIN au lieu de figer.",
       "Indication de la cause d'absence de son, en petites lettres VERTICALES sur la zone des barres : « ABSENCE » (rouge) = flux audio coupé / inexistant ; « SILENCE » (ambre) = flux présent mais niveau au plancher (holds ≤ −55 dBFS). Rendu en TUILE séparée (PIL→YUV) → identique sur les chemins GPU et CPU, et payé uniquement hors état normal. Cosmétique : protégé par try/except (ne casse jamais une trame)."

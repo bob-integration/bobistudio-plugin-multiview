@@ -3,6 +3,77 @@
 # Auteur : Cyril Mazouer, pour le compte de BOBI SAS
 # Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
+import re
+
+
+def _derive_essence_shm(video_shm, essence):
+    """`mire1_0` (ou `/dev/shm/mire1_0`) → `mire1_audio_0` / `mire1_anc_0`. None si pas de _<n>
+    final. MÊME dérivation que script.py:_derive_audio_name → le nom matche la sortie du producteur
+    (2110_io : `<hôte>_audio_<i>` / `<hôte>_anc_<i>`) donc l'arête se trace sur la page Câbles."""
+    name = (video_shm or "")
+    if name.startswith("/dev/shm/"):
+        name = name[len("/dev/shm/"):]
+    m = re.match(r"(.+?)_(\d+)$", name)
+    if not m:
+        return None
+    return "%s_%s_%s" % (m.group(1), essence, m.group(2))
+
+
+def topology_ports(hostname, params, ctx):
+    """Ports topologie (page Câbles). Réutilise derive_wiring pour les ports VIDÉO (parité TOTALE
+    avec le câblage, inchangé) puis AJOUTE, par entrée vidéo câblée, les ports AUDIO (lu pour les
+    VU-mètres) et ANC (data) DÉRIVÉS du nom de la source, GROUPÉS sous l'entrée. Ports dérivés =
+    INFORMATIFS : ils suivent automatiquement la source vidéo (le câblage reste piloté par la
+    vidéo via derive_wiring) → marqués `derived` (non câblables séparément)."""
+    from app import plugins as _pl
+    w = _pl.derive_wiring("multiview", hostname, params)
+    adapts = bool((_pl.get("multiview") or {}).get("adapts_input"))
+    produces = []
+    for prod in (w.get("produces") or []):
+        if not prod.get("shm"):
+            continue
+        pp = {"shm": prod["shm"], "kind": prod.get("essence") or "video"}
+        if prod.get("label"):
+            pp["label"] = prod["label"]
+        if prod.get("format"):
+            pp["format"] = prod["format"]
+        produces.append(pp)
+    consumes = []
+    for spec in (w.get("consumes") or []):
+        ess = spec.get("essence") or "video"
+        slot = spec.get("slot")
+        shm = spec.get("shm") or ""
+        grp = "in%s" % (slot if slot is not None else len(consumes))
+        port = {"kind": ess, "group": grp}
+        if slot is not None:
+            port["slot"] = slot
+        if spec.get("label"):
+            port["label"] = spec["label"]
+        if spec.get("format") and not adapts:
+            port["format"] = spec["format"]
+        if shm:
+            port["shm"] = shm
+        else:
+            port["shm"] = ""; port["disconnected"] = True
+        consumes.append(port)
+        # Audio + ANC dérivés (uniquement si la vidéo est câblée), groupés avec l'entrée.
+        if shm:
+            lbl = spec.get("label") or ""
+            an = _derive_essence_shm(shm, "audio")
+            if an:
+                ap = {"kind": "audio", "group": grp, "shm": an, "derived": True}
+                if slot is not None: ap["slot"] = slot
+                if lbl: ap["label"] = lbl + " ♪"
+                consumes.append(ap)
+            nn = _derive_essence_shm(shm, "anc")
+            if nn:
+                npp = {"kind": "data", "group": grp, "shm": nn, "derived": True}
+                if slot is not None: npp["slot"] = slot
+                if lbl: npp["label"] = lbl + " ANC"
+                consumes.append(npp)
+    return {"produces": produces, "consumes": consumes}
+
+
 def _parse_video_formats(raw):
     """Parse la chaîne video_formats des Settings → liste de dicts."""
     result = []

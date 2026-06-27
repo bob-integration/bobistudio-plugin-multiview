@@ -1340,22 +1340,20 @@ def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
     if tw_ <= 0 or th_ <= 0:
         return None
     bars_mh = max(20, mh - 12)
-    # Texte tourné de 90° → la HAUTEUR du glyphe doit tenir dans la largeur du meter (mw).
-    f = _font(max(7, min(13, mw - 3)))
-    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    bb = probe.textbbox((0, 0), txt, font=f)
-    gw, gh = bb[2] - bb[0], bb[3] - bb[1]
-    lab = Image.new("RGBA", (gw + 4, gh + 4), (0, 0, 0, 0))
-    ld = ImageDraw.Draw(lab)
-    ld.text((2 - bb[0] + 1, 2 - bb[1] + 1), txt, font=f, fill=(8, 8, 10, 255))   # liseré sombre
-    ld.text((2 - bb[0], 2 - bb[1]), txt, font=f, fill=col + (255,))
-    lab = lab.rotate(90, expand=True)
-    if lab.width > tw_ or lab.height > th_:
-        return None
+    # Caractères DROITS (non tournés), EMPILÉS verticalement (1 par ligne, lu de haut en bas).
+    # Hauteur de ligne dimensionnée pour que les N caractères tiennent dans la hauteur des barres ;
+    # largeur du glyphe ≤ largeur du meter.
+    nch = max(1, len(txt))
+    line_h = max(7, min(mw, bars_mh // nch))
+    f = _font(max(6, line_h - 1))
     img = Image.new("RGBA", (tw_, th_), (0, 0, 0, 0))
-    cx = (mx - bx0) + (mw - lab.width) // 2
-    cy = (my - by0) + (bars_mh - lab.height) // 2
-    img.paste(lab, (int(max(0, cx)), int(max(0, cy))), lab)
+    d = ImageDraw.Draw(img)
+    cx = (mx - bx0) + mw // 2
+    y0 = (my - by0) + (bars_mh - nch * line_h) // 2 + line_h // 2
+    for i, ch in enumerate(txt):
+        cyc = y0 + i * line_h
+        d.text((cx + 1, cyc + 1), ch, font=f, fill=(8, 8, 10, 255), anchor="mm")   # liseré sombre
+        d.text((cx, cyc), ch, font=f, fill=col + (255,), anchor="mm")
     oy, ou, ov, oa, oa2 = rgba_to_yuv(img)
     return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
 
