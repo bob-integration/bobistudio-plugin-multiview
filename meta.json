@@ -1,7 +1,11 @@
 {
-  "version": "0.20.10",
+  "version": "0.20.11",
   "date": "2026-06-28",
   "changes": {
+    "VU : temporisation dédiée du statut « Silence » (~5 s, anti court-blanc) (0.20.11)": [
+      "Le statut « Silence » était piloté par la décroissance du peak-hold (20 dB/s) sous -55 dBFS → il apparaissait ~2 s après une coupure, et était couplé à la ballistique visuelle du hold.",
+      "Découplé : « silence » seulement si le niveau INSTANTANÉ reste sous SILENCE_DB en continu pendant SILENCE_HOLD_S (5 s) ; toute trame au-dessus du seuil ré-arme le compteur. Un court blanc (pause parole/musique) ne déclenche plus « Silence ». La ballistique des VU (hold blanc) est inchangée. Réglable via SILENCE_HOLD_S."
+    ],
     "Fix : VU « ABSENCE » DÉFINITIVE après restart du producteur amont (reader ar=None bloqué) (0.20.10)": [
       "Symptôme : après un REDÉMARRAGE du moteur 2110_io (rebuild → restart), les VU restaient sur « ABSENCE » pour toujours, même une fois l'audio revenu et frais — alors qu'un reader neuf lisait parfaitement.",
       "Cause : quand le producteur redémarre, il DÉTRUIT puis recrée tous ses flux. Pendant le trou, read_latest lève → le chemin d'exception met state['ar']=None. Or _update_peaks renvoyait « absence » dès ar is None, SANS jamais retenter, et render_meters ne recrée pas un state non-None (dict ar=None) → blocage permanent. Le garbage_collect de 0.20.9 ne couvrait que le reader GELÉ (ar≠None), pas le cas ar=None.",

@@ -277,7 +277,8 @@ def _open_audio_state(flux_idx, video_path):
 
 # États audio. SILENCE = flux FRAIS mais niveau au plancher (signal présent, muet). ABSENCE =
 # producteur qui n'écrit plus (flux coupé) OU pas de flux audio du tout.
-SILENCE_DB = METER_MIN_DB + 5.0    # holds sous ce niveau (decay) = silence
+SILENCE_DB = METER_MIN_DB + 5.0    # niveau instantané sous ce seuil = considéré muet
+SILENCE_HOLD_S = 5.0               # muet en continu pendant ce délai → statut "silence" (anti court-blanc)
 ABSENCE_MS = 200.0                 # pas d'écriture producteur depuis ce délai = flux coupé
 
 def _update_peaks(state, n_channels, now):
@@ -381,8 +382,13 @@ def _update_peaks(state, n_channels, now):
     state["peaks"] = peak_db
     state["holds"] = holds
     state["hold_ts"] = hold_ts
-    # Flux frais mais tous les holds au plancher = signal présent mais muet.
-    status = "silence" if float(np.max(holds)) <= SILENCE_DB else "ok"
+    # Flux frais mais MUET = signal présent au plancher. Temporisation DÉDIÉE (découplée de la
+    # ballistique du hold) : « silence » seulement si le niveau INSTANTANÉ reste sous SILENCE_DB
+    # de façon continue pendant ≥ SILENCE_HOLD_S → un court blanc (pause parole/musique) ne le
+    # déclenche pas. Toute trame au-dessus du seuil ré-arme le compteur.
+    if float(np.max(peak_db)) > SILENCE_DB:
+        state["last_loud_ts"] = now
+    status = "silence" if (now - float(state.get("last_loud_ts", now))) >= SILENCE_HOLD_S else "ok"
     return peak_db, holds, status
 
 def _meter_layout(n_channels):
