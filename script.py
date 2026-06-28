@@ -1350,7 +1350,8 @@ def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
     img = Image.new("RGBA", (tw_, th_), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     cx = (mx - bx0) + mw // 2
-    y0 = (my - by0) + (bars_mh - nch * line_h) // 2 + line_h // 2
+    # Aligné EN BAS de la zone des barres (juste au-dessus des numéros de canaux).
+    y0 = (my - by0) + bars_mh - line_h // 2 - (nch - 1) * line_h
     for i, ch in enumerate(txt):
         cyc = y0 + i * line_h
         d.text((cx + 1, cyc + 1), ch, font=f, fill=(8, 8, 10, 255), anchor="mm")   # liseré sombre

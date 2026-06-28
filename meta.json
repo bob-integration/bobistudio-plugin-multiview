@@ -1,7 +1,10 @@
 {
-  "version": "0.20.3",
+  "version": "0.20.4",
   "date": "2026-06-28",
   "changes": {
+    "Étiquette VU alignée en bas (0.20.4)": [
+      "Étiquette SILENCE / ABSENCE alignée EN BAS de la zone des barres (juste au-dessus des numéros de canaux) au lieu d'être centrée verticalement."
+    ],
     "Étiquette VU discrète + ports Câbles ordonnés par type + câblage tissu correct (0.20.3)": [
       "Étiquette SILENCE / ABSENCE BEAUCOUP plus petite et discrète (taille ≈ celle des numéros de canaux, ≤10 px), centrée sur la zone des barres.",
       "Page Câbles : les ports du multiview sont désormais ordonnés PAR TYPE DE SIGNAL (toutes les vidéos, puis tous les audios, puis tous les ANC) au lieu d'être entrelacés par entrée — harmonisé avec les autres conteneurs. Le `group` conserve l'association vidéo↔audio↔ANC.",
