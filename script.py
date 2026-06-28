@@ -286,27 +286,77 @@ def _update_peaks(state, n_channels, now):
     FIGÉES — sinon read_latest rejoue le dernier bloc à l'infini) + statut absence."""
     ar = state.get("ar")
     if ar is None:
-        return None, None, "absence"
-    # Âge depuis la dernière écriture producteur (même base TAI que now_tai). Au-delà d'ABSENCE_MS,
-    # le shm ne reçoit plus rien → on NE LIT PAS le bloc périmé, on retombe à MIN (corrige le figeage).
-    try:
-        lwt = ar.last_write_time()
-        age_ms = (bobimxl.now_tai() - lwt) / 1e6 if lwt else 1e9
-    except Exception:
-        age_ms = 1e9
-    if age_ms > ABSENCE_MS:
+        # Reader PERDU (state["ar"] mis à None par le chemin d'exception quand le flux a DISPARU un
+        # instant — typiquement un producteur amont REDÉMARRÉ : restart du moteur 2110_io qui détruit
+        # puis recrée tous ses flux). Sans retenter ICI, l'état reste figé ar=None À JAMAIS (le state
+        # est un dict non-None → render_meters ne le recrée pas via _open_audio_state) → ABSENCE
+        # permanente. On tente donc de ROUVRIR (avec garbage_collect pour se rattacher à la génération
+        # vivante). Échec (flux toujours absent) → absence, on retentera au tour suivant.
+        try: inst.garbage_collect()
+        except Exception: pass
+        try:
+            ar = bobimxl.AudioReader(inst, state["name"]); state["ar"] = ar
+            state["last_head"] = None; state["last_head_ts"] = now
+        except Exception:
+            state["ar"] = None
+            return None, None, "absence"
+    # Fraîcheur audio via l'AVANCÉE de l'index d'échantillon (head_index), PAS via last_write_time :
+    # NI l'AudioWriter MXL (simu/tonalité, modèle « samples continus » mxlFlowWriterCommitSamples)
+    # NI mtl_rx (RX réel) ne mettent à jour lastWriteTime (réservé aux flux à grains/vidéo) →
+    # last_write_time() reste FIGÉ et ferait croire à une absence alors que le son est frais (VU
+    # vides). On considère le flux COUPÉ si head_index ne bouge plus depuis ABSENCE_MS → MIN.
+    # RECONNEXION : un producteur qui RECRÉE le flux sous le même nom (bascule simu→live mtl_rx,
+    # redéploiement) laisse notre reader collé à l'orphelin MORT (head figé, AUCUNE exception). À
+    # head figé > ABSENCE_MS on ROUVRE le reader pour se rattacher à la génération vivante (≠ index
+    # → frais), symétrique de la reconnexion des readers vidéo. Re-arme le timer = retry borné.
+    def _mn():
         mn = np.full(n_channels, METER_MIN_DB, dtype=np.float64)
         state["peaks"] = mn; state["holds"] = mn
         state["hold_ts"] = np.full(n_channels, now, dtype=np.float64)
         return mn, mn, "absence"
     try:
-        r = ar.read_latest(A_SAMPLES_PER_CHUNK)   # (≤48, channels) float32 normalisé [-1,1]
+        head = int(ar.head_index())
     except Exception:
-        # flux invalidé (producteur recréé) → on tente de rouvrir au tour suivant
+        head = -1
+    last_head = state.get("last_head")
+    if head >= 0 and head != last_head:
+        state["last_head"] = head; state["last_head_ts"] = now        # avance → frais
+    elif last_head is None:
+        state["last_head"] = head; state["last_head_ts"] = now        # 1er passage
+        if head < 0:
+            return _mn()
+    elif (now - float(state.get("last_head_ts") or now)) * 1000.0 > ABSENCE_MS:
+        # Figé > seuil : tenter de se rattacher à la génération courante du flux. Le producteur a
+        # pu DÉTRUIRE+RECRÉER le flux sous le même nom (toggle générateur, (dé)abonnement 2110-30) ;
+        # notre instance MXL longue durée garde une référence à l'ancienne génération MORTE → un
+        # simple ré-open s'y rattacherait encore (head figé). garbage_collect() purge les flows à
+        # writer mort (comme le fait le PRODUCTEUR avant de recréer) → le ré-open voit la vivante.
         try: ar.close()
         except Exception: pass
-        try: state["ar"] = bobimxl.AudioReader(inst, state["name"])
-        except Exception: state["ar"] = None
+        try: inst.garbage_collect()
+        except Exception: pass
+        try:
+            ar = bobimxl.AudioReader(inst, state["name"]); state["ar"] = ar
+            head = int(ar.head_index())
+        except Exception:
+            state["ar"] = None; head = -1
+        state["last_head"] = head; state["last_head_ts"] = now
+        if head < 0 or head == last_head:    # toujours mort (même orphelin / pas de flux) → coupé
+            return _mn()
+        # sinon : rattaché à une génération vivante → frais, on lit ci-dessous
+    try:
+        r = ar.read_latest(A_SAMPLES_PER_CHUNK)   # (≤48, channels) float32 normalisé [-1,1]
+    except Exception:
+        # flux invalidé (producteur recréé) → garbage_collect (purge l'ancienne génération) + rouvrir
+        # sur la vivante. last_head=None pour ré-amorcer le suivi de fraîcheur au tour suivant.
+        try: ar.close()
+        except Exception: pass
+        try: inst.garbage_collect()
+        except Exception: pass
+        try:
+            state["ar"] = bobimxl.AudioReader(inst, state["name"]); state["last_head"] = None
+        except Exception:
+            state["ar"] = None
         return None, None, "absence"
     if r is None:
         return None, None, "absence"
@@ -2222,6 +2272,12 @@ def _select_input(i, cfg, target_w, target_h):
     with state_lock:
         base = mv_state["inputs"][i] if i < len(mv_state["inputs"]) else ""
     base_w = cfg.get("in_w", 640); base_h = cfg.get("in_h", 360)
+    if not base:
+        # Cellule SANS source câblée (décâblée) → AUCUN candidat proxy. Sinon un proxy pyramide
+        # RÉSIDUEL (créé quand la cellule était câblée, son flux encore produit tant que la source
+        # amont vit) serait choisi malgré la source vide → la tuile reste « vivante » après
+        # suppression de la source. base vide → ensure_input("") ferme le Reader → No Signal.
+        return "", base_w, base_h, _classify("", "", base_w, base_h, target_w or base_w, target_h or base_h)
     if target_w <= 0 or target_h <= 0:
         return base, base_w, base_h, _classify(base, base, base_w, base_h, target_w or base_w, target_h or base_h)
     cands = [(base, base_w, base_h)]

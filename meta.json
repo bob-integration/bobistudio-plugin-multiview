@@ -1,7 +1,32 @@
 {
-  "version": "0.20.5",
+  "version": "0.20.10",
   "date": "2026-06-28",
   "changes": {
+    "Fix : VU « ABSENCE » DÉFINITIVE après restart du producteur amont (reader ar=None bloqué) (0.20.10)": [
+      "Symptôme : après un REDÉMARRAGE du moteur 2110_io (rebuild → restart), les VU restaient sur « ABSENCE » pour toujours, même une fois l'audio revenu et frais — alors qu'un reader neuf lisait parfaitement.",
+      "Cause : quand le producteur redémarre, il DÉTRUIT puis recrée tous ses flux. Pendant le trou, read_latest lève → le chemin d'exception met state['ar']=None. Or _update_peaks renvoyait « absence » dès ar is None, SANS jamais retenter, et render_meters ne recrée pas un state non-None (dict ar=None) → blocage permanent. Le garbage_collect de 0.20.9 ne couvrait que le reader GELÉ (ar≠None), pas le cas ar=None.",
+      "Fix : si ar is None, _update_peaks tente de ROUVRIR (avec garbage_collect) au lieu d'abandonner. Idem le chemin d'exception read_latest fait désormais garbage_collect + rouvre sur la génération vivante. Couvre restart du moteur, recréation de flux, (dé)abonnement."
+    ],
+    "Fix : VU « ABSENCE » permanente sur flux audio recréé (garbage_collect au ré-open) (0.20.9)": [
+      "Symptôme : VU bloqués sur « ABSENCE » alors que l'audio (source réelle OU générateur) est bien produit et frais — un reader MXL NEUF lit pourtant le flux sans problème.",
+      "Cause : le flux audio est créé/recréé APRÈS le démarrage du consommateur (abonnement 2110-30, cycle du writer du générateur). Le reader du multiview se retrouve sur une génération MORTE (head figé). La reconnexion rouvrait un AudioReader sur la MÊME instance MXL longue durée, qui garde une référence à l'ancienne génération → re-rattachement à un orphelin mort en boucle → ABSENCE permanente. (Confirmé : flux créés 2-3 min après le démarrage du shard.)",
+      "Fix : _update_peaks appelle inst.garbage_collect() avant de rouvrir lors de la reconnexion (purge les flows à writer mort, comme le fait le PRODUCTEUR avant de recréer) → le ré-open se rattache à la génération vivante. Couvre source réelle et générateur."
+    ],
+    "Fix : cellule décâblée qui continue d'afficher la vidéo via un proxy résiduel (0.20.8)": [
+      "Symptôme : on décâble une source d'une cellule (path vidé) ; la cellule continue d'afficher la vidéo EN DIRECT (pas figée) au lieu de passer en No Signal. Reproductible sur une cellule dont la source amont reste vivante.",
+      "Cause : _select_input ajoutait les proxies pyramide (cfg['proxies'] / flux <src>__sWxH encore présents tant que la source amont vit) comme candidats SANS vérifier que la cellule a une source câblée. Source vide + proxy résiduel existant → le proxy était choisi → ensure_input le rouvrait → tuile « vivante ». _do_reconfigure fermait bien le Reader, mais la boucle le rouvrait aussitôt sur le proxy.",
+      "Fix : _select_input court-circuite quand la base (source câblée) est vide → aucun candidat → ensure_input('') ferme le Reader → No Signal. _compute_proxy_needs ignorait déjà les cellules vides (côté demande OK)."
+    ],
+    "Fix : VU audio figés sur RX réel après bascule simu→live (reconnexion du reader) (0.20.7)": [
+      "Symptôme : après 0.20.6, une entrée passée de simu (tonalité) à RX réel (mtl_rx) perdait ses VU (« absence ») alors que le son réel était bien reçu.",
+      "Cause : quand un producteur RECRÉE le flux audio sous le même nom (bascule simu→live, ou redéploiement), le reader audio caché du multiview reste collé à la génération ORPHELINE morte — head_index figé, SANS exception → jamais reconnecté (la reco n'existait que pour le reader vidéo). Aussi : mtl_rx (RX réel) ne met PAS non plus à jour lastWriteTime, donc seul head_index est fiable.",
+      "Fix : à head_index figé > ABSENCE_MS, _update_peaks ROUVRE l'AudioReader pour se rattacher à la génération vivante (index repart → frais), avec re-armement du timer (retry borné). Couvre RX réel ET simu/tonalité, sans rejouer le dernier bloc à l'infini sur flux réellement coupé."
+    ],
+    "Fix : VU audio vides sur source en simu/tonalité (fraîcheur via head_index) (0.20.6)": [
+      "Symptôme : une entrée affichait sa vidéo mais les VU-mètres restaient vides (« absence ») même avec un signal audio frais (ex. générateur de tonalité de simu du 2110_io).",
+      "Cause : la fraîcheur audio était testée via AudioReader.last_write_time(). Or l'AudioWriter MXL suit le modèle « samples continus » (mxlFlowWriterCommitSamples) qui fait avancer l'index d'échantillon (head_index) mais NE met PAS à jour lastWriteTime (réservé aux flux à grains/vidéo). last_write_time() restait donc FIGÉ → âge toujours > ABSENCE_MS → faux « absence », VU à MIN, alors que les échantillons étaient présents et frais.",
+      "Fix : _update_peaks détecte désormais la fraîcheur par l'AVANCÉE de head_index (figé > ABSENCE_MS = flux coupé → MIN), au lieu de last_write_time. Corrige les VU des sources audio MXL (simu/tonalité, et tout producteur audio sample-continu) sans toucher la détection de coupure (read_latest ne rejoue plus le dernier bloc à l'infini)."
+    ],
     "Étiquette VU centrée sur les canaux (0.20.5)": [
       "Étiquette SILENCE / ABSENCE centrée horizontalement sur les CANAUX (milieu des barres, hors bande des graduations dB) au lieu du milieu du meter entier → entre les canaux 4 et 5 sur 8, entre 1 et 2 sur 2, etc. S'applique aux deux états."
     ],
