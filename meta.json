@@ -1,7 +1,10 @@
 {
-  "version": "0.20.4",
+  "version": "0.20.5",
   "date": "2026-06-28",
   "changes": {
+    "Étiquette VU centrée sur les canaux (0.20.5)": [
+      "Étiquette SILENCE / ABSENCE centrée horizontalement sur les CANAUX (milieu des barres, hors bande des graduations dB) au lieu du milieu du meter entier → entre les canaux 4 et 5 sur 8, entre 1 et 2 sur 2, etc. S'applique aux deux états."
+    ],
     "Étiquette VU alignée en bas (0.20.4)": [
       "Étiquette SILENCE / ABSENCE alignée EN BAS de la zone des barres (juste au-dessus des numéros de canaux) au lieu d'être centrée verticalement."
     ],

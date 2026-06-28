@@ -1344,12 +1344,16 @@ def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
     # PETIT et DISCRET : taille ≈ celle des numéros de canaux (pas plus gros), bornée à la largeur
     # du meter. Centré verticalement sur la zone des barres.
     nch = max(1, len(txt))
-    fsz = max(7, min(10, mw - 2, (bars_mh - 2) // nch))
+    # Largeur de la zone des BARRES (hors bande des graduations/dB à gauche, METER_TICK_W).
+    bars_w = max(1, mw - METER_TICK_W)
+    fsz = max(7, min(10, bars_w, (bars_mh - 2) // nch))
     f = _font(fsz)
     line_h = fsz + 1
     img = Image.new("RGBA", (tw_, th_), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    cx = (mx - bx0) + mw // 2
+    # Centré horizontalement sur les CANAUX (milieu des barres, pas du meter entier) : entre les
+    # canaux 4 et 5 sur 8, entre 1 et 2 sur 2, etc.
+    cx = (mx - bx0) + METER_TICK_W + bars_w // 2
     # Aligné EN BAS de la zone des barres (juste au-dessus des numéros de canaux).
     y0 = (my - by0) + bars_mh - line_h // 2 - (nch - 1) * line_h
     for i, ch in enumerate(txt):
