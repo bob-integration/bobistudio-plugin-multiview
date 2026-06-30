@@ -185,7 +185,7 @@ def pad_input_bank(params):
             "in_w": 0, "in_h": 0,
             "x": 0, "y": 0, "w": (out_w // 2) & ~1, "h": (out_h // 2) & ~1,
             "show_label": True, "show_tally": False, "tsl_index": 0,
-            "label_col": 0, "tally_l_level": 0, "tally_r_level": 1,
+            "label_col": 0, "tally_level": 0, "tally_red": False, "tally_green": False,
             "meter_channels": 0, "meter_position": "right", "meter_inside": False,
             "meter_opacity": 70, "meter_scale": "dbfs",
         })

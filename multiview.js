@@ -184,36 +184,63 @@ async function loadVideoSources() {
     } catch(e) { videoSources = []; }
 }
 
-// ─── Noms de colonnes TSL ────────────────────────────────────
+// ─── Noms de colonnes labels + connexions TSL (= niveaux de Tally) ───────────
 let _tslLabelNames = ["Hostname", "MXL", "Label 2", "Label 3", "Label 4",
                       "Label 5", "Label 6", "Label 7", "Label 8", "Label 9"];
+let _tslConns = [];   // [{id, name, …}] connexions = niveaux de Tally (choix par cellule)
 
 async function _loadTslLabelNames() {
     try {
-        const r = await fetch('/api/tsl/label_names');
-        if (r.ok) _tslLabelNames = await r.json();
+        const [rl, rc] = await Promise.all([
+            fetch('/api/tsl/label_names'),
+            fetch('/api/tsl/connections'),
+        ]);
+        if (rl.ok) _tslLabelNames = await rl.json();
+        if (rc.ok) _tslConns = await rc.json();
     } catch(e) {}
     _tslPopulateSelects();
 }
 
 function _tslPopulateSelects() {
-    ['ed_label_col', 'ed_tally_l_level', 'ed_tally_r_level'].forEach(id => {
-        const sel = document.getElementById(id);
-        if (!sel) return;
-        const cur = sel.value;
-        sel.innerHTML = _tslLabelNames.map((n, i) => `<option value="${i}">${i} — ${n}</option>`).join('');
-        sel.value = cur;
-    });
+    // Colonne label = noms de colonnes ; niveau de Tally = connexions (par nom)
+    const lc = document.getElementById('ed_label_col');
+    if (lc) {
+        const cur = lc.value;
+        lc.innerHTML = _tslLabelNames.map((n, i) => `<option value="${i}">${i} — ${n}</option>`).join('');
+        lc.value = cur;
+    }
+    const tl = document.getElementById('ed_tally_level');
+    if (tl) {
+        const cur = tl.value;
+        // Niveaux de Tally = connexions actives, regroupées par bande tally_base → numéro 1-4.
+        // La connexion qui sert le niveau (et son Rouge/Vert) est définie dans le service.
+        const seen = new Set();
+        let opts = '<option value="0">— Aucun —</option>';
+        for (const c of (_tslConns || [])) {
+            if (!c.enabled) continue;
+            const n = Math.floor((c.tally_base || 0) / 3) + 1;
+            if (seen.has(n)) continue;
+            seen.add(n);
+            opts += `<option value="${n}">Niveau ${n} — ${escapeHtmlMv(c.name)}</option>`;
+        }
+        tl.innerHTML = opts;
+        tl.value = cur;
+    }
 }
 
-function _tslSetSelects(labelCol, lLevel, rLevel) {
+function escapeHtmlMv(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Renseigne les sélecteurs cellule : colonne label, niveau de Tally, couleurs.
+function _tslSetSelects(labelCol, tallyLevel, tallyColors) {
     _tslPopulateSelects();
     const lc = document.getElementById('ed_label_col');
-    const ll = document.getElementById('ed_tally_l_level');
-    const rl = document.getElementById('ed_tally_r_level');
+    const tl = document.getElementById('ed_tally_level');
+    const tk = document.getElementById('ed_tally_colors');
     if (lc) lc.value = String(labelCol ?? 0);
-    if (ll) ll.value = String(lLevel ?? 0);
-    if (rl) rl.value = String(rLevel ?? 1);
+    if (tl) tl.value = String(tallyLevel ?? 0);
+    if (tk) tk.value = tallyColors || 'none';
 }
 
 async function chargerMw(vmid) {
@@ -248,6 +275,7 @@ async function chargerMw(vmid) {
         show_proxy: false,
         max_inputs: 4,
         genlock: true,
+        tsl_mode: 'central',
         tsl_port: 4801,
         overlays: []
     }, dc.params || {});
@@ -304,6 +332,8 @@ function renderEditor(hostname) {
     document.getElementById('ed_genlock').checked       = p.genlock !== false;
     { const _ft = document.getElementById('ed_fps_target'); if (_ft) _ft.value = String(parseInt(p.fps_target) || 0); }
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
+    { const _tm = document.getElementById('ed_tsl_mode'); if (_tm) _tm.value = _resolveTslMode(p); }
+    updateTslModeUI();
     document.getElementById('ed_snap').checked          = snapEnabled;
     try { populateOutFormatSelect(); } catch (e) { /* sélecteur de format non bloquant */ }
     try { populateOrientationSelect(); } catch (e) { /* sélecteur d'orientation non bloquant */ }
@@ -459,6 +489,25 @@ function onOrientationChange() {
 
 // ─── Handlers globaux ────────────────────────────────────────
 
+// Mode tally/UMD : "central" (push orchestrateur) | "direct" (serveur TSL local).
+// Dérivation depuis l'ancien schéma tsl_port/tsl_remote si tsl_mode absent.
+function _resolveTslMode(p) {
+    if (p && p.tsl_mode) return p.tsl_mode;
+    return ((parseInt(p && p.tsl_port) || 0) > 0 && !(p && p.tsl_remote)) ? 'direct' : 'central';
+}
+function updateTslModeUI() {
+    const mode = document.getElementById('ed_tsl_mode')?.value || 'central';
+    const portRow = document.getElementById('ed_tsl_port_row');
+    const note    = document.getElementById('ed_tsl_central_note');
+    if (portRow) portRow.style.display = (mode === 'direct') ? '' : 'none';
+    if (note)    note.style.display    = (mode === 'direct') ? 'none' : '';
+}
+function onTslModeChange() {
+    const _tm = document.getElementById('ed_tsl_mode');
+    if (_tm && editorParams) editorParams.tsl_mode = _tm.value;
+    updateTslModeUI();
+}
+
 function onGlobalChange() {
     editorParams.border_w      = parseInt(document.getElementById('ed_border_w').value) || 0;
     editorParams.border_color  = document.getElementById('ed_border_color').value;
@@ -469,6 +518,8 @@ function onGlobalChange() {
     editorParams.freeze_detect_s = Math.max(0, parseFloat(document.getElementById('ed_freeze_detect').value) || 0);
     editorParams.show_format     = document.getElementById('ed_show_format').checked;
     editorParams.show_proxy      = document.getElementById('ed_show_proxy').checked;
+    { const _tm = document.getElementById('ed_tsl_mode'); if (_tm) editorParams.tsl_mode = _tm.value; }
+    { const _tp = document.getElementById('ed_tsl_port'); if (_tp) editorParams.tsl_port = parseInt(_tp.value) || 0; }
     dessiner();
     hotApplyStyle();
 }
@@ -519,12 +570,13 @@ function newEntry(idx, hidden) {
         ratio: 16/9,
         color: COLORS[idx % COLORS.length],
         show_label: true,
-        show_tally: false,
+        show_tally: false,           // dérivé (rouge||vert) ; reste le gate de rendu
         label_proportional: false,   // taille du label proportionnelle à la fenêtre
         tsl_index: 0,
         label_col: 0,
-        tally_l_level: 0,
-        tally_r_level: 1,
+        tally_level: 0,              // niveau de Tally (0 = aucun ; 1-4 = bande tally_base)
+        tally_red: false,
+        tally_green: false,
         // Peak meters
         meter_channels: 0,           // 0 = désactivé ; sinon 2/4/6/8
         meter_position: 'right',     // left | right
@@ -634,10 +686,10 @@ function refreshEntryPanel() {
     panel.hidden = false;
     document.getElementById('ed_label_source').value = f.label_source || 'hostname';
     document.getElementById('ed_show_label').checked = !!f.show_label;
-    document.getElementById('ed_show_tally').checked = !!f.show_tally;
     document.getElementById('ed_label_proportional').checked = !!f.label_proportional;
     document.getElementById('ed_tsl_index').value    = f.tsl_index || 0;
-    _tslSetSelects(f.label_col ?? 0, f.tally_l_level ?? 0, f.tally_r_level ?? 1);
+    const _colors = f.tally_red && f.tally_green ? 'both' : f.tally_red ? 'red' : f.tally_green ? 'green' : 'none';
+    _tslSetSelects(f.label_col ?? 0, f.tally_level ?? 0, _colors);
     document.getElementById('ed_x').value = f.x;
     document.getElementById('ed_y').value = f.y;
     document.getElementById('ed_w').value = f.w;
@@ -674,12 +726,14 @@ function onEntryChange() {
     f.label_source = document.getElementById('ed_label_source').value || 'hostname';
     f.path         = document.getElementById('ed_path').value;
     f.show_label   = document.getElementById('ed_show_label').checked;
-    f.show_tally   = document.getElementById('ed_show_tally').checked;
     f.label_proportional = document.getElementById('ed_label_proportional').checked;
     f.tsl_index      = parseInt(document.getElementById('ed_tsl_index').value) || 0;
     f.label_col      = parseInt(document.getElementById('ed_label_col').value) || 0;
-    f.tally_l_level  = parseInt(document.getElementById('ed_tally_l_level').value) || 0;
-    f.tally_r_level  = parseInt(document.getElementById('ed_tally_r_level').value) || 1;
+    f.tally_level    = parseInt(document.getElementById('ed_tally_level').value) || 0;
+    const _colors    = document.getElementById('ed_tally_colors').value || 'none';
+    f.tally_red      = (_colors === 'red'   || _colors === 'both');
+    f.tally_green    = (_colors === 'green' || _colors === 'both');
+    f.show_tally     = !!(f.tally_level && (f.tally_red || f.tally_green));   // gate de rendu
     f.meter_channels = parseInt(document.getElementById('ed_meter_channels').value) || 0;
     f.meter_position = document.getElementById('ed_meter_position').value || 'right';
     f.meter_inside   = document.getElementById('ed_meter_inside').value === '1';
@@ -711,7 +765,7 @@ function onEntryGeomChange() {
 // ni la source (path/in_w/in_h/ratio/color), puis colle dans toutes les fenêtres
 // sélectionnées en une fois.
 const COPY_FIELDS = ['w', 'h', 'label_source', 'show_label', 'show_tally', 'label_proportional', 'tsl_index',
-    'label_col', 'tally_l_level', 'tally_r_level',
+    'label_col', 'tally_level', 'tally_red', 'tally_green',
     'meter_channels', 'meter_position', 'meter_inside', 'meter_opacity', 'meter_scale'];
 let reglagesClipboard = null;
 
@@ -1447,6 +1501,10 @@ function hotApplyWindow(idx) {
             show_tally:     !!f.show_tally,
             label_proportional: !!f.label_proportional,
             tsl_index:      f.tsl_index ?? 0,
+            label_col:      f.label_col ?? 0,
+            tally_level:    f.tally_level ?? 0,
+            tally_red:      !!f.tally_red,
+            tally_green:    !!f.tally_green,
             meter_channels: f.meter_channels ?? 0,
             meter_position: f.meter_position || 'right',
             meter_inside:   !!f.meter_inside,
@@ -1984,6 +2042,7 @@ async function deployerEditor() {
     { const _ft = document.getElementById('ed_fps_target'); if (_ft) editorParams.fps_target = parseInt(_ft.value) || 0; }
     const tslPortEl = document.getElementById('ed_tsl_port');
     if (tslPortEl) editorParams.tsl_port = parseInt(tslPortEl.value) || 0;
+    { const _tm = document.getElementById('ed_tsl_mode'); if (_tm) editorParams.tsl_mode = _tm.value; }
     padBank();   // max_inputs a pu changer → complète la banque
 
     const flux_config = editorParams.flux_config.map(f => ({
@@ -2000,6 +2059,10 @@ async function deployerEditor() {
         show_tally: !!f.show_tally,
         label_proportional: !!f.label_proportional,
         tsl_index: parseInt(f.tsl_index) || 0,
+        label_col: parseInt(f.label_col) || 0,
+        tally_level: parseInt(f.tally_level) || 0,
+        tally_red: !!f.tally_red,
+        tally_green: !!f.tally_green,
         // Peak meters audio
         meter_channels: parseInt(f.meter_channels) || 0,
         meter_position: f.meter_position || 'right',
@@ -2029,6 +2092,7 @@ async function deployerEditor() {
         max_inputs:    editorParams.max_inputs,
         genlock:       editorParams.genlock,
         fps_target:    editorParams.fps_target || 0,
+        tsl_mode:      editorParams.tsl_mode || 'central',
         tsl_port:      editorParams.tsl_port ?? 4801
     };
 
@@ -2140,30 +2204,48 @@ function distribuer(axis) {
     selectedIdxs.forEach(i => hotApplyWindow(i));
 }
 
-// Remplir : les fenêtres sélectionnées se TUILENT pour couvrir toute la largeur (ou hauteur) de la
-// sortie, en parts égales, dans leur ordre courant. L'autre dimension est conservée.
-// Ex. 4 PiP (un à gauche, un à droite, deux au centre) → 4 colonnes égales sur toute la largeur.
+// Remplir : les fenêtres sélectionnées se TUILENT le long d'un axe (largeur en parts
+// égales, ou hauteur), dans leur ordre courant. L'AUTRE dimension suit le RATIO de
+// chaque fenêtre (pas de déformation) ; la fenêtre est centrée sur cet autre axe et,
+// si le ratio la ferait déborder, elle est réduite pour rester dans l'image.
+// Ex. 4 PiP (un à gauche, un à droite, deux au centre) → 4 colonnes égales, chacune
+// à la bonne hauteur 16:9 et centrée verticalement.
 function remplir(axis) {
     if (!editorParams || selectedIdxs.length < 1) return;
     const fc = editorParams.flux_config;
     const out_w = editorParams.out_width, out_h = editorParams.out_height;
     const items = selectedIdxs.map(i => fc[i]);
     const n = items.length;
+    const evDim = v => Math.max(2, Math.round(v) & ~1);   // dimension paire ≥ 2
+    const evPos = v => Math.max(0, Math.round(v) & ~1);   // position paire ≥ 0
+    const ratioOf = f => (f.ratio && f.ratio > 0) ? f.ratio
+                       : (f.in_w && f.in_h) ? f.in_w / f.in_h
+                       : (f.h ? f.w / f.h : 16 / 9);
     if (axis === 'h') {
         items.sort((a, b) => a.x - b.x);
         const colW = Math.max(2, Math.floor(out_w / n) & ~1);
         items.forEach((f, k) => {
+            const r = ratioOf(f);
             f.x = k * colW;
-            f.w = (k === n - 1) ? Math.max(2, (out_w - k * colW) & ~1) : colW;
+            let w = (k === n - 1) ? (out_w - k * colW) : colW;
+            let h = w / r;
+            if (h > out_h) { h = out_h; w = h * r; }      // ne pas déborder en hauteur
+            f.w = evDim(w); f.h = evDim(h);
             if (f.x + f.w > out_w) f.x = out_w - f.w;
+            f.y = evPos((out_h - f.h) / 2);               // centré verticalement
         });
     } else {
         items.sort((a, b) => a.y - b.y);
         const rowH = Math.max(2, Math.floor(out_h / n) & ~1);
         items.forEach((f, k) => {
+            const r = ratioOf(f);
             f.y = k * rowH;
-            f.h = (k === n - 1) ? Math.max(2, (out_h - k * rowH) & ~1) : rowH;
+            let h = (k === n - 1) ? (out_h - k * rowH) : rowH;
+            let w = h * r;
+            if (w > out_w) { w = out_w; h = w / r; }       // ne pas déborder en largeur
+            f.w = evDim(w); f.h = evDim(h);
             if (f.y + f.h > out_h) f.y = out_h - f.h;
+            f.x = evPos((out_w - f.w) / 2);               // centré horizontalement
         });
     }
     dessiner();
@@ -2296,7 +2378,11 @@ async function enregistrerLayout() {
             x: f.x, y: f.y, w: f.w, h: f.h,
             show_label: !!f.show_label,
             show_tally: !!f.show_tally,
-            label_proportional: !!f.label_proportional
+            label_proportional: !!f.label_proportional,
+            label_col: f.label_col ?? 0,
+            tally_level: f.tally_level ?? 0,
+            tally_red: !!f.tally_red,
+            tally_green: !!f.tally_green
         }))
     };
     let r = null;

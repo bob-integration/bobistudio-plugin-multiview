@@ -118,12 +118,16 @@
                 <div class="field"><label for="ed_label_source" data-i18n="plugin.multiview.label_source">Nom affiché</label><select id="ed_label_source" onchange="onEntryChange()"><option value="hostname" data-i18n="plugin.multiview.ls_hostname">Nom de la source</option><option value="mxl_path" data-i18n="plugin.multiview.ls_mxl_path">Chemin MXL</option><option value="protocol" data-i18n="plugin.multiview.ls_protocol">Protocole (TSL 5.0)</option></select></div>
                 <div class="field field-grow"><label for="ed_path" data-i18n="plugin.multiview.source">Source</label><select id="ed_path" onchange="onEntryChange()"></select></div>
                 <label class="field field-inline" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.show_label">Afficher le nom</span></label>
-                <label class="field field-inline" for="ed_show_tally"><input type="checkbox" class="ios-toggle" id="ed_show_tally" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.show_tally">Cases Tally</span></label>
                 <label class="field field-inline" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite." data-i18n-title="plugin.multiview.label_proportional_title"><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.label_proportional">Taille proportionnelle</span></label>
                 <div class="field field-narrow"><label for="ed_tsl_index" data-i18n="plugin.multiview.tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
                 <div class="field field-narrow"><label for="ed_label_col" data-i18n="plugin.multiview.label_col">Colonne label</label><select id="ed_label_col" onchange="onEntryChange()"></select></div>
-                <div class="field field-narrow"><label for="ed_tally_l_level" data-i18n="plugin.multiview.tally_l">Tally L</label><select id="ed_tally_l_level" onchange="onEntryChange()"></select></div>
-                <div class="field field-narrow"><label for="ed_tally_r_level" data-i18n="plugin.multiview.tally_r">Tally R</label><select id="ed_tally_r_level" onchange="onEntryChange()"></select></div>
+                <div class="field field-narrow"><label for="ed_tally_level" data-i18n="plugin.multiview.tally_level">Niveau de Tally</label><select id="ed_tally_level" onchange="onEntryChange()"></select></div>
+                <div class="field field-narrow"><label for="ed_tally_colors" data-i18n="plugin.multiview.tally_colors">Couleurs</label><select id="ed_tally_colors" onchange="onEntryChange()">
+                    <option value="none" data-i18n="plugin.multiview.tally_none">Aucune</option>
+                    <option value="red" data-i18n="plugin.multiview.tally_red">Rouge</option>
+                    <option value="green" data-i18n="plugin.multiview.tally_green">Vert</option>
+                    <option value="both" data-i18n="plugin.multiview.tally_both">Rouge + Vert</option>
+                </select></div>
                 <button type="button" class="btn btn-red" onclick="supprimerEntreeSelectionnee()" title="Retire le PiP de l'image SANS couper sa source : l'entrée reste câblée et peut être réaffichée." data-i18n="plugin.multiview.remove_pip" data-i18n-title="plugin.multiview.remove_pip_title">Retirer de l'image</button>
             </div>
             <div class="mw-editor-row">
@@ -258,7 +262,18 @@
                 </select></div>
         </div>
         <div class="row">
-            <div class="field"><label for="ed_tsl_port" data-i18n="plugin.multiview.tsl_port">TSL port TCP</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
+            <div class="field"><label for="ed_tsl_mode" data-i18n="plugin.multiview.tsl_mode">Source du tally/UMD</label>
+                <select id="ed_tsl_mode" onchange="onTslModeChange()">
+                    <option value="central" data-i18n="plugin.multiview.tsl_mode_central">Centralisé (orchestrateur)</option>
+                    <option value="direct" data-i18n="plugin.multiview.tsl_mode_direct">TSL Direct (serveur local)</option>
+                </select></div>
+        </div>
+        <div class="row" id="ed_tsl_central_note">
+            <div class="field"><span class="meta" data-i18n="plugin.multiview.tsl_central_help">Tally/UMD fourni par le service TSL de l'orchestrateur (Réglages → Protocoles → TSL).</span></div>
+        </div>
+        <div class="row" id="ed_tsl_port_row" style="display:none">
+            <div class="field"><label for="ed_tsl_port" data-i18n="plugin.multiview.tsl_port">Port TSL 5.0 local</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
+            <div class="field"><span class="meta" data-i18n="plugin.multiview.tsl_direct_help">Le contrôleur (VSM…) doit pointer vers l'IP de ce multiview, sur ce port.</span></div>
         </div>
         <div class="row mw-deploy-row">
             <button type="button" class="btn btn-orange" id="ed_deploy_btn" onclick="deployerEditor()" data-i18n="plugin.multiview.deploy">Déployer</button>

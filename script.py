@@ -92,8 +92,11 @@ BORDER_W      = int(CONFIG.get("border_w") or 0)        # bordure globale (px)
 BORDER_COLOR  = CONFIG.get("border_color") or "#ffffff" # couleur de bordure globale
 OVERLAY_BELOW = _as_bool(CONFIG.get("overlay_below"))   # bandeau sous l'image vs par-dessus
 LABEL_SIZE    = int(CONFIG.get("label_size") or 14)     # taille du texte du label (px)
-TSL_PORT      = int(CONFIG.get("tsl_port") or 0)        # port TCP TSL 5.0 (0 = désactivé)
-TSL_REMOTE    = _as_bool(CONFIG.get("tsl_remote"))      # True = TSL géré par l'orchestrateur (désactive le serveur local)
+TSL_PORT      = int(CONFIG.get("tsl_port") or 0)        # port TCP TSL 5.0 local (mode Direct)
+# Mode tally/UMD : "central" (push /tally_bulk par l'orchestrateur) | "direct" (serveur TSL local).
+# Dérivation depuis l'ancien schéma tsl_port/tsl_remote si tsl_mode absent (compat sans migration).
+TSL_MODE      = (CONFIG.get("tsl_mode")
+                 or ("direct" if (TSL_PORT > 0 and not _as_bool(CONFIG.get("tsl_remote"))) else "central"))
 SHOW_NO_SIGNAL = _as_bool(CONFIG.get("show_no_signal", True))  # placeholder « NO SIGNAL » quand la source manque
 try:
     FREEZE_DETECT_S = max(0.0, float(CONFIG.get("freeze_detect_s", 2.0)))  # s sans avance du frame_index → badge FREEZE (0 = off)
@@ -1671,7 +1674,9 @@ def _apply_tsl(index, control, text):
     rh = _tsl_slots.get((index, 'rh'), [0])[0]
     tt = _tsl_slots.get((index, 'tt'), [0])[0]
     lh = _tsl_slots.get((index, 'lh'), [0])[0]
-    color = _tally_dominant(rh, lh, tt)
+    # Mode Direct : Rouge = TT (on-air), Vert = LH (preview). Couleur FORCÉE si le champ est actif.
+    red_active   = tt != 0
+    green_active = lh != 0
     if tsl_text_by_index.get(index) != text:
         tsl_text_by_index[index] = text   # exposé aux overlays texte sourcés TSL
         overlay_dirty.set()               # re-bake la couche overlay cachée (texte sourcé TSL)
@@ -1679,8 +1684,8 @@ def _apply_tsl(index, control, text):
     for i, cfg in enumerate(FLUX_CONFIG):
         if int(cfg.get("tsl_index", 0) or 0) != index:
             continue
-        new_L = color
-        new_R = color
+        new_L = "red"   if (cfg.get("tally_red")   and red_active)   else "off"
+        new_R = "green" if (cfg.get("tally_green") and green_active) else "off"
         if tally_state.get(f"{{i}}_L") != new_L:
             tally_state[f"{{i}}_L"] = new_L; changed = True
         if tally_state.get(f"{{i}}_R") != new_R:
@@ -1713,14 +1718,14 @@ def _handle_tsl_client(conn):
                     # Il faut au moins 14 bytes (SOM + header fixe 12 bytes)
                     if len(buf) < 14:
                         break
-                    # CONTROL à +10, LENGTH à +12 (2 bytes EXTRA entre INDEX et CONTROL)
+                    # Offsets vérifiés sur le fil VSM : SCREEN@6, INDEX@8, CONTROL@10, LENGTH@12, TEXT@14
                     control = struct.unpack_from("<H", buf, 10)[0]
                     length  = struct.unpack_from("<H", buf, 12)[0]
                     total   = 14 + length
                     if len(buf) < total:
                         break
                     ver     = buf[2]
-                    index   = struct.unpack_from("<H", buf, 6)[0]
+                    index   = struct.unpack_from("<H", buf, 8)[0]
                     text    = buf[14:14 + length].decode("latin-1", errors="replace") if length else ""
                     tsl_debug["last_ver"]     = ver
                     tsl_debug["last_index"]   = index
@@ -1747,7 +1752,7 @@ def _tsl_server():
             except Exception: pass
             time.sleep(2)
 
-if TSL_PORT > 0 and not TSL_REMOTE:
+if TSL_MODE == "direct" and TSL_PORT > 0:
     threading.Thread(target=_tsl_server, daemon=True).start()
 
 # ─── Overlays : Texte / Horloge / Image (outils non-vidéo) ───

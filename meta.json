@@ -1,7 +1,16 @@
 {
-  "version": "0.20.11",
-  "date": "2026-06-28",
+  "version": "0.22.1",
+  "date": "2026-06-30",
   "changes": {
+    "Layout : boutons « Remplir » respectent le ratio (0.22.1)": [
+      "Les boutons Remplir largeur / hauteur tuilent toujours les fenêtres sélectionnées le long d'un axe, mais l'AUTRE dimension suit désormais le RATIO de chaque fenêtre (in_w/in_h, défaut 16:9) au lieu de garder l'ancienne dimension — plus de déformation. La fenêtre est centrée sur l'axe perpendiculaire ; si le ratio la ferait déborder, elle est réduite pour rester dans l'image."
+    ],
+    "TSL : modèle « niveau de Tally » + couleurs Rouge/Vert par cellule (0.22.0)": [
+      "Config tally par fenêtre repensée côté opérateur : on choisit une « Colonne » (label) et un « Niveau de Tally » (1-4), puis les couleurs (Aucune / Rouge / Vert / Rouge + Vert). On ne voit plus TT/LH/RH ni de connexion. Remplace les anciens sélecteurs Tally L/R.",
+      "Le service mappe « quelle connexion sert quel niveau de Tally » (bande tally_base) et définit Rouge/Vert PAR connexion (colonnes « Rouge ← champ » / « Vert ← champ », défaut TT/LH). Plusieurs productions = plusieurs niveaux ; un niveau est réassignable côté service sans toucher les multiviews.",
+      "label_col + la config tally sont maintenant inclus dans le déploiement (corrige un trou : ils n'étaient pas persistés).",
+      "Choix Centralisé / TSL Direct conservé. Offset index TSL corrigé à 8 (service + parser local). En Direct, Rouge=TT / Vert=LH (couleur forcée). Le distributor n'envoie rien aux multiviews en mode Direct."
+    ],
     "VU : temporisation dédiée du statut « Silence » (~5 s, anti court-blanc) (0.20.11)": [
       "Le statut « Silence » était piloté par la décroissance du peak-hold (20 dB/s) sous -55 dBFS → il apparaissait ~2 s après une coupure, et était couplé à la ballistique visuelle du hold.",
       "Découplé : « silence » seulement si le niveau INSTANTANÉ reste sous SILENCE_DB en continu pendant SILENCE_HOLD_S (5 s) ; toute trame au-dessus du seuil ré-arme le compteur. Un court blanc (pause parole/musique) ne déclenche plus « Silence ». La ballistique des VU (hold blanc) est inchangée. Réglable via SILENCE_HOLD_S."

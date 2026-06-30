@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.20.11",
+  "version": "0.22.1",
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
@@ -51,6 +51,7 @@
     "border_color": "#ffffff",
     "overlay_below": false,
     "label_size": 14,
+    "tsl_mode": "central",
     "tsl_port": 0,
     "max_inputs": 4,
     "frame_style": "none",
@@ -172,18 +173,22 @@
       "default": false
     },
     {
+      "key": "tsl_mode",
+      "type": "select",
+      "label": "Source du tally/UMD",
+      "options": [
+        { "value": "central", "label": "Centralisé (service TSL orchestrateur)" },
+        { "value": "direct",  "label": "TSL Direct (serveur local du multiview)" }
+      ],
+      "default": "central"
+    },
+    {
       "key": "tsl_port",
       "type": "number",
-      "label": "Port TSL 5.0 (0 = off, ignoré si TSL orchestrateur activé)",
+      "label": "Port TSL 5.0 local (mode Direct uniquement)",
       "min": 0,
       "max": 65535,
       "default": 0
-    },
-    {
-      "key": "tsl_remote",
-      "type": "bool",
-      "label": "TSL géré par l'orchestrateur (service centralisé)",
-      "default": false
     }
   ],
   "wiring": {
