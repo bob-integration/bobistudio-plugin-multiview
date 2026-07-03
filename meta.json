@@ -1,7 +1,16 @@
 {
-  "version": "0.22.1",
+  "version": "0.22.3",
   "date": "2026-06-30",
   "changes": {
+    "TSL central : texte indépendant relié à une ligne du tableau /labels (0.22.3)": [
+      "Un overlay texte (sans PiP) en mode Centralisé se relie désormais à une LIGNE du tableau /labels (toutes les lignes : sources réelles + nouvelles « lignes texte ») + une COLONNE label pour le texte affiché, plus un Niveau de Tally + couleurs (Rouge/Vert) pour l'allumage. Plus d'index TSL à saisir : tout est résolu côté orchestrateur depuis la ligne choisie.",
+      "Nouveau bouton « + Ligne texte » dans /labels : crée une ligne UMD sans source vidéo (clé __umd:<nom>, badge « texte ») qui porte labels + index TSL par connexion comme une source — la cible des overlays texte.",
+      "En mode TSL Direct, l'overlay garde son index TSL local + son allumage par index (inchangé). Le distributor pousse le texte+état actif des overlays via :8080/tally_bulk (champ overlays)."
+    ],
+    "TSL central : plus d'index TSL à saisir sur un PiP (déduit de la source) (0.22.2)": [
+      "En mode Centralisé, le champ « TSL index » d'une fenêtre est masqué : il est inutile. L'index de la source est déduit automatiquement de la source affichée dans le PiP (lookup inverse source_shm → tsl_index dans le mapping TSL de la connexion qui sert le niveau choisi). Le champ ne reste affiché qu'en mode TSL Direct, où le serveur local en a besoin.",
+      "Distributor : en central, l'index n'est plus lu sur la cellule mais résolu via fc.shm. Cohérent avec le texte du label, qui se résolvait déjà via la source."
+    ],
     "Layout : boutons « Remplir » respectent le ratio (0.22.1)": [
       "Les boutons Remplir largeur / hauteur tuilent toujours les fenêtres sélectionnées le long d'un axe, mais l'AUTRE dimension suit désormais le RATIO de chaque fenêtre (in_w/in_h, défaut 16:9) au lieu de garder l'ancienne dimension — plus de déformation. La fenêtre est centrée sur l'axe perpendiculaire ; si le ratio la ferait déborder, elle est réduite pour rester dans l'image."
     ],

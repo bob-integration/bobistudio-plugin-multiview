@@ -188,15 +188,29 @@ async function loadVideoSources() {
 let _tslLabelNames = ["Hostname", "MXL", "Label 2", "Label 3", "Label 4",
                       "Label 5", "Label 6", "Label 7", "Label 8", "Label 9"];
 let _tslConns = [];   // [{id, name, …}] connexions = niveaux de Tally (choix par cellule)
+let _labelRows = [];  // [{shm, name}] lignes du tableau /labels (overlay texte central)
 
 async function _loadTslLabelNames() {
     try {
-        const [rl, rc] = await Promise.all([
+        const [rl, rc, rs, rsl] = await Promise.all([
             fetch('/api/tsl/label_names'),
             fetch('/api/tsl/connections'),
+            fetch('/api/sources'),
+            fetch('/api/source_labels'),
         ]);
         if (rl.ok) _tslLabelNames = await rl.json();
         if (rc.ok) _tslConns = await rc.json();
+        // Lignes = sources réelles (tous kinds) + lignes manuelles/texte (source_labels).
+        const rows = [], seen = new Set();
+        if (rs.ok) for (const s of (await rs.json())) {
+            const shm = s.shm || ''; if (!shm || seen.has(shm)) continue; seen.add(shm);
+            rows.push({ shm, name: s.hostname || shm });
+        }
+        if (rsl.ok) for (const sl of (await rsl.json())) {
+            const shm = sl.shm || ''; if (!shm || seen.has(shm)) continue; seen.add(shm);
+            rows.push({ shm, name: shm.startsWith('__umd:') ? shm.slice(6) + ' (texte)' : shm });
+        }
+        _labelRows = rows;
     } catch(e) {}
     _tslPopulateSelects();
 }
@@ -214,6 +228,40 @@ function _tslPopulateSelects() {
         const cur = tl.value;
         // Niveaux de Tally = connexions actives, regroupées par bande tally_base → numéro 1-4.
         // La connexion qui sert le niveau (et son Rouge/Vert) est définie dans le service.
+        const seen = new Set();
+        let opts = '<option value="0">— Aucun —</option>';
+        for (const c of (_tslConns || [])) {
+            if (!c.enabled) continue;
+            const n = Math.floor((c.tally_base || 0) / 3) + 1;
+            if (seen.has(n)) continue;
+            seen.add(n);
+            opts += `<option value="${n}">Niveau ${n} — ${escapeHtmlMv(c.name)}</option>`;
+        }
+        tl.innerHTML = opts;
+        tl.value = cur;
+    }
+    _tslPopulateOverlaySelects();
+}
+
+// Selects de l'éditeur d'overlay texte en mode central : ligne (toutes les lignes du tableau),
+// colonne label, niveau de Tally. Mêmes données que les cellules PiP, cibles différentes.
+function _tslPopulateOverlaySelects() {
+    const lr = document.getElementById('ov_label_row');
+    if (lr) {
+        const cur = lr.value;
+        lr.innerHTML = '<option value="">— Aucune —</option>' +
+            _labelRows.map(r => `<option value="${escapeHtmlMv(r.shm)}">${escapeHtmlMv(r.name)}</option>`).join('');
+        lr.value = cur;
+    }
+    const lc = document.getElementById('ov_label_col');
+    if (lc) {
+        const cur = lc.value;
+        lc.innerHTML = _tslLabelNames.map((n, i) => `<option value="${i}">${i} — ${escapeHtmlMv(n)}</option>`).join('');
+        lc.value = cur;
+    }
+    const tl = document.getElementById('ov_tally_level');
+    if (tl) {
+        const cur = tl.value;
         const seen = new Set();
         let opts = '<option value="0">— Aucun —</option>';
         for (const c of (_tslConns || [])) {
@@ -501,11 +549,16 @@ function updateTslModeUI() {
     const note    = document.getElementById('ed_tsl_central_note');
     if (portRow) portRow.style.display = (mode === 'direct') ? '' : 'none';
     if (note)    note.style.display    = (mode === 'direct') ? 'none' : '';
+    // En central, l'index TSL d'un PiP est inutile : il est déduit de la source du PiP
+    // (lookup inverse source_shm → tsl_index dans le tsl_mapping de la connexion).
+    const idxRow = document.getElementById('ed_tsl_index_row');
+    if (idxRow) idxRow.style.display = (mode === 'direct') ? '' : 'none';
 }
 function onTslModeChange() {
     const _tm = document.getElementById('ed_tsl_mode');
     if (_tm && editorParams) editorParams.tsl_mode = _tm.value;
     updateTslModeUI();
+    if (typeof refreshOverlayPanel === 'function') refreshOverlayPanel();   // champs overlay selon le mode
 }
 
 function onGlobalChange() {
@@ -1554,7 +1607,8 @@ function newOverlay(kind) {
         color: '#ffffff', bg_color: '', bg_opacity: 100,
         tally_index: 0, color_on: '#ffd400', bg_color_on: '#cc0000',
     };
-    if (kind === 'text')  Object.assign(o, { text: 'TEXTE', text_source: 'local', tsl_index: 0 });
+    if (kind === 'text')  Object.assign(o, { text: 'TEXTE', text_source: 'local', tsl_index: 0,
+        label_row: '', label_col: 0, tally_level: 0, tally_red: false, tally_green: false });
     if (kind === 'clock') Object.assign(o, {
         clock_source: 'ptp', show_hh: true, show_mm: true, show_ss: true, show_ff: false,
         offset_ms: 0, chrono_start: '00:00:00', chrono_running: false,
@@ -1598,7 +1652,10 @@ function serializeOverlays() {
             color_on: o.color_on || '#ffffff', bg_color_on: o.bg_color_on || '' });
         if (o.kind === 'text') Object.assign(base, {
             text: o.text || '', text_source: o.text_source || 'local',
-            tsl_index: parseInt(o.tsl_index) || 0 });
+            tsl_index: parseInt(o.tsl_index) || 0,
+            label_row: o.label_row || '', label_col: parseInt(o.label_col) || 0,
+            tally_level: parseInt(o.tally_level) || 0,
+            tally_red: !!o.tally_red, tally_green: !!o.tally_green });
         if (o.kind === 'clock') Object.assign(base, {
             clock_source: o.clock_source || 'ptp',
             show_hh: o.show_hh !== false, show_mm: o.show_mm !== false,
@@ -1689,7 +1746,11 @@ function drawOverlayLayer(ctx, layer) {
                 ctx.fillRect(o.x, o.y, o.w, o.h);
             }
             const txt = o.kind === 'clock' ? clockSample(o)
-                : (o.text_source === 'tsl' ? `(TSL #${o.tsl_index || 0})` : (o.text || ''));
+                : (o.text_source === 'tsl'
+                    ? (_resolveTslMode(editorParams) !== 'direct'
+                        ? `(${(_labelRows.find(r => r.shm === o.label_row) || {}).name || 'ligne ?'})`
+                        : `(TSL #${o.tsl_index || 0})`)
+                    : (o.text || ''));
             const fs = (o.font_size > 0 ? o.font_size : Math.max(8, Math.round(o.h * 0.7)));
             ctx.fillStyle = o.color || '#ffffff';
             ctx.font = `bold ${fs}px sans-serif`;
@@ -1761,6 +1822,12 @@ function refreshOverlayPanel() {
     _ovSetVal('ov_text', o.text || '');
     _ovSetVal('ov_text_source', o.text_source || 'local');
     _ovSetVal('ov_tsl_index', o.tsl_index || 0);
+    _tslPopulateOverlaySelects();
+    _ovSetVal('ov_label_row', o.label_row || '');
+    _ovSetVal('ov_label_col', o.label_col || 0);
+    _ovSetVal('ov_tally_level', o.tally_level || 0);
+    _ovSetVal('ov_tally_colors', o.tally_red && o.tally_green ? 'both'
+                               : o.tally_red ? 'red' : o.tally_green ? 'green' : 'none');
     _ovSetVal('ov_clock_source', o.clock_source || 'ptp');
     _ovSetChk('ov_show_hh', o.show_hh !== false);
     _ovSetChk('ov_show_mm', o.show_mm !== false);
@@ -1780,7 +1847,17 @@ function refreshOverlayPanel() {
     const mp = document.getElementById('ov_media_label');
     if (mp) mp.textContent = o.image_name || (o.image_b64 ? T('plugin.multiview.image_imported') : T('plugin.multiview.no_media'));
     const sub = (id, on) => { const e = document.getElementById(id); if (e) e.hidden = !on; };
-    sub('ov_text_tsl_grp', o.kind === 'text' && o.text_source === 'tsl');
+    // Texte sourcé TSL : champs différents selon le mode tally/UMD du multiview.
+    //  - Direct  : index TSL local (ov_tsl_index) + Tally On par index (ov_tally_index).
+    //  - Central : ligne + colonne du tableau (texte) + niveau + couleurs (allumage).
+    const tslSrc  = o.kind === 'text' && o.text_source === 'tsl';
+    const central = _resolveTslMode(editorParams) !== 'direct';
+    sub('ov_text_tsl_grp',     tslSrc && !central);
+    sub('ov_label_row_grp',    tslSrc &&  central);
+    sub('ov_label_col_grp',    tslSrc &&  central);
+    sub('ov_tally_level_grp',  tslSrc &&  central);
+    sub('ov_tally_colors_grp', tslSrc &&  central);
+    sub('ov_tally_index_grp',  !central);   // index manuel d'allumage : Direct uniquement
     sub('ov_chrono_grp',   o.kind === 'clock' && (o.clock_source === 'chrono' || o.clock_source === 'countdown'));
     sub('ov_cdwarn_grp',   o.kind === 'clock' && o.clock_source === 'countdown');
     sub('ov_ptp_grp',      o.kind === 'clock' && o.clock_source === 'ptp');
@@ -1818,6 +1895,14 @@ function onOverlayChange() {
         o.text = g('ov_text').value;
         o.text_source = g('ov_text_source').value;
         o.tsl_index = parseInt(g('ov_tsl_index').value) || 0;
+        // Central : ligne + colonne du tableau (texte) + niveau + couleurs (allumage).
+        o.label_row = g('ov_label_row').value || '';
+        o.label_col = parseInt(g('ov_label_col').value) || 0;
+        o.tally_level = parseInt(g('ov_tally_level').value) || 0;
+        const tc = g('ov_tally_colors').value;
+        o.tally_red   = (tc === 'red'  || tc === 'both');
+        o.tally_green = (tc === 'green' || tc === 'both');
+        refreshOverlayPanel();   // re-bascule la visibilité des champs (source TSL ↔ local)
     }
     if (o.kind === 'clock') {
         o.clock_source = g('ov_clock_source').value;

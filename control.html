@@ -119,7 +119,7 @@
                 <div class="field field-grow"><label for="ed_path" data-i18n="plugin.multiview.source">Source</label><select id="ed_path" onchange="onEntryChange()"></select></div>
                 <label class="field field-inline" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.show_label">Afficher le nom</span></label>
                 <label class="field field-inline" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite." data-i18n-title="plugin.multiview.label_proportional_title"><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.label_proportional">Taille proportionnelle</span></label>
-                <div class="field field-narrow"><label for="ed_tsl_index" data-i18n="plugin.multiview.tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
+                <div class="field field-narrow" id="ed_tsl_index_row"><label for="ed_tsl_index" data-i18n="plugin.multiview.tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
                 <div class="field field-narrow"><label for="ed_label_col" data-i18n="plugin.multiview.label_col">Colonne label</label><select id="ed_label_col" onchange="onEntryChange()"></select></div>
                 <div class="field field-narrow"><label for="ed_tally_level" data-i18n="plugin.multiview.tally_level">Niveau de Tally</label><select id="ed_tally_level" onchange="onEntryChange()"></select></div>
                 <div class="field field-narrow"><label for="ed_tally_colors" data-i18n="plugin.multiview.tally_colors">Couleurs</label><select id="ed_tally_colors" onchange="onEntryChange()">
@@ -158,8 +158,18 @@
             <!-- Texte -->
             <div class="mw-editor-row ov-grp" data-kind="text">
                 <div class="field field-grow"><label for="ov_text" data-i18n="plugin.multiview.text">Texte</label><textarea id="ov_text" rows="2" onchange="onOverlayChange()" oninput="onOverlayTextInput()" style="resize:vertical;font-family:inherit;min-height:2.2em" title="Entrée = saut de ligne"></textarea></div>
-                <div class="field"><label for="ov_text_source" data-i18n="plugin.multiview.source">Source</label><select id="ov_text_source" onchange="onOverlayChange()"><option value="local" data-i18n="plugin.multiview.text_source_local">Texte local</option><option value="tsl">TSL</option></select></div>
+                <div class="field"><label for="ov_text_source" data-i18n="plugin.multiview.source">Source</label><select id="ov_text_source" onchange="onOverlayChange()"><option value="local" data-i18n="plugin.multiview.text_source_local">Texte local</option><option value="tsl" data-i18n="plugin.multiview.text_source_tsl">TSL / Tableau</option></select></div>
+                <!-- Mode Direct : index TSL local saisi à la main -->
                 <div class="field field-narrow" id="ov_text_tsl_grp"><label for="ov_tsl_index" data-i18n="plugin.multiview.tsl_index_short">Index TSL</label><input type="number" id="ov_tsl_index" min="0" max="65535" onchange="onOverlayChange()"></div>
+                <!-- Mode Central : ligne + colonne du tableau /labels (texte) + niveau + couleurs (allumage) -->
+                <div class="field" id="ov_label_row_grp"><label for="ov_label_row" data-i18n="plugin.multiview.label_row">Ligne</label><select id="ov_label_row" onchange="onOverlayChange()"></select></div>
+                <div class="field field-narrow" id="ov_label_col_grp"><label for="ov_label_col" data-i18n="plugin.multiview.label_col">Colonne label</label><select id="ov_label_col" onchange="onOverlayChange()"></select></div>
+                <div class="field field-narrow" id="ov_tally_level_grp"><label for="ov_tally_level" data-i18n="plugin.multiview.tally_level">Niveau de Tally</label><select id="ov_tally_level" onchange="onOverlayChange()"></select></div>
+                <div class="field field-narrow" id="ov_tally_colors_grp"><label for="ov_tally_colors" data-i18n="plugin.multiview.tally_colors">Couleurs</label><select id="ov_tally_colors" onchange="onOverlayChange()">
+                    <option value="none" data-i18n="plugin.multiview.tally_none">Aucune</option>
+                    <option value="red" data-i18n="plugin.multiview.tally_red">Rouge</option>
+                    <option value="green" data-i18n="plugin.multiview.tally_green">Vert</option>
+                    <option value="both" data-i18n="plugin.multiview.tally_both">Rouge + Vert</option></select></div>
             </div>
             <!-- Horloge -->
             <div class="mw-editor-row ov-grp" data-kind="clock">
@@ -204,7 +214,7 @@
                 <div class="field field-narrow"><label for="ov_bg_opacity" data-i18n="plugin.multiview.bg_opacity">Opacité fond</label><input type="number" id="ov_bg_opacity" min="0" max="100" onchange="onOverlayChange()"></div>
             </div>
             <div class="mw-editor-row ov-grp" data-kind="text,clock">
-                <div class="field field-narrow"><label for="ov_tally_index" data-i18n="plugin.multiview.tally_on_index">Tally On — index TSL (0=off)</label><input type="number" id="ov_tally_index" min="0" max="65535" onchange="onOverlayChange()"></div>
+                <div class="field field-narrow" id="ov_tally_index_grp"><label for="ov_tally_index" data-i18n="plugin.multiview.tally_on_index">Tally On — index TSL (0=off)</label><input type="number" id="ov_tally_index" min="0" max="65535" onchange="onOverlayChange()"></div>
                 <div class="field field-color"><label for="ov_color_on" data-i18n="plugin.multiview.text_tally_on">Texte (Tally On)</label><input type="color" id="ov_color_on" onchange="onOverlayChange()"></div>
                 <div class="field field-color"><label for="ov_bg_color_on" data-i18n="plugin.multiview.bg_tally_on">Fond (Tally On)</label><input type="color" id="ov_bg_color_on" onchange="onOverlayChange()"></div>
             </div>

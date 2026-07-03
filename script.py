@@ -608,6 +608,9 @@ tally_state = {{}}
 tsl_text = {{}}
 # texte TSL indexé par index TSL brut (utilisé par les overlays texte sourcés TSL, hors fenêtres)
 tsl_text_by_index = {{}}
+# overlays texte en mode CENTRAL : id d'overlay → {{"text": str, "active": bool}} poussé par
+# l'orchestrateur (résolu depuis une ligne du tableau /labels, pas un index TSL local).
+overlay_central = {{}}
 tally_dirty = threading.Event()
 tally_dirty.set()
 # Accumulateur par slot TSL : (tsl_index, 'rh'|'tt'|'lh') → [valeur, last_ts, smoothed_interval_or_None]
@@ -726,8 +729,19 @@ class Handler(BaseHTTPRequestHandler):
                     text = upd.get("text")
                     if text is not None and slot == "L":
                         tsl_text[idx] = str(text)
+                # Overlays texte central : id → texte + état actif (résolu côté orchestrateur)
+                ov_changed = False
+                for ov in (data.get("overlays") or []):
+                    oid = str(ov.get("id") or "")
+                    if not oid:
+                        continue
+                    overlay_central[oid] = {{"text": str(ov.get("text") or ""),
+                                             "active": bool(ov.get("active"))}}
+                    ov_changed = True
                 if changed:
                     tally_dirty.set()
+                if ov_changed:
+                    overlay_dirty.set()
                 self._send_json({{"status": "ok", "updates": len(updates)}})
             except Exception as e:
                 self.send_response(400); self.end_headers()
@@ -1833,7 +1847,11 @@ def _overlay_geom(ov):
     return x, y, w, h
 
 def _overlay_active(ov):
-    """État Tally On : True si l'index TSL référencé a un tally actif (≠ off)."""
+    """État Tally On : True si l'overlay est allumé.
+    Central : flag poussé par l'orchestrateur (résolu depuis la ligne + niveau de Tally).
+    Direct  : dérivé de l'index TSL local (tally_index)."""
+    if TSL_MODE != "direct":
+        return bool(overlay_central.get(str(ov.get("id") or ""), {{}}).get("active"))
     ti = int(ov.get("tally_index") or 0)
     if ti <= 0:
         return False
@@ -1887,6 +1905,9 @@ def _draw_text_overlay(d, ov, text, color_override=None):
 
 def _overlay_text_value(ov):
     if (ov.get("text_source") or "local") == "tsl":
+        # Central : texte poussé par l'orchestrateur (ligne + colonne du tableau /labels).
+        if TSL_MODE != "direct":
+            return overlay_central.get(str(ov.get("id") or ""), {{}}).get("text", "") or ""
         return tsl_text_by_index.get(int(ov.get("tsl_index") or 0), "") or ""
     return ov.get("text") or ""
 
