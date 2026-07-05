@@ -20,6 +20,7 @@
     "gpu": 1
   },
   "version": "0.22.3",
+  "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
@@ -103,14 +104,16 @@
       "label": "Bordure (px)",
       "min": 0,
       "max": 30,
-      "default": 0
+      "default": 0,
+      "scope": "user"
     },
     {
       "key": "border_color",
       "type": "text",
       "label": "Couleur bordure",
       "placeholder": "#ffffff",
-      "default": "#ffffff"
+      "default": "#ffffff",
+      "scope": "user"
     },
     {
       "key": "label_size",
@@ -118,7 +121,8 @@
       "label": "Taille label (px)",
       "min": 6,
       "max": 80,
-      "default": 14
+      "default": 14,
+      "scope": "user"
     },
     {
       "key": "frame_style",
@@ -150,13 +154,15 @@
           "value": "flat",
           "label": "Flat (soulignement)"
         }
-      ]
+      ],
+      "scope": "user"
     },
     {
       "key": "show_no_signal",
       "type": "bool",
       "label": "Afficher « NO SIGNAL » quand la source manque",
-      "default": true
+      "default": true,
+      "scope": "user"
     },
     {
       "key": "freeze_detect_s",
@@ -164,21 +170,29 @@
       "label": "Détection image figée (s, 0 = off)",
       "min": 0,
       "max": 30,
-      "default": 2
+      "default": 2,
+      "scope": "user"
     },
     {
       "key": "show_format",
       "type": "bool",
       "label": "Afficher le format source par fenêtre",
-      "default": false
+      "default": false,
+      "scope": "user"
     },
     {
       "key": "tsl_mode",
       "type": "select",
       "label": "Source du tally/UMD",
       "options": [
-        { "value": "central", "label": "Centralisé (service TSL orchestrateur)" },
-        { "value": "direct",  "label": "TSL Direct (serveur local du multiview)" }
+        {
+          "value": "central",
+          "label": "Centralisé (service TSL orchestrateur)"
+        },
+        {
+          "value": "direct",
+          "label": "TSL Direct (serveur local du multiview)"
+        }
       ],
       "default": "central"
     },
