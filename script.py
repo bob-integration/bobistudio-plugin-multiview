@@ -702,11 +702,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/tally":
             try:
                 idx   = int(data["flux_idx"])
-                slot  = str(data["slot"]).upper()
                 color = str(data.get("color", "off")).lower()
-                if slot not in ("L", "R") or color not in TALLY_COLORS:
-                    raise ValueError("slot/color invalide")
-                tally_state[f"{{idx}}_{{slot}}"] = color
+                if color not in TALLY_COLORS:
+                    raise ValueError("color invalide")
+                if "slot" in data:
+                    # Forme par-lampe (service TSL) : une lampe L/R, une couleur.
+                    slot = str(data["slot"]).upper()
+                    if slot not in ("L", "R"):
+                        raise ValueError("slot invalide")
+                    tally_state[f"{{idx}}_{{slot}}"] = color
+                else:
+                    # Forme simple (action shotbox/macro, sans slot) : couleur DOMINANTE
+                    # de la fenêtre — red (antenne), green (préparation), off (éteint).
+                    tally_state[f"{{idx}}_L"] = color if color in ("red", "amber") else "off"
+                    tally_state[f"{{idx}}_R"] = "green" if color in ("green", "amber") else "off"
                 tally_dirty.set()
                 self._send_json({{"status": "ok"}})
             except Exception as e:

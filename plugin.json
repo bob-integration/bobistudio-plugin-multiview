@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.22.3",
+  "version": "0.23.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -245,5 +245,55 @@
       "scope": "global",
       "endpoint": "/window"
     }
-  }
+  },
+  "actions": [
+    {
+      "id": "tally",
+      "label": "Tally d'une fenêtre",
+      "endpoint": "/tally",
+      "port": 8080,
+      "params": [
+        {
+          "key": "flux_idx",
+          "label": "Fenêtre",
+          "type": "number",
+          "default": 0,
+          "options_from": "inputs"
+        },
+        {
+          "key": "color",
+          "label": "Couleur",
+          "type": "text",
+          "default": "red",
+          "options": [
+            {
+              "value": "red",
+              "label": "Rouge (antenne)"
+            },
+            {
+              "value": "green",
+              "label": "Vert (préparation)"
+            },
+            {
+              "value": "off",
+              "label": "Éteint"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recall_layout",
+      "label": "Rappeler un layout",
+      "core": "recall",
+      "params": [
+        {
+          "key": "memory",
+          "label": "Layout",
+          "type": "number",
+          "options_from": "recall"
+        }
+      ]
+    }
+  ]
 }

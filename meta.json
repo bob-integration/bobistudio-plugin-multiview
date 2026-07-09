@@ -1,7 +1,11 @@
 {
-  "version": "0.22.3",
-  "date": "2026-06-30",
+  "version": "0.23.0",
+  "date": "2026-07-10",
   "changes": {
+    "Actions shotbox/macros : tally et rappel de layout (0.23.0)": [
+      "Nouveau catalogue d'actions (chantier 6) déclaré au manifeste : « Tally d'une fenêtre » (fenêtre = entrée câblée, couleur rouge/vert/éteint) et « Rappeler un layout » (layouts enregistrés, appliqués par l'orchestrateur comme via Ember+).",
+      "POST /tally (:8080) accepte une forme simple SANS slot : la couleur dominante de la fenêtre (red → lampe L, green → lampe R, off → tout éteint). La forme par-lampe {flux_idx, slot, color} du service TSL est inchangée."
+    ],
     "TSL central : texte indépendant relié à une ligne du tableau /labels (0.22.3)": [
       "Un overlay texte (sans PiP) en mode Centralisé se relie désormais à une LIGNE du tableau /labels (toutes les lignes : sources réelles + nouvelles « lignes texte ») + une COLONNE label pour le texte affiché, plus un Niveau de Tally + couleurs (Rouge/Vert) pour l'allumage. Plus d'index TSL à saisir : tout est résolu côté orchestrateur depuis la ligne choisie.",
       "Nouveau bouton « + Ligne texte » dans /labels : crée une ligne UMD sans source vidéo (clé __umd:<nom>, badge « texte ») qui porte labels + index TSL par connexion comme une source — la cible des overlays texte.",
