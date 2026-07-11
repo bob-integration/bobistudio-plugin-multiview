@@ -2300,6 +2300,12 @@ def _drop_input(i, rd):
     (flux amont recréé sous le même nom) que le cache de ensure_input ne rouvrirait jamais."""
     try: rd.close()
     except Exception: pass
+    # GC OBLIGATOIRE entre close et réouverture (même parade que le moteur, tx_reopen_if_stale) :
+    # le flux périmé reste résolvable PAR NOM tant qu'il n'est pas collecté — sans GC, la
+    # réouverture retombe sur L'ORPHELIN qu'on vient de lâcher (mesuré : boucle drop/reopen à
+    # ½ cadence sur un shard dont le proxy amont avait été recréé).
+    try: inst.garbage_collect()
+    except Exception: pass
     with state_lock:
         if i < len(sources): sources[i] = None
     _in_track.pop(i, None)
@@ -2997,6 +3003,20 @@ while True:
                     # même grille (|tête−fi_out| ≤ 2) ou pas encore ouverte → attendre la 1ʳᵉ
                     # tranche du grain fi_out (3 ms couvrent la phase d'arrivée ~1,6 ms) ; source
                     # HORS-GRILLE (index libre, ex. flux legacy) → suivre sa tête comme avant.
+                    # GÉNÉRATION PÉRIMÉE : sur un flux de la grille, une tête TRÈS en retard
+                    # (> ~5 s) et figée = reader sur l'ancien ring d'un producteur recréé sous le
+                    # même nom (pyramide/RX redéployé) — le grain reste LISIBLE donc ni le stale
+                    # « got is None » ni le freeze (souvent désactivé sur les nœuds du tissu) ne
+                    # reconnectent jamais (mesuré : shard 37 min en retard). On DROP → rouvert à
+                    # la trame suivante sur la génération courante (inoffensif hors-grille : un
+                    # flux à index libre est reconnu par sa tête qui AVANCE, pas par sa valeur).
+                    if (_hi != bobimxl.MXL_UNDEFINED_INDEX and _fi_out - _hi > 250
+                            and _hi == _in_track.get(i, {{}}).get("fi")):
+                        _drop_input(i, rd)
+                        canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
+                        if SHOW_NO_SIGNAL:
+                            _statuses.append((i, "nosignal", "", None))
+                        continue
                     _tgt = (_fi_out if (_hi == bobimxl.MXL_UNDEFINED_INDEX or abs(_hi - _fi_out) <= 2)
                             else _hi)
                     got = rd.get_slice(_tgt, 1, timeout_ns=3_000_000)
@@ -3234,7 +3254,14 @@ while True:
     if GENLOCK:
         next_frame_time += FRAME_INTERVAL
         if next_frame_time < time.time():           # retard → recale sur la grille
-            next_frame_time = _grid_next(time.time(), FRAME_INTERVAL)
+            # FLOW : suivre un grain occupe ~toute la période (dernière bande arrive à ~T−0,6 ms)
+            # — dépasser de quelques centaines de µs est NORMAL. Le recale historique saute à la
+            # PROCHAINE frontière → le tick retombe en fin de période → la composition lit des
+            # grains COMPLETS (mesuré valid0=30 : whole-frame déguisé, +1 trame). En flow on
+            # RATTRAPE (tick immédiat, les attentes par bande absorbent le retard, la phase
+            # reconverge seule) tant que le retard reste < 1 période ; au-delà, recale normal.
+            if not (FLOW and time.time() - next_frame_time < FRAME_INTERVAL):
+                next_frame_time = _grid_next(time.time(), FRAME_INTERVAL)
     else:
         next_frame_time = start_time + (out_frame_index * FRAME_INTERVAL)
     if out_frame_index % 25 == 0:
