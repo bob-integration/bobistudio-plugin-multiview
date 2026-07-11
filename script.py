@@ -186,6 +186,22 @@ SLICE_ON = (SLICE_MODE and not GPU and not _PORTRAIT
 if SLICE_MODE and not SLICE_ON:
     print(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} portrait={{_PORTRAIT}} "
           f"h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame")
+# ── CADENCE « flow » (tissu en tranches, TISSU_SLICE.md) ──────────────────────────────────────
+# Data-flow ALIGNÉ SUR LA GRILLE : pas de barrière (le point fixe deadline/période de l'input-
+# locked disparaît structurellement — le tick d'epoch EST le déclencheur, aligné à ~1,6 ms sur
+# l'arrivée des grains). À chaque epoch TAI : la composition CIBLE l'index d'epoch fi_out —
+# chaque tuile lit LE grain fi_out de SA source (même grille PTP → mêmes index) et le SUIT par
+# bandes pendant son arrivée ; la sortie est écrite À CE MÊME INDEX → l'assembleur aval lit tous
+# ses shards au même index k : alignement inter-étages PARFAIT (fini le get_latest désaligné).
+# Source hors-grille (index libre) → suivie par sa tête ; en retard/morte → repli/backoff par
+# tuile (0.24.1). Exige le mode tranche + genlock possible ; sinon dégrade en genlock whole-frame.
+FLOW = (CADENCE == "flow") and SLICE_ON
+if CADENCE == "flow" and not FLOW:
+    print("multiview: cadence=flow exige le mode tranche éligible — repli genlock")
+if FLOW:
+    INPUT_LOCKED = False      # pacing = grille (branche genlock) ; la spécificité flow est dans
+                              # le CIBLAGE d'index (collecte + open_grain(fi_out)), pas le pacing
+    GENLOCK = True
 def _grid_next(now_s, interval_s):
     import math as _m
     return (_m.floor(now_s / interval_s) + 1) * interval_s
@@ -2628,7 +2644,7 @@ _lag_frames = {{}}         # mode input-locked : retard par shm = nb de composes
 # ENTRE les trames (module) ; réarmé dès que la tête de la tuile dépasse fi_bloqué.
 _sl_backoff = {{}}
 
-def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles):
+def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=None):
     """MODE TRANCHE — compose et PUBLIE la trame BANDE PAR BANDE (SLICE_LINES lignes/bande).
     Pour chaque bande de sortie : attend (get_slice, réveil au commit partiel du producteur) les
     lignes SOURCE nécessaires de chaque tuile intersectante, resize+place la bande (même mapping
@@ -2642,7 +2658,9 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles):
     wait_ns = 0          # cumul des ATTENTES get_slice — renvoyé à l'appelant : own_latency_ms
                          # doit les EXCLURE (le tissu/monitoring y lit la SATURATION du worker,
                          # pas le suivi du fil — cf. cap réactif pyramide, même contrat)
-    _gidx, gi_o, vw_o = out_writer.open_grain()
+    # FLOW : la sortie est écrite À L'INDEX D'EPOCH ciblé (alignement du tissu) ; sinon index
+    # du Writer (tai genlock / compteur input-locked) comme avant.
+    _gidx, gi_o, vw_o = out_writer.open_grain(index=fi_out)
     ysz = OUT_WIDTH * OUT_HEIGHT * _BPS
     csz = (OUT_WIDTH // _CW) * (OUT_HEIGHT // _CH) * _BPS
     ov_y = vw_o[:ysz].view(_NP_DT).reshape(OUT_HEIGHT, OUT_WIDTH)
@@ -2890,6 +2908,10 @@ while True:
             time.sleep(wait)
 
     ts_cycle_start = time.time_ns()   # début du compositing (après l'attente de grille) → own_latency
+    # FLOW : index d'epoch CIBLE de cette trame (grille TAI) — les tuiles visent le grain fi_out
+    # de LEUR source et la sortie est écrite à ce même index (alignement inter-étages du tissu).
+    # _next_index en mode tai = lecture pure de la grille (aucun effet de bord).
+    _fi_out = out_writer._next_index() if FLOW else None
     ts_out = ts_cycle_start           # défini AVANT le try : si le rendu plante (garde-fou), own_lat.push
                                       # ci-dessous ne lève plus NameError (le crash qui tuait la boucle).
     _sl_waited = 0                    # mode tranche : attentes get_slice de la trame (exclues de own)
@@ -2970,7 +2992,17 @@ while True:
                 # encore ouverte / flux whole-frame → dernier grain complet (dégénéré, 0 attente).
                 got = None
                 _hi = rd.head_index()
-                if _hi != bobimxl.MXL_UNDEFINED_INDEX:
+                if FLOW:
+                    # FLOW : cibler L'INDEX D'EPOCH fi_out (alignement du tissu). Source sur la
+                    # même grille (|tête−fi_out| ≤ 2) ou pas encore ouverte → attendre la 1ʳᵉ
+                    # tranche du grain fi_out (3 ms couvrent la phase d'arrivée ~1,6 ms) ; source
+                    # HORS-GRILLE (index libre, ex. flux legacy) → suivre sa tête comme avant.
+                    _tgt = (_fi_out if (_hi == bobimxl.MXL_UNDEFINED_INDEX or abs(_hi - _fi_out) <= 2)
+                            else _hi)
+                    got = rd.get_slice(_tgt, 1, timeout_ns=3_000_000)
+                    if got is None and _tgt != _hi and _hi != bobimxl.MXL_UNDEFINED_INDEX:
+                        got = rd.get_slice(_hi, 1, timeout_ns=1_000_000)   # retard → grain courant
+                elif _hi != bobimxl.MXL_UNDEFINED_INDEX:
                     got = rd.get_slice(_hi, 1, timeout_ns=2_000_000)
                 if got is None:
                     got = rd.get_latest()
@@ -3154,7 +3186,8 @@ while True:
             # MODE TRANCHE : placement des tuiles + habillage + écriture sortie BANDE PAR BANDE,
             # avec commit MXL progressif (l'aval démarre sur la 1ʳᵉ bande). CPU/paysage (gaté).
             _sl_waited = _compose_bands(canvas_y, canvas_u, canvas_v, _slice_batch,
-                                        _chrome_pre, _meter_tiles, _pf_tiles) or 0
+                                        _chrome_pre, _meter_tiles, _pf_tiles,
+                                        fi_out=_fi_out) or 0
         else:
             if _PORTRAIT:                        # compose en portrait → tourne 90° vers la trame paysage
                 canvas_y, canvas_u, canvas_v = _rotate_out(canvas_y, canvas_u, canvas_v)
