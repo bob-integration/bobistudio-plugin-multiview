@@ -170,6 +170,22 @@ GENLOCK = _gl if isinstance(_gl, bool) else str(_gl).strip().lower() in ("1", "t
 # N×intervalle) et le slip sur grille (33 fps au lieu de 25 quand own≈30 ms).
 CADENCE = str(CONFIG.get("cadence", "genlock")).strip().lower()
 INPUT_LOCKED = (CADENCE == "input")
+# ── MODE TRANCHE (chantier latence sous-trame, cf. patch mxl-planar-slices) ──────────────────
+# slice_mode=true → composition BANDE PAR BANDE : chaque entrée est lue via get_slice (réveil au
+# commit partiel du producteur — un 2110_io RX en SLICE_MODE committe ~toutes les 0,7 ms), et la
+# SORTIE est publiée progressivement (open_grain 1×, commit validSlices=1..N) → l'étage aval
+# (TX 2110 slice, autre multiview…) démarre sur la 1ʳᵉ bande sans attendre la trame. Convention
+# validSlices (identique moteur) : k tranches ⇔ lignes [0, k·slice_lines) valides sur les 3 plans.
+# Une entrée whole-frame (proxy pyramide, flux non tranché : totalSlices=1) dégrade proprement
+# (attend son grain complet). Prérequis : CPU (pas GPU v1), paysage, hauteur divisible.
+_slm = CONFIG.get("slice_mode", False)
+SLICE_MODE  = _slm if isinstance(_slm, bool) else str(_slm).strip().lower() in ("1", "true", "yes", "on")
+SLICE_LINES = int(CONFIG.get("slice_lines") or 36)
+SLICE_ON = (SLICE_MODE and not GPU and not _PORTRAIT
+            and SLICE_LINES > 0 and OUT_HEIGHT % SLICE_LINES == 0 and SLICE_LINES % _CH == 0)
+if SLICE_MODE and not SLICE_ON:
+    print(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} portrait={{_PORTRAIT}} "
+          f"h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame")
 def _grid_next(now_s, interval_s):
     import math as _m
     return (_m.floor(now_s / interval_s) + 1) * interval_s
@@ -2590,8 +2606,15 @@ threading.Thread(target=_proxy_scan_loop, daemon=True).start()
 
 # Sortie MXL : index tai en genlock-grille, sinon compteur libre (input-locked / cadence libre).
 _out_mode  = "tai" if (GENLOCK and not INPUT_LOCKED) else "free"
+# Mode tranche : le flowDef porte slice_height → libmxl publie le grain en N tranches égales
+# (commit progressif). Writer forwarde **flow_kw à build_flow_def. Sans slice : inchangé (1 tranche).
 out_writer = bobimxl.Writer(inst, SHM_OUT_NAME, OUTPUT_W, OUTPUT_H, CHROMA, BIT_DEPTH,
-                            _FN, _FD, index_mode=_out_mode)
+                            _FN, _FD, index_mode=_out_mode,
+                            **({{"slice_height": SLICE_LINES}} if SLICE_ON else {{}}))
+if SLICE_ON:
+    print(f"multiview: MODE TRANCHE actif — {{SLICE_LINES}} lignes/bande "
+          f"({{OUT_HEIGHT // SLICE_LINES}} tranches/trame)")
+    metrics["slice_mode"] = True
 out_frame_index = 0
 start_time = time.time()
 _fps_last_idx = 0          # fps en fenêtre glissante (delta depuis le dernier report)
@@ -2600,6 +2623,132 @@ next_frame_time = _grid_next(start_time, FRAME_INTERVAL) if GENLOCK else start_t
 _last_in_fi = {{}}         # mode input-locked : dernier frame_index COMPOSÉ par source (barrière)
 _lag_frames = {{}}         # mode input-locked : retard par shm = nb de composes consécutifs SANS
                            # avancement du frame_index source (0 = synchrone). Exposé inputs_lag_frames.
+
+def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles):
+    """MODE TRANCHE — compose et PUBLIE la trame BANDE PAR BANDE (SLICE_LINES lignes/bande).
+    Pour chaque bande de sortie : attend (get_slice, réveil au commit partiel du producteur) les
+    lignes SOURCE nécessaires de chaque tuile intersectante, resize+place la bande (même mapping
+    nearest que resize_plane → octet-identique au whole-frame), blende l'habillage intersectant
+    (chrome pré-calculé / VU / horloges), copie la bande dans le grain de sortie et committe
+    validSlices=k+1 → l'étage AVAL (TX 2110 slice, multiview chaîné) démarre sur la 1ʳᵉ bande.
+    Budget total borné : une entrée en retard bascule sur son dernier grain COMPLET (tuile
+    décalée d'1 image) — la sortie n'est JAMAIS bloquée par une source."""
+    nb = OUT_HEIGHT // SLICE_LINES
+    global _sl_dbg
+    _gidx, gi_o, vw_o = out_writer.open_grain()
+    ysz = OUT_WIDTH * OUT_HEIGHT * _BPS
+    csz = (OUT_WIDTH // _CW) * (OUT_HEIGHT // _CH) * _BPS
+    ov_y = vw_o[:ysz].view(_NP_DT).reshape(OUT_HEIGHT, OUT_WIDTH)
+    ov_u = vw_o[ysz:ysz + csz].view(_NP_DT).reshape(OUT_HEIGHT//_CH, OUT_WIDTH//_CW)
+    ov_v = vw_o[ysz + csz:ysz + 2*csz].view(_NP_DT).reshape(OUT_HEIGHT//_CH, OUT_WIDTH//_CW)
+    _deadl = time.monotonic() + FRAME_INTERVAL * 1.5   # budget attente cumulé (toutes tuiles)
+    _sl_dbg = [len(batch), -1, 0, 0]   # [tuiles, valid0, attentes, replis] (debug banc)
+    # état mutable par tuile : plans (rebindés au repli grain complet), tranches valides, colonnes.
+    # FAST-PATH ratio ENTIER (grilles 2×2/3×3…) : vues STRIDÉES pré-calculées (comme resize_plane)
+    # → placement de bande = simple slice-assign (~8 µs vs ~120 µs np.ix_ 2D, mesuré : le np.ix_
+    # par bande×tuile coûtait ~15 ms/trame et faisait dériver le compose d'une demi-trame).
+    def _tile_views(sy, su, sv, in_h, in_w, vh, vw):
+        if vh > 0 and vw > 0 and in_h % vh == 0 and in_w % vw == 0:
+            _sy, _sx = in_h // vh, in_w // vw
+            return ("v", sy[::_sy, ::_sx], su[::_sy, ::_sx], sv[::_sy, ::_sx], None, None)
+        cxi = (np.arange(vw) * in_w) // vw
+        cci = (np.arange(vw // _CW) * (in_w // _CW)) // (vw // _CW)
+        return ("g", sy, su, sv, cxi, cci)
+    st = []
+    for (rd, fi, gi, sy, su, sv, in_h, in_w, vy, vh, vx, vw) in batch:
+        total = int(gi.totalSlices or 1)
+        st.append([rd, fi, sy, su, sv, in_h, in_w, vy, vh, vx, vw,
+                   total, int(gi.validSlices or total), max(1, in_h // max(1, total)),
+                   _tile_views(sy, su, sv, in_h, in_w, vh, vw)])
+    for k in range(nb):
+        b0 = k * SLICE_LINES; b1 = b0 + SLICE_LINES
+        for t in st:
+            rd, fi, sy, su, sv, in_h, in_w, vy, vh, vx, vw, total, valid, islh, tv = t
+            a = max(vy, b0); b = min(vy + vh, b1)
+            if a >= b:
+                continue
+            # dernière ligne SOURCE (plan Y) requise par cette bande (nearest = même mapping que
+            # resize_plane) → nb de tranches source nécessaires (convention : k tranches = lignes
+            # [0, k·islh) valides sur les 3 plans, chroma compris).
+            need_row = ((b - 1 - vy) * in_h) // vh
+            need_k = min(total, need_row // islh + 1)
+            if _sl_dbg[1] < 0:
+                _sl_dbg[1] = valid
+            if need_k > valid:
+                _sl_dbg[2] += 1
+                _left = _deadl - time.monotonic()
+                g = rd.get_slice(fi, need_k, timeout_ns=max(1, int(_left * 1e9))) if _left > 0 else None
+                if g is not None:
+                    valid = t[12] = max(need_k, int(g[1].validSlices or need_k))
+                else:
+                    # budget épuisé / producteur en retard → REPLI sur le dernier grain COMPLET
+                    # (les bandes déjà posées de cette tuile restent celles du grain fi → très
+                    # léger tearing d'UNE image sur la tuile en retard, jamais de blocage).
+                    g = rd.get(fi - 1, timeout_ns=2_000_000)
+                    if g is not None:
+                        _v = g[2]
+                        _yb = in_w * in_h * _BPS
+                        _ub = (in_w // _CW) * (in_h // _CH) * _BPS
+                        t[2] = sy = _v[:_yb].view(_NP_DT).reshape(in_h, in_w)
+                        t[3] = su = _v[_yb:_yb + _ub].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
+                        t[4] = sv = _v[_yb + _ub:_yb + 2*_ub].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
+                        t[14] = _tile_views(sy, su, sv, in_h, in_w, vh, vw)
+                    tv = t[14]
+                    _sl_dbg[3] += 1
+                    valid = t[12] = total          # plus aucune attente pour les bandes suivantes
+            # placement de la bande : vue STRIDÉE (ratio entier, ~8 µs) sinon gather chaîné
+            # lignes→colonnes (~33 µs — np.ix_ 2D mesuré à ~120 µs, prohibitif à bande×tuile)
+            r0 = a - vy; r1 = r0 + (b - a)
+            ca0, cb0 = a // _CH, b // _CH
+            _cx0 = vx // _CW
+            if tv[0] == "v":
+                cy[a:b, vx:vx + vw] = tv[1][r0:r1]
+                if cb0 > ca0:
+                    rc0 = r0 // _CH
+                    cu[ca0:cb0, _cx0:_cx0 + vw//_CW] = tv[2][rc0:rc0 + (cb0 - ca0)]
+                    cv[ca0:cb0, _cx0:_cx0 + vw//_CW] = tv[3][rc0:rc0 + (cb0 - ca0)]
+            else:
+                ry = ((np.arange(r0, r1) * in_h) // vh)
+                cy[a:b, vx:vx + vw] = tv[1][ry][:, tv[4]]
+                if cb0 > ca0:
+                    rc = ((np.arange(r0 // _CH, r0 // _CH + (cb0 - ca0)) * (in_h // _CH)) // (vh // _CH))
+                    cu[ca0:cb0, _cx0:_cx0 + vw//_CW] = tv[2][rc][:, tv[5]]
+                    cv[ca0:cb0, _cx0:_cx0 + vw//_CW] = tv[3][rc][:, tv[5]]
+        # habillage intersectant la bande : 1) chrome statique pré-calculé (bbox)
+        if chrome_pre is not None:
+            bx0, by0, bx1, by1, _piY, _saY, _piC, _saU, _saV = chrome_pre
+            a = max(by0, b0); b = min(by1, b1)
+            if a < b:
+                l0 = a - by0; l1 = b - by0
+                cy[a:b, bx0:bx1] = blend_pre(cy[a:b, bx0:bx1], _piY[l0:l1], _saY[l0:l1])
+                ca0, cb0 = a // _CH, b // _CH
+                lc0 = ca0 - by0 // _CH; lc1 = lc0 + (cb0 - ca0)
+                cx0, cx1 = bx0 // _CW, bx1 // _CW
+                if cb0 > ca0:
+                    cu[ca0:cb0, cx0:cx1] = blend_pre(cu[ca0:cb0, cx0:cx1], _piC[lc0:lc1], _saU[lc0:lc1])
+                    cv[ca0:cb0, cx0:cx1] = blend_pre(cv[ca0:cb0, cx0:cx1], _piC[lc0:lc1], _saV[lc0:lc1])
+        # 2) VU-mètres puis 3) horloges (z-ordre conservé), bornés aux lignes de la bande
+        for _tiles in (meter_tiles, pf_tiles):
+            if not _tiles:
+                continue
+            for (bx0, by0, bx1, by1, _oy, _ou, _ovv, _oa, _oa2) in _tiles:
+                a = max(by0, b0); b = min(by1, b1)
+                if a >= b:
+                    continue
+                l0 = a - by0; l1 = b - by0
+                cy[a:b, bx0:bx1] = blend(cy[a:b, bx0:bx1], _oy[l0:l1], _oa[l0:l1])
+                ca0, cb0 = a // _CH, b // _CH
+                lc0 = ca0 - by0 // _CH; lc1 = lc0 + (cb0 - ca0)
+                cx0, cx1 = bx0 // _CW, bx1 // _CW
+                if cb0 > ca0:
+                    cu[ca0:cb0, cx0:cx1] = blend(cu[ca0:cb0, cx0:cx1], _ou[lc0:lc1], _oa2[lc0:lc1])
+                    cv[ca0:cb0, cx0:cx1] = blend(cv[ca0:cb0, cx0:cx1], _ovv[lc0:lc1], _oa2[lc0:lc1])
+        # publication de la bande : copie canvas→grain + commit PROGRESSIF (réveille l'aval)
+        ov_y[b0:b1] = cy[b0:b1]
+        if b1 // _CH > b0 // _CH:
+            ov_u[b0//_CH:b1//_CH] = cu[b0//_CH:b1//_CH]
+            ov_v[b0//_CH:b1//_CH] = cv[b0//_CH:b1//_CH]
+        out_writer.commit(gi_o, valid_slices=None if k == nb - 1 else k + 1)
 
 def _peek_inputs():
     """frame_index courants des sources OUVERTES (mode input-locked). Lit les 8 premiers octets de
@@ -2661,7 +2810,14 @@ while True:
         # la passe de compositing relit son frame_index courant) et rattrape au tick suivant. Ainsi
         # une seule entrée HS ne bride plus la cadence (avant : deadline 2× ré-armée → ~½ cadence),
         # et la latence ajoutée par étage reste < 1 image (= budget du tissu). Pas d'attente de grille.
-        _deadline = _last_emit_m + FRAME_INTERVAL
+        # MODE TRANCHE : deadline élargie (1,25×T). Avec deadline = T exactement (= la période des
+        # grains PTP), la barrière peut se VERROUILLER en phase « deadline » (exit à mi-grain, la
+        # tête n'avançant que ~1 ms plus tard, à jamais — aucune dérive entre les deux horloges) →
+        # la composition démarre à mi-grain au lieu de la 1ʳᵉ tranche (mesuré : valid0≈14/30). La
+        # marge laisse l'avance de tête GAGNER systématiquement → phase recalée sur la 1ʳᵉ tranche.
+        # Sans source vivante, la cadence de secours devient T×1,25 (40 fps à 50p) — acceptable
+        # pour un mur sans entrée. Whole-frame : deadline historique inchangée.
+        _deadline = _last_emit_m + FRAME_INTERVAL * (1.25 if SLICE_ON else 1.0)
         while True:
             _cur = _peek_inputs()
             _any_open = False
@@ -2739,6 +2895,7 @@ while True:
         canvas_u = xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
         canvas_v = xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT)
     _gpu_batch = []   # entrées lues cette trame : (src_y,src_u,src_v numpy, géométrie) → upload groupé
+    _slice_batch = []  # MODE TRANCHE : (rd, fi, gi, vues zéro-copie, géométrie) → _compose_bands
 
     for i, cfg in enumerate(_fc):
         if cfg.get("hidden"):
@@ -2768,7 +2925,19 @@ while True:
             in_w    = src["in_w"]
             in_h    = src["in_h"]
             frame_size = src["frame_size"]
-            got = rd.get_latest()
+            if SLICE_ON and not src.get("interlaced"):
+                # MODE TRANCHE : viser le grain de TÊTE (peut être EN COURS d'écriture — un RX
+                # 2110 slice committe progressivement). On n'attend ICI que la 1ʳᵉ tranche ; les
+                # bandes suivantes sont attendues AU FIL du compose (_compose_bands). Tête pas
+                # encore ouverte / flux whole-frame → dernier grain complet (dégénéré, 0 attente).
+                got = None
+                _hi = rd.head_index()
+                if _hi != bobimxl.MXL_UNDEFINED_INDEX:
+                    got = rd.get_slice(_hi, 1, timeout_ns=2_000_000)
+                if got is None:
+                    got = rd.get_latest()
+            else:
+                got = rd.get_latest()
             # ENTRELACÉ : on VERROUILLE la PARITÉ sur le champ HAUT (index pair). Sans ça, get_latest
             # renvoie alternativement top/bottom (50/s) → scalés à la tuile, les deux champs ont un
             # décalage vertical d'½ ligne → SCINTILLEMENT des bords horizontaux. Un seul champ (top) →
@@ -2817,6 +2986,16 @@ while True:
 
             _yb  = in_w * in_h * _BPS               # octets du plan Y
             _uvb = (in_w // _CW) * (in_h // _CH) * _BPS   # octets d'un plan chroma
+            if SLICE_ON:
+                # MODE TRANCHE : vues ZÉRO-COPIE sur le grain (les lignes au-delà de validSlices ne
+                # sont PAS lues ici — _compose_bands attend chaque bande avant de la toucher ; le
+                # handler SIGBUS couvre la recréation amont, comme pour les mmaps historiques).
+                src_y = src_view[:_yb].view(_NP_DT).reshape(in_h, in_w)
+                src_u = src_view[_yb:_yb + _uvb].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
+                src_v = src_view[_yb + _uvb:_yb + 2 * _uvb].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
+                _slice_batch.append((rd, fi, got[1], src_y, src_u, src_v, in_h, in_w,
+                                     vy, vh, video_x, video_w))
+                continue
             src_y = np.frombuffer(bytes(src_view[:_yb]),
                                   dtype=_NP_DT).reshape(in_h, in_w)
             src_u = np.frombuffer(bytes(src_view[_yb:_yb + _uvb]),
@@ -2908,7 +3087,8 @@ while True:
         _ts_ov1 = time.time_ns()   # fin rendu PIL + conversion YUV (tuiles VU + horloges AU CHANGEMENT)
         # 1) Chrome statique : blendé via opérandes pré-calculés sur sa BBOX (SANS conversion). Borné à
         # la zone réellement habillée → un assembleur sans chrome (bbox None) ne paie RIEN ici.
-        if _chrome_pre is not None:
+        # MODE TRANCHE : blends + écriture faits BANDE PAR BANDE dans _compose_bands (plus bas).
+        if _chrome_pre is not None and not SLICE_ON:
             bx0, by0, bx1, by1, _piY, _saY, _piC, _saU, _saV = _chrome_pre
             canvas_y[by0:by1, bx0:bx1] = blend_pre(canvas_y[by0:by1, bx0:bx1], _piY, _saY)
             cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
@@ -2917,7 +3097,7 @@ while True:
         _ts_ov2 = time.time_ns()   # fin du blend chrome
         # 2) VU-mètres puis 3) horloges : blend de chaque TUILE sur sa propre bbox (z-ordre conservé :
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
-        for _src_tiles in (_meter_tiles, _pf_tiles):
+        for _src_tiles in (() if SLICE_ON else (_meter_tiles, _pf_tiles)):
             if not _src_tiles:
                 continue
             for (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) in _src_tiles:
@@ -2932,23 +3112,29 @@ while True:
         _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
         _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
         _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
-        if _PORTRAIT:                            # compose en portrait → tourne 90° vers la trame paysage
-            canvas_y, canvas_u, canvas_v = _rotate_out(canvas_y, canvas_u, canvas_v)
-        out_frame = xp.concatenate([canvas_y.ravel(), canvas_u.ravel(), canvas_v.ravel()])
-        # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). En genlock-grille,
-        # l'index tai vient du Writer ; en input-locked/libre, compteur interne du Writer.
-        _gidx, _gi_o, _vw_o = out_writer.open_grain()
-        if GPU:
-            # Download D2H ÉPINGLÉ (.get(out=pinned), rapide) puis copie vers la vue grain. Un .get
-            # direct dans le grain (non épinglé) serait ~4× plus lent (banc Phase 0 : dl 5,8→1,3 ms).
-            _n = out_frame.size
-            if _outpin["buf"] is None or _outpin["buf"].size < _n:
-                _outpin["buf"] = np.frombuffer(cp.cuda.alloc_pinned_memory(_n * _BPS), dtype=_NP_DT, count=_n)
-            out_frame.get(out=_outpin["buf"][:_n])
-            _vw_o[:OUT_FRAME_SIZE] = _outpin["buf"][:_n].view(np.uint8)
+        if SLICE_ON:
+            # MODE TRANCHE : placement des tuiles + habillage + écriture sortie BANDE PAR BANDE,
+            # avec commit MXL progressif (l'aval démarre sur la 1ʳᵉ bande). CPU/paysage (gaté).
+            _compose_bands(canvas_y, canvas_u, canvas_v, _slice_batch,
+                           _chrome_pre, _meter_tiles, _pf_tiles)
         else:
-            _vw_o[:OUT_FRAME_SIZE] = out_frame.view(np.uint8)
-        out_writer.commit(_gi_o)
+            if _PORTRAIT:                        # compose en portrait → tourne 90° vers la trame paysage
+                canvas_y, canvas_u, canvas_v = _rotate_out(canvas_y, canvas_u, canvas_v)
+            out_frame = xp.concatenate([canvas_y.ravel(), canvas_u.ravel(), canvas_v.ravel()])
+            # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). En genlock-grille,
+            # l'index tai vient du Writer ; en input-locked/libre, compteur interne du Writer.
+            _gidx, _gi_o, _vw_o = out_writer.open_grain()
+            if GPU:
+                # Download D2H ÉPINGLÉ (.get(out=pinned), rapide) puis copie vers la vue grain. Un .get
+                # direct dans le grain (non épinglé) serait ~4× plus lent (banc Phase 0 : dl 5,8→1,3 ms).
+                _n = out_frame.size
+                if _outpin["buf"] is None or _outpin["buf"].size < _n:
+                    _outpin["buf"] = np.frombuffer(cp.cuda.alloc_pinned_memory(_n * _BPS), dtype=_NP_DT, count=_n)
+                out_frame.get(out=_outpin["buf"][:_n])
+                _vw_o[:OUT_FRAME_SIZE] = _outpin["buf"][:_n].view(np.uint8)
+            else:
+                _vw_o[:OUT_FRAME_SIZE] = out_frame.view(np.uint8)
+            out_writer.commit(_gi_o)
         ts_out = time.time_ns()
         # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
         _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)
@@ -2986,4 +3172,6 @@ while True:
             metrics["fps"] = round((out_frame_index - _fps_last_idx) / _dt_fps, 1)
         _fps_last_idx = out_frame_index; _fps_last_t = _now_fps
         _refresh_lat_metrics()
-        print(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} fps")
+        _sd = globals().get('_sl_dbg')
+        print(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} fps"
+              + (f" [slice: tuiles={{_sd[0]}} valid0={{_sd[1]}} waits={{_sd[2]}} replis={{_sd[3]}}]" if _sd else ""))
