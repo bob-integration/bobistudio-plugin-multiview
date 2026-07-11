@@ -1,7 +1,15 @@
 {
-  "version": "0.23.0",
-  "date": "2026-07-10",
+  "version": "0.26.0",
+  "date": "2026-07-11",
   "changes": {
+    "GPU SLICE : squelette du chemin tranche VRAM derrière flag gpu_slice (0.26.0)": [
+      "Nouveau param opt-in `gpu_slice` (défaut OFF) : lève l'exclusion GPU du mode tranche. Sans le flag, comportement STRICTEMENT inchangé (GPU ⇒ whole-frame avec upload groupé épinglé, CPU ⇒ slice 0.25.x). NE PAS activer en prod avant le verdict du banc gate dl360-2/T4.",
+      "Sémantique = le slice CPU, à l'identique (_compose_bands est COMMUN : attentes get_slice par bande, budgets PAR TUILE, backoff entrées mortes, ciblage d'index d'epoch en cadence=flow) — seuls les octets transitent par la VRAM.",
+      "Points d'ancrage implémentés (cupy) : (a) H2D PAR BANDE groupé sur staging hôte épinglé persistant (_gpu_place_band, 1 seul transfert par bande — déclinaison à la bande de la leçon Phase 0) ; (b) placement + blends chrome/VU/horloges de la bande en VRAM (opérandes résidents, VU/horloges uploadés 1×/trame) ; (c) D2H par bande via .get(out=épinglé) + commit progressif (synchrone ; le recouvrement streams se greffera selon le banc).",
+      "Design + protocole du banc gate GO/NO-GO : TISSU_SLICE_GPU.md ; script autonome tools/bench_gpu_slice_gate.py (H2D bandé vs groupé, pageable vs pinned, streams, méga-bandes, verdict chiffré).",
+      "Métrique :8080 `gpu_slice` (booléen) pour la recette.",
+      "NB : ce meta.json rattrape aussi les versions 0.24.x/0.25.x (slice CPU + cadence flow, chantier TISSU_SLICE.md) committées sans entrée de changelog."
+    ],
     "Actions shotbox/macros : tally et rappel de layout (0.23.0)": [
       "Nouveau catalogue d'actions (chantier 6) déclaré au manifeste : « Tally d'une fenêtre » (fenêtre = entrée câblée, couleur rouge/vert/éteint) et « Rappeler un layout » (layouts enregistrés, appliqués par l'orchestrateur comme via Ember+).",
       "POST /tally (:8080) accepte une forme simple SANS slot : la couleur dominante de la fenêtre (red → lampe L, green → lampe R, off → tout éteint). La forme par-lampe {flux_idx, slot, color} du service TSL est inchangée."

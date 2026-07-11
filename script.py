@@ -181,11 +181,25 @@ INPUT_LOCKED = (CADENCE == "input")
 _slm = CONFIG.get("slice_mode", False)
 SLICE_MODE  = _slm if isinstance(_slm, bool) else str(_slm).strip().lower() in ("1", "true", "yes", "on")
 SLICE_LINES = int(CONFIG.get("slice_lines") or 36)
-SLICE_ON = (SLICE_MODE and not GPU and not _PORTRAIT
+# ── GPU SLICE (chantier TISSU_SLICE_GPU.md, squelette banc gate) ──────────────────────────────
+# `gpu_slice` (OPT-IN, défaut off) lève l'exclusion GPU du mode tranche : composition bande par
+# bande EN VRAM — H2D par bande (staging épinglé groupé par bande, _gpu_place_band), blends
+# chrome/VU/horloges par bande en VRAM (opérandes déjà résidents), D2H par bande épinglé + commit
+# progressif. Sémantique STRICTEMENT identique au slice CPU (_compose_bands est commun : attentes
+# get_slice, budgets PAR TUILE, backoff, ciblage flow — seuls les octets transitent par la VRAM).
+# GATE : ne PAS activer en prod avant le verdict du banc dl360-2/T4 (tools/bench_gpu_slice_gate.py)
+# — le banc Phase 0 a montré que des transferts fins mal faits font RÉGRESSER le GPU. Sans le flag,
+# comportement inchangé : GPU ⇒ whole-frame (upload groupé), le repli documenté TISSU_SLICE.md §4.
+GPU_SLICE_REQ = _as_bool(CONFIG.get("gpu_slice", False))
+SLICE_ON = (SLICE_MODE and (not GPU or GPU_SLICE_REQ) and not _PORTRAIT
             and SLICE_LINES > 0 and OUT_HEIGHT % SLICE_LINES == 0 and SLICE_LINES % _CH == 0)
+GPU_SLICE = GPU and SLICE_ON      # chemin tranche VRAM actif (exige GPU + flag + éligibilité)
 if SLICE_MODE and not SLICE_ON:
-    print(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} portrait={{_PORTRAIT}} "
-          f"h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame")
+    print(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} sans gpu_slice "
+          f"portrait={{_PORTRAIT}} h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame")
+if GPU_SLICE:
+    print(f"multiview: GPU SLICE actif (opt-in banc, TISSU_SLICE_GPU.md) — bandes de "
+          f"{{SLICE_LINES}} lignes sur {{_GPU_NAME}}")
 # ── CADENCE « flow » (tissu en tranches, TISSU_SLICE.md) ──────────────────────────────────────
 # Data-flow ALIGNÉ SUR LA GRILLE : pas de barrière (le point fixe deadline/période de l'input-
 # locked disparaît structurellement — le tick d'epoch EST le déclencheur, aligné à ~1,6 ms sur
@@ -654,7 +668,8 @@ _tsl_combined = {{}}         # index → True si le contrôleur envoie des paque
 TSL_SLOT_TTL_FACTOR = 2.5   # TTL = factor × intervalle keepalive mesuré
 TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
-           "gpu": GPU, "gpu_name": _GPU_NAME}}   # GPU = compositing accéléré cupy (sinon numpy CPU)
+           "gpu": GPU, "gpu_name": _GPU_NAME,    # GPU = compositing accéléré cupy (sinon numpy CPU)
+           "gpu_slice": GPU_SLICE}}              # tranche VRAM active (opt-in gpu_slice, banc gate)
 
 def _compute_proxy_needs():
     """Besoins de tailles par source câblée pour la pyramide, AVEC le nombre de tuiles qui
@@ -886,6 +901,46 @@ def blend_pre(dst, inv_a, src_a):
 # ─── Placement groupé des tuiles vidéo (CPU direct / GPU upload épinglé groupé) ───────────────
 _pin = {{"host": None, "dev": None, "cap": 0}}   # buffers persistants GPU (staging épinglé entrées + device)
 _outpin = {{"buf": None}}                        # buffer hôte ÉPINGLÉ persistant pour le download sortie (GPU)
+# GPU SLICE : staging épinglé PAR BANDE (entrées) + buffers épinglés de bande de SORTIE (D2H).
+# Persistants (l'allocation pinned est coûteuse) ; capacité entrée en croissance ×2 comme _pin.
+_slgpu = {{"hin": None, "din": None, "cap": 0, "hy": None, "hu": None, "hv": None}}
+
+def _gpu_place_band(cy, cu, cv, stage):
+    """MODE TRANCHE GPU (gpu_slice) : place dans le canvas VRAM les bandes source d'UNE bande de
+    sortie. UN SEUL H2D par bande : les rangées source (déjà réduites par les vues stridées/gathers
+    hôte de _compose_bands) sont concaténées dans le staging hôte ÉPINGLÉ puis uploadées groupées —
+    même leçon que le banc Phase 0 (un transfert par tuile, ou pageable, fait RÉGRESSER le GPU),
+    déclinée à la bande. Point d'ancrage (a) du banc gate TISSU_SLICE_GPU.md ; le pipeline streams
+    (H2D bande k+1 pendant compose bande k) se greffera ICI si le banc le justifie."""
+    total = 0
+    for it in stage:
+        total += it[0].size + (2 * it[1].size if it[1] is not None else 0)
+    if _slgpu["cap"] < total:                    # (ré)alloue staging épinglé + device (croissance ×2)
+        cap = max(total, (_slgpu["cap"] * 2) or total)
+        _slgpu["hin"] = np.frombuffer(cp.cuda.alloc_pinned_memory(cap * _BPS), dtype=_NP_DT, count=cap)
+        _slgpu["din"] = cp.empty(cap, dtype=_NP_DT)
+        _slgpu["cap"] = cap
+    hin = _slgpu["hin"]; din = _slgpu["din"]
+    off = 0; meta = []
+    for (by_, bu_, bv_, a, b, ca0, cb0, vx, vw, cx0) in stage:
+        ny = by_.size
+        hin[off:off+ny].reshape(by_.shape)[...] = by_          # gather hôte → épinglé (1 seule copie)
+        nu = 0
+        if bu_ is not None:
+            nu = bu_.size
+            hin[off+ny:off+ny+nu].reshape(bu_.shape)[...] = bu_
+            hin[off+ny+nu:off+ny+2*nu].reshape(bv_.shape)[...] = bv_
+        meta.append((off, by_.shape, bu_.shape if bu_ is not None else None,
+                     a, b, ca0, cb0, vx, vw, cx0))
+        off += ny + 2 * nu
+    din[:off].set(hin[:off])                     # UN seul H2D par bande (épinglé → device)
+    for (o, shy, shu, a, b, ca0, cb0, vx, vw, cx0) in meta:
+        ny = shy[0] * shy[1]
+        cy[a:b, vx:vx + vw] = din[o:o+ny].reshape(shy)
+        if shu is not None:
+            nu = shu[0] * shu[1]
+            cu[ca0:cb0, cx0:cx0 + vw//_CW] = din[o+ny:o+ny+nu].reshape(shu)
+            cv[ca0:cb0, cx0:cx0 + vw//_CW] = din[o+ny+nu:o+ny+2*nu].reshape(shu)
 
 def _place_batch(cy, cu, cv, batch):
     """Resize + place les tuiles vidéo collectées dans le canvas (cy/cu/cv, backend xp).
@@ -2672,6 +2727,22 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
     ov_y = vw_o[:ysz].view(_NP_DT).reshape(OUT_HEIGHT, OUT_WIDTH)
     ov_u = vw_o[ysz:ysz + csz].view(_NP_DT).reshape(OUT_HEIGHT//_CH, OUT_WIDTH//_CW)
     ov_v = vw_o[ysz + csz:ysz + 2*csz].view(_NP_DT).reshape(OUT_HEIGHT//_CH, OUT_WIDTH//_CW)
+    if GPU_SLICE:
+        # Buffers de bande de SORTIE épinglés (persistants) : D2H par bande via .get(out=épinglé)
+        # — un .get direct dans le grain (mmap non épinglé) serait ~4× plus lent (banc Phase 0).
+        if _slgpu["hy"] is None:
+            def _mkpin(h, w):
+                return np.frombuffer(cp.cuda.alloc_pinned_memory(h * w * _BPS),
+                                     dtype=_NP_DT, count=h * w).reshape(h, w)
+            _slgpu["hy"] = _mkpin(SLICE_LINES, OUT_WIDTH)
+            _slgpu["hu"] = _mkpin(SLICE_LINES // _CH, OUT_WIDTH // _CW)
+            _slgpu["hv"] = _mkpin(SLICE_LINES // _CH, OUT_WIDTH // _CW)
+        # Opérandes VU/horloges → VRAM UNE fois par trame (le chrome pré-calculé y réside déjà,
+        # cf. _to_xp au bake) : les blends par bande restent alors 100 % en VRAM.
+        if meter_tiles:
+            meter_tiles = [t[:4] + tuple(_to_xp(p) for p in t[4:]) for t in meter_tiles]
+        if pf_tiles:
+            pf_tiles = [t[:4] + tuple(_to_xp(p) for p in t[4:]) for t in pf_tiles]
     _deadl = time.monotonic() + FRAME_INTERVAL * 1.5   # garde-fou GLOBAL (borne dure de la trame)
     _sl_dbg = [len(batch), -1, 0, 0, 0]   # [tuiles, valid0, attentes, replis, dormantes]
     # état mutable par tuile : plans (rebindés au repli grain complet), tranches valides, colonnes.
@@ -2713,6 +2784,7 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                    int(FRAME_INTERVAL * 1e9)])   # budget d'attente PAR TUILE (découplage)
     for k in range(nb):
         b0 = k * SLICE_LINES; b1 = b0 + SLICE_LINES
+        _bstage = []   # GPU SLICE : bandes source de cette bande de sortie → 1 H2D groupé
         for t in st:
             ti, rd, fi, sy, su, sv, in_h, in_w, vy, vh, vx, vw, total, valid, islh, tv = t[:16]
             a = max(vy, b0); b = min(vy + vh, b1)
@@ -2757,23 +2829,38 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                     _sl_dbg[3] += 1
                     valid = t[13] = total          # plus aucune attente pour les bandes suivantes
             # placement de la bande : vue STRIDÉE (ratio entier, ~8 µs) sinon gather chaîné
-            # lignes→colonnes (~33 µs — np.ix_ 2D mesuré à ~120 µs, prohibitif à bande×tuile)
+            # lignes→colonnes (~33 µs — np.ix_ 2D mesuré à ~120 µs, prohibitif à bande×tuile).
+            # Les rangées source de la bande (_by/_bu/_bv, HÔTE) sont soit posées directement
+            # dans le canvas (CPU, copie = l'assignation, octet-identique à avant), soit mises
+            # en attente pour l'upload H2D GROUPÉ de la bande (GPU SLICE, _gpu_place_band).
             r0 = a - vy; r1 = r0 + (b - a)
             ca0, cb0 = a // _CH, b // _CH
             _cx0 = vx // _CW
+            _bu = _bv = None
             if tv[0] == "v":
-                cy[a:b, vx:vx + vw] = tv[1][r0:r1]
+                _by = tv[1][r0:r1]
                 if cb0 > ca0:
                     rc0 = r0 // _CH
-                    cu[ca0:cb0, _cx0:_cx0 + vw//_CW] = tv[2][rc0:rc0 + (cb0 - ca0)]
-                    cv[ca0:cb0, _cx0:_cx0 + vw//_CW] = tv[3][rc0:rc0 + (cb0 - ca0)]
+                    _bu = tv[2][rc0:rc0 + (cb0 - ca0)]
+                    _bv = tv[3][rc0:rc0 + (cb0 - ca0)]
             else:
                 ry = ((np.arange(r0, r1) * in_h) // vh)
-                cy[a:b, vx:vx + vw] = tv[1][ry][:, tv[4]]
+                _by = tv[1][ry][:, tv[4]]
                 if cb0 > ca0:
                     rc = ((np.arange(r0 // _CH, r0 // _CH + (cb0 - ca0)) * (in_h // _CH)) // (vh // _CH))
-                    cu[ca0:cb0, _cx0:_cx0 + vw//_CW] = tv[2][rc][:, tv[5]]
-                    cv[ca0:cb0, _cx0:_cx0 + vw//_CW] = tv[3][rc][:, tv[5]]
+                    _bu = tv[2][rc][:, tv[5]]
+                    _bv = tv[3][rc][:, tv[5]]
+            if GPU_SLICE:
+                _bstage.append((_by, _bu, _bv, a, b, ca0, cb0, vx, vw, _cx0))
+            else:
+                cy[a:b, vx:vx + vw] = _by
+                if _bu is not None:
+                    cu[ca0:cb0, _cx0:_cx0 + vw//_CW] = _bu
+                    cv[ca0:cb0, _cx0:_cx0 + vw//_CW] = _bv
+        # GPU SLICE, ancre (a)+(b) : la bande d'ENTRÉE est complète (attentes ci-dessus faites)
+        # → 1 H2D groupé épinglé + placement VRAM, puis blends de bande en VRAM (ci-dessous).
+        if GPU_SLICE and _bstage:
+            _gpu_place_band(cy, cu, cv, _bstage)
         # habillage intersectant la bande : 1) chrome statique pré-calculé (bbox)
         if chrome_pre is not None:
             bx0, by0, bx1, by1, _piY, _saY, _piC, _saU, _saV = chrome_pre
@@ -2804,10 +2891,23 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                     cu[ca0:cb0, cx0:cx1] = blend(cu[ca0:cb0, cx0:cx1], _ou[lc0:lc1], _oa2[lc0:lc1])
                     cv[ca0:cb0, cx0:cx1] = blend(cv[ca0:cb0, cx0:cx1], _ovv[lc0:lc1], _oa2[lc0:lc1])
         # publication de la bande : copie canvas→grain + commit PROGRESSIF (réveille l'aval)
-        ov_y[b0:b1] = cy[b0:b1]
-        if b1 // _CH > b0 // _CH:
-            ov_u[b0//_CH:b1//_CH] = cu[b0//_CH:b1//_CH]
-            ov_v[b0//_CH:b1//_CH] = cv[b0//_CH:b1//_CH]
+        if GPU_SLICE:
+            # Ancre (c) : D2H PAR BANDE via .get(out=épinglé) puis copie vers la vue grain —
+            # synchrone (le commit exige les octets posés). Le recouvrement (D2H bande k sur un
+            # stream pendant le compose de k+1, commit décalé d'une bande) se greffera ici si le
+            # banc gate le justifie (TISSU_SLICE_GPU.md §c).
+            cy[b0:b1].get(out=_slgpu["hy"])
+            ov_y[b0:b1] = _slgpu["hy"]
+            if b1 // _CH > b0 // _CH:
+                cu[b0//_CH:b1//_CH].get(out=_slgpu["hu"])
+                cv[b0//_CH:b1//_CH].get(out=_slgpu["hv"])
+                ov_u[b0//_CH:b1//_CH] = _slgpu["hu"]
+                ov_v[b0//_CH:b1//_CH] = _slgpu["hv"]
+        else:
+            ov_y[b0:b1] = cy[b0:b1]
+            if b1 // _CH > b0 // _CH:
+                ov_u[b0//_CH:b1//_CH] = cu[b0//_CH:b1//_CH]
+                ov_v[b0//_CH:b1//_CH] = cv[b0//_CH:b1//_CH]
         out_writer.commit(gi_o, valid_slices=None if k == nb - 1 else k + 1)
     return wait_ns
 
