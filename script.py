@@ -2624,6 +2624,10 @@ _last_in_fi = {{}}         # mode input-locked : dernier frame_index COMPOSÉ pa
 _lag_frames = {{}}         # mode input-locked : retard par shm = nb de composes consécutifs SANS
                            # avancement du frame_index source (0 = synchrone). Exposé inputs_lag_frames.
 
+# Backoff des entrées mortes (mode tranche) : ti → [fi_bloqué, timeouts_consécutifs]. Persistant
+# ENTRE les trames (module) ; réarmé dès que la tête de la tuile dépasse fi_bloqué.
+_sl_backoff = {{}}
+
 def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles):
     """MODE TRANCHE — compose et PUBLIE la trame BANDE PAR BANDE (SLICE_LINES lignes/bande).
     Pour chaque bande de sortie : attend (get_slice, réveil au commit partiel du producteur) les
@@ -2635,14 +2639,17 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles):
     décalée d'1 image) — la sortie n'est JAMAIS bloquée par une source."""
     nb = OUT_HEIGHT // SLICE_LINES
     global _sl_dbg
+    wait_ns = 0          # cumul des ATTENTES get_slice — renvoyé à l'appelant : own_latency_ms
+                         # doit les EXCLURE (le tissu/monitoring y lit la SATURATION du worker,
+                         # pas le suivi du fil — cf. cap réactif pyramide, même contrat)
     _gidx, gi_o, vw_o = out_writer.open_grain()
     ysz = OUT_WIDTH * OUT_HEIGHT * _BPS
     csz = (OUT_WIDTH // _CW) * (OUT_HEIGHT // _CH) * _BPS
     ov_y = vw_o[:ysz].view(_NP_DT).reshape(OUT_HEIGHT, OUT_WIDTH)
     ov_u = vw_o[ysz:ysz + csz].view(_NP_DT).reshape(OUT_HEIGHT//_CH, OUT_WIDTH//_CW)
     ov_v = vw_o[ysz + csz:ysz + 2*csz].view(_NP_DT).reshape(OUT_HEIGHT//_CH, OUT_WIDTH//_CW)
-    _deadl = time.monotonic() + FRAME_INTERVAL * 1.5   # budget attente cumulé (toutes tuiles)
-    _sl_dbg = [len(batch), -1, 0, 0]   # [tuiles, valid0, attentes, replis] (debug banc)
+    _deadl = time.monotonic() + FRAME_INTERVAL * 1.5   # garde-fou GLOBAL (borne dure de la trame)
+    _sl_dbg = [len(batch), -1, 0, 0, 0]   # [tuiles, valid0, attentes, replis, dormantes]
     # état mutable par tuile : plans (rebindés au repli grain complet), tranches valides, colonnes.
     # FAST-PATH ratio ENTIER (grilles 2×2/3×3…) : vues STRIDÉES pré-calculées (comme resize_plane)
     # → placement de bande = simple slice-assign (~8 µs vs ~120 µs np.ix_ 2D, mesuré : le np.ix_
@@ -2655,15 +2662,35 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles):
         cci = (np.arange(vw // _CW) * (in_w // _CW)) // (vw // _CW)
         return ("g", sy, su, sv, cxi, cci)
     st = []
-    for (rd, fi, gi, sy, su, sv, in_h, in_w, vy, vh, vx, vw) in batch:
+    for (ti, rd, fi, gi, sy, su, sv, in_h, in_w, vy, vh, vx, vw) in batch:
         total = int(gi.totalSlices or 1)
-        st.append([rd, fi, sy, su, sv, in_h, in_w, vy, vh, vx, vw,
-                   total, int(gi.validSlices or total), max(1, in_h // max(1, total)),
-                   _tile_views(sy, su, sv, in_h, in_w, vh, vw)])
+        valid0 = int(gi.validSlices or total)
+        # BACKOFF entrées mortes (durcissement) : une tuile qui a timeouté 2 trames de suite SUR LE
+        # MÊME grain (tête figée = producteur mort mi-grain) passe DORMANTE : bascule immédiate sur
+        # son dernier grain complet, ZÉRO sonde — elle ne consomme plus aucun budget tant que sa
+        # tête n'avance pas. Toute avance de tête (fi > enregistré) réarme la tuile.
+        _bk = _sl_backoff.get(ti)
+        if _bk is not None and fi > _bk[0]:
+            _sl_backoff.pop(ti, None); _bk = None
+        if _bk is not None and _bk[1] >= 2:
+            _sl_dbg[4] += 1
+            g = rd.get(fi - 1, timeout_ns=2_000_000)
+            if g is not None:
+                _v = g[2]
+                _yb = in_w * in_h * _BPS
+                _ub = (in_w // _CW) * (in_h // _CH) * _BPS
+                sy = _v[:_yb].view(_NP_DT).reshape(in_h, in_w)
+                su = _v[_yb:_yb + _ub].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
+                sv = _v[_yb + _ub:_yb + 2*_ub].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
+            valid0 = total                       # plus aucune attente pour cette tuile
+        st.append([ti, rd, fi, sy, su, sv, in_h, in_w, vy, vh, vx, vw,
+                   total, valid0, max(1, in_h // max(1, total)),
+                   _tile_views(sy, su, sv, in_h, in_w, vh, vw),
+                   int(FRAME_INTERVAL * 1e9)])   # budget d'attente PAR TUILE (découplage)
     for k in range(nb):
         b0 = k * SLICE_LINES; b1 = b0 + SLICE_LINES
         for t in st:
-            rd, fi, sy, su, sv, in_h, in_w, vy, vh, vx, vw, total, valid, islh, tv = t
+            ti, rd, fi, sy, su, sv, in_h, in_w, vy, vh, vx, vw, total, valid, islh, tv = t[:16]
             a = max(vy, b0); b = min(vy + vh, b1)
             if a >= b:
                 continue
@@ -2676,26 +2703,35 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles):
                 _sl_dbg[1] = valid
             if need_k > valid:
                 _sl_dbg[2] += 1
-                _left = _deadl - time.monotonic()
+                # Budget PAR TUILE (t[16], durcissement) : une tuile en retard n'entame QUE son
+                # propre budget — les autres gardent le leur (plus de couplage par le budget
+                # global, qui reste la borne dure de la trame).
+                _left = min(_deadl - time.monotonic(), t[16] / 1e9)
+                _w0 = time.monotonic()
                 g = rd.get_slice(fi, need_k, timeout_ns=max(1, int(_left * 1e9))) if _left > 0 else None
+                _dw = int((time.monotonic() - _w0) * 1e9)
+                wait_ns += _dw; t[16] -= _dw
                 if g is not None:
-                    valid = t[12] = max(need_k, int(g[1].validSlices or need_k))
+                    valid = t[13] = max(need_k, int(g[1].validSlices or need_k))
                 else:
                     # budget épuisé / producteur en retard → REPLI sur le dernier grain COMPLET
                     # (les bandes déjà posées de cette tuile restent celles du grain fi → très
-                    # léger tearing d'UNE image sur la tuile en retard, jamais de blocage).
+                    # léger tearing d'UNE image sur la tuile en retard, jamais de blocage) +
+                    # comptage backoff : 2 timeouts consécutifs sur le MÊME grain → dormante.
+                    _bk = _sl_backoff.get(ti)
+                    _sl_backoff[ti] = [fi, (_bk[1] + 1 if _bk and _bk[0] == fi else 1)]
                     g = rd.get(fi - 1, timeout_ns=2_000_000)
                     if g is not None:
                         _v = g[2]
                         _yb = in_w * in_h * _BPS
                         _ub = (in_w // _CW) * (in_h // _CH) * _BPS
-                        t[2] = sy = _v[:_yb].view(_NP_DT).reshape(in_h, in_w)
-                        t[3] = su = _v[_yb:_yb + _ub].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
-                        t[4] = sv = _v[_yb + _ub:_yb + 2*_ub].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
-                        t[14] = _tile_views(sy, su, sv, in_h, in_w, vh, vw)
-                    tv = t[14]
+                        t[3] = sy = _v[:_yb].view(_NP_DT).reshape(in_h, in_w)
+                        t[4] = su = _v[_yb:_yb + _ub].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
+                        t[5] = sv = _v[_yb + _ub:_yb + 2*_ub].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
+                        t[15] = _tile_views(sy, su, sv, in_h, in_w, vh, vw)
+                    tv = t[15]
                     _sl_dbg[3] += 1
-                    valid = t[12] = total          # plus aucune attente pour les bandes suivantes
+                    valid = t[13] = total          # plus aucune attente pour les bandes suivantes
             # placement de la bande : vue STRIDÉE (ratio entier, ~8 µs) sinon gather chaîné
             # lignes→colonnes (~33 µs — np.ix_ 2D mesuré à ~120 µs, prohibitif à bande×tuile)
             r0 = a - vy; r1 = r0 + (b - a)
@@ -2749,6 +2785,7 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles):
             ov_u[b0//_CH:b1//_CH] = cu[b0//_CH:b1//_CH]
             ov_v[b0//_CH:b1//_CH] = cv[b0//_CH:b1//_CH]
         out_writer.commit(gi_o, valid_slices=None if k == nb - 1 else k + 1)
+    return wait_ns
 
 def _peek_inputs():
     """frame_index courants des sources OUVERTES (mode input-locked). Lit les 8 premiers octets de
@@ -2855,6 +2892,7 @@ while True:
     ts_cycle_start = time.time_ns()   # début du compositing (après l'attente de grille) → own_latency
     ts_out = ts_cycle_start           # défini AVANT le try : si le rendu plante (garde-fou), own_lat.push
                                       # ci-dessous ne lève plus NameError (le crash qui tuait la boucle).
+    _sl_waited = 0                    # mode tranche : attentes get_slice de la trame (exclues de own)
     ts_in_per_input = {{}}  # path → transit_ms (âge à la lecture), rempli par les lectures réussies
     _statuses = []          # (idx, statut, chip format, proxy) → signature de la couche info
     _pu = {{}}              # idx → {{src, read, cost, kind}} (monitoring pyramide, cette frame)
@@ -2993,7 +3031,7 @@ while True:
                 src_y = src_view[:_yb].view(_NP_DT).reshape(in_h, in_w)
                 src_u = src_view[_yb:_yb + _uvb].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
                 src_v = src_view[_yb + _uvb:_yb + 2 * _uvb].view(_NP_DT).reshape(in_h//_CH, in_w//_CW)
-                _slice_batch.append((rd, fi, got[1], src_y, src_u, src_v, in_h, in_w,
+                _slice_batch.append((i, rd, fi, got[1], src_y, src_u, src_v, in_h, in_w,
                                      vy, vh, video_x, video_w))
                 continue
             src_y = np.frombuffer(bytes(src_view[:_yb]),
@@ -3115,8 +3153,8 @@ while True:
         if SLICE_ON:
             # MODE TRANCHE : placement des tuiles + habillage + écriture sortie BANDE PAR BANDE,
             # avec commit MXL progressif (l'aval démarre sur la 1ʳᵉ bande). CPU/paysage (gaté).
-            _compose_bands(canvas_y, canvas_u, canvas_v, _slice_batch,
-                           _chrome_pre, _meter_tiles, _pf_tiles)
+            _sl_waited = _compose_bands(canvas_y, canvas_u, canvas_v, _slice_batch,
+                                        _chrome_pre, _meter_tiles, _pf_tiles) or 0
         else:
             if _PORTRAIT:                        # compose en portrait → tourne 90° vers la trame paysage
                 canvas_y, canvas_u, canvas_v = _rotate_out(canvas_y, canvas_u, canvas_v)
@@ -3155,7 +3193,10 @@ while True:
             lat_in[key] = RollingMs()
         lat_in[key].push(transit_ms)
     # Traitement PROPRE du nœud (compositing) = ts_out − début du cycle.
-    own_lat.push((ts_out - ts_cycle_start) / 1e6)
+    # own = TRAVAIL de compositing : en mode tranche les attentes get_slice (suivi du fil) sont
+    # EXCLUES — le tissu (décisions de sharding) et le monitoring y lisent la saturation du
+    # worker, pas la période de la source (même contrat que la pyramide / cap réactif).
+    own_lat.push((ts_out - ts_cycle_start - _sl_waited) / 1e6)
     out_frame_index += 1
     if GENLOCK:
         next_frame_time += FRAME_INTERVAL
@@ -3173,5 +3214,10 @@ while True:
         _fps_last_idx = out_frame_index; _fps_last_t = _now_fps
         _refresh_lat_metrics()
         _sd = globals().get('_sl_dbg')
+        if _sd:
+            # Observabilité recette (TISSU_SLICE.md) : compteurs slice promus en métriques :8080.
+            metrics["slice"] = {{"tiles": _sd[0], "valid0": _sd[1], "waits": _sd[2],
+                               "fallbacks": _sd[3], "dormant": _sd[4],
+                               "backoff": len(_sl_backoff)}}
         print(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} fps"
-              + (f" [slice: tuiles={{_sd[0]}} valid0={{_sd[1]}} waits={{_sd[2]}} replis={{_sd[3]}}]" if _sd else ""))
+              + (f" [slice: tuiles={{_sd[0]}} valid0={{_sd[1]}} waits={{_sd[2]}} replis={{_sd[3]}} dorm={{_sd[4]}}]" if _sd else ""))
