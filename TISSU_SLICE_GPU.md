@@ -4,8 +4,12 @@
 > (0.24.x/0.25.x, cadence « flow ») est la RÉFÉRENCE SÉMANTIQUE — le GPU ne change QUE le
 > lieu des octets (VRAM), jamais le protocole (attentes get_slice, budgets par tuile,
 > backoff, ciblage d'index d'epoch, commit progressif).
-> État : squelette codé derrière flag `gpu_slice` (défaut OFF, 0.26.0) ; AUCUN banc encore —
-> le nœud GPU dl360-2/T4 n'était pas disponible. GATE : ne rien activer avant le verdict.
+> État : squelette 0.26.0 (flag `gpu_slice`, défaut OFF) ; **banc gate PASSÉ (T4 dl360Horace,
+> sous charge) : verdict GO-MEGA-135** — bandes fines 36 l REJETÉES (trame 15,26 ms, le coût de
+> LANCEMENT des kernels domine : compose 10,6 ms à 30 lancements vs 0,71 ms pleine trame) ;
+> méga-bandes 135 l : trame 5,66 ms, 1ʳᵉ bande 0,58 ms, surcoût transferts +0,12 ms, D2H
+> recouvert ~0,44 ms gagnés. **Micro-batch (§b var.2) IMPLÉMENTÉ en 0.27.0** : `gpu_batch_bands`
+> (défaut 4 bandes/lot = 144 l ≈ 135 mesuré), voir §Micro-batch livré en bas.
 
 ## 0. Pipeline GPU actuel (whole-frame, référence à battre)
 
@@ -151,12 +155,36 @@ avec `slice_mode=true, cadence="flow", gpu_slice=true` (+ `slice_lines=<méga>` 
 échéant) et comparer `own_latency_ms`, `slice.valid0/waits/fallbacks` et la phase de
 1ʳᵉ bande (mxl_bench) au même mur en `force_cpu`.
 
+## Micro-batch livré (0.27.0, post-verdict GO-MEGA-135)
+
+- **`gpu_batch_bands`** = nombre de bandes MXL (slice_lines) par LOT GPU, défaut **4** (dernier
+  lot partiel si nb % k ≠ 0). Sémantique retenue (vs « nb de lots/trame ») : stable quelle que
+  soit la hauteur de sortie, collée au grain MXL — à 1080p/36 l, k=4 → 8 lots de 144 l
+  (7×4 + 1×2) ≈ les 135 l mesurés GO (1080/8 n'est pas un multiple de 36). k=1 = squelette.
+- **Protocole INCHANGÉ** : attentes get_slice par bande de 36 l (budgets/backoff/fi_out avant
+  tout octet GPU) ; commits MXL progressifs au grain 36 l. Seul le GPU grossit au lot : 1 H2D
+  groupé épinglé/lot, kernels/lot, **D2H recouvert** (stream dédié non-bloquant + double-buffer
+  épinglé : D2H du lot j pendant le compose du lot j+1 ; +1 lot de phase de commit).
+- 3 optimisations imposées par le banc micro-batch (le squelette naïf plafonnait à 25 ms) :
+  placement **coalescé au lot** (1 gather hôte + 1 slice-assign par tuile/plan/LOT — par bande,
+  ~7 ms/trame de lancements) ; fast-path ratio entier = upload de rangées décimées **pleine
+  largeur** (copies hôte contiguës ; le gather colonne-stridé coûtait ~5,6 ms/trame) avec
+  décimation colonne EN VRAM (csx/csc, octet-identique) ; blends **fusionnés**
+  (ElementwiseKernel) **in-place** dans la vue canvas (profite aussi au whole-frame :
+  12,4 → 7,9 ms).
+- **Banc 3 modes** `tools/bench_gpu_batch.py` (4×1080p → mur 2×2, chrome + 4 VU, 300 trames,
+  T4 partagée ~68 %) : cpu_slice 19,4/20,3 ms (p50/p90), 1ʳᵉ bande 0,87 ms ; gpu_whole
+  7,9/8,2 ms ; **gpu_batch k=4 : 10,7/11,8 ms, 1ʳᵉ bande 2,38/2,42 ms** — critères GO tenus
+  sous charge. Sweep : k=5-8 → trame 8,5-7,5 ms mais 1ʳᵉ bande 2,4→3,6 ms (réglable).
+- **Équivalence octet vérifiée** (tolérance 0) : cpu_slice == gpu_whole == gpu_batch.
+
 ## Points ouverts
 
-1. Verdict du banc gate (aucune mesure encore) — tout le reste en dépend.
-2. Si GO : greffe du pipeline streams (H2D k+1 pendant compose k, D2H recouvert profondeur 1)
-   — points de greffe marqués, non codés.
-3. Si GO méga-bandes : implémenter `gpu_batch_bands` (micro-batch, §b variante 2) plutôt que
-   d'imposer `slice_lines` gros au nœud (garde le réveil aval fin côté producteurs amont).
-4. Budgets par tuile sous coût GPU par bande : à re-regarder sur banc réel (compteurs slice).
+1. ~~Verdict du banc gate~~ FAIT : GO-MEGA-135 (ci-dessus).
+2. ~~Si GO : D2H recouvert~~ FAIT (0.27.0, stream dédié, profondeur 1). Reste éventuellement le
+   H2D pipeliné (upload lot j+1 pendant compose lot j) — non mesuré nécessaire à ce stade.
+3. ~~Si GO méga-bandes : `gpu_batch_bands`~~ FAIT (0.27.0, défaut 4).
+4. Budgets par tuile sous coût GPU par lot : à re-regarder sur banc réel (compteurs slice).
 5. Rotation portrait sous slice (exclue CPU comme GPU) : hors périmètre, statu quo.
+6. Banc réel en conteneur managé (slice_mode+flow+gpu_slice vs force_cpu sur mur live) : à
+   faire à la prochaine fenêtre — le banc autonome ne rejoue pas les attentes get_slice.
