@@ -1,7 +1,10 @@
 {
-  "version": "0.27.4",
+  "version": "0.27.5",
   "date": "2026-07-12",
   "changes": {
+    "ANC RFC 8331 (0.27.5)": [
+      "Le décodage du timecode ANC (horloge source RP188) passe par bobimxl.anc_unpack, aiguillé sur le bobi_anc_format du producteur (lu une fois à l'ouverture du flux) → flotte mixte gérée."
+    ],
     "Masquage UI mode tranche (0.27.3)": [
       "Clés du mode tranche (cadence, slice_mode, slice_lines, gpu_slice, gpu_batch_bands) marquées hidden:true dans le config_schema : plus rendues dans la palette ni le panneau ⚙ — pilotage par le réglage global Réglages → Vidéo « Mode tranche » (slice_mode_global). Les clés restent dans le schéma : coercion, déploiement et API inchangés."
     ],

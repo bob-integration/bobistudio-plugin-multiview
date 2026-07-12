@@ -2105,13 +2105,9 @@ def _countdown_color(ov, now):
 # ── Horloge source ANC : timecode embarqué (RP188/ATC) lu du flux ANC (2110-40) ──
 # MXL-aligné : l'ANC est un FLUX DE DONNÉES séparé (futur ST 2038), pas un champ de l'en-tête
 # vidéo. On dérive le shm ANC de l'entrée vidéo (miroir des VU-mètres) et on décode le RP188
-# côté consommateur. Format du slot écrit par mtl_rx.c data_rx_thread :
-#   [u32 meta_num][u32 udw_fill][anc_meta_rec×meta_num][udw octets] ; anc_meta_rec = 8×uint16 (16 o).
-ANC_SLOT     = 8192
-ANC_RING     = 8
-ANC_HDR      = 64
-ANC_TOTAL    = ANC_HDR + ANC_RING * ANC_SLOT
-ANC_META_REC = 16
+# côté consommateur. Le CODAGE du grain est celui annoncé par le producteur dans son flowDef
+# (`bobi_anc_format`) : RFC 8331 (normatif) ou l'ancien format maison → `bobimxl.anc_unpack`
+# aiguille seul, donc un producteur pas encore migré reste lisible (flotte MIXTE).
 anc_states = {{}}   # flux_idx → {{"for_path", "state": {{shm_f, shm, path}}|None}}
 
 def _derive_anc_shm_path(video_path):
@@ -2126,42 +2122,23 @@ def _open_anc_state(video_path):
     if not p:
         return None
     try:
-        rd = bobimxl.Reader(inst, p.removeprefix("/dev/shm/"))  # flux ANC data MXL (lève si absent)
-        return {{"reader": rd, "path": p}}
+        name = p.removeprefix("/dev/shm/")
+        rd = bobimxl.Reader(inst, name)         # flux ANC data MXL (lève si absent)
+        # Codage annoncé par le producteur — lu UNE fois à l'ouverture (le flowDef est immuable).
+        return {{"reader": rd, "path": p, "flow_def": inst.flow_def(name)}}
     except Exception:
         return None
 
-def _decode_anc_tc(reader):
-    """Dernier grain ANC (flux MXL data) → ATC RP188 (DID/SDID 0x60, 16 UDW BCD) → (hh,mm,ss,ff,df).
-    Le grain = UNE payload ANC à l'offset 0 : [u32 meta_num][u32 udw_fill][meta×16][udw]
-    (le ring/header sont gérés par MXL, plus de slot à calculer)."""
+def _decode_anc_tc(reader, flow_def=None):
+    """Dernier grain ANC (flux MXL data) → ATC RP188 (DID/SDID 0x60) → (hh,mm,ss,ff,df).
+    Le décodeur est choisi d'après le `bobi_anc_format` du producteur (RFC 8331 ou legacy)."""
     try:
         got = reader.get_latest()
         if got is None:
             return None
-        v = bytes(got[2])
-        mn, _fill = struct.unpack_from("<II", v, 0)
-        if mn == 0 or mn > 256:
-            return None
-        meta_off = 8
-        udw_base = meta_off + mn * ANC_META_REC
-        for m in range(mn):
-            did, sdid, _line, _hori, udw_size, udw_offset, _c, _s = struct.unpack_from(
-                "<8H", v, meta_off + m * ANC_META_REC)
-            if did != 0x60 or sdid != 0x60 or udw_size < 16:
-                continue
-            w = udw_base + udw_offset
-            if w + 16 > len(v):
-                return None
-            b = [(v[w + 2*i] & 0x0f) | ((v[w + 2*i + 1] & 0x0f) << 4) for i in range(8)]
-            frames  = (b[0] & 0x0f) + ((b[0] >> 4) & 0x03) * 10
-            seconds = (b[2] & 0x0f) + ((b[2] >> 4) & 0x07) * 10
-            minutes = (b[4] & 0x0f) + ((b[4] >> 4) & 0x07) * 10
-            hours   = (b[6] & 0x0f) + ((b[6] >> 4) & 0x03) * 10
-            return (hours, minutes, seconds, frames, bool((b[0] >> 6) & 0x01))
+        return bobimxl.anc_atc_decode(bobimxl.anc_unpack(bytes(got[2]), flow_def))
     except Exception:
         return None
-    return None
 
 def _anc_tc_for(ov):
     """(hh,mm,ss,ff,df) de l'entrée vidéo référencée par l'horloge ANC (tc_source), ou None."""
@@ -2180,7 +2157,9 @@ def _anc_tc_for(ov):
             except Exception: pass
         rec = {{"for_path": vpath, "state": _open_anc_state(vpath) if vpath else None}}
         anc_states[idx] = rec
-    return _decode_anc_tc(rec["state"]["reader"]) if rec["state"] else None
+    if not rec["state"]:
+        return None
+    return _decode_anc_tc(rec["state"]["reader"], rec["state"].get("flow_def"))
 
 def _fmt_clock_fields(ov, hh, mm, ss, ff, df=False, dash=False):
     """Met en forme HH/MM/SS/II selon les cases activées ; séparateur images ';' si drop-frame.
