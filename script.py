@@ -655,7 +655,19 @@ def _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0=0):
     return arr
 
 def _rgba_to_yuv_xp(arr):
-    """rgba_to_yuv pour un RGBA backend (xp) float32 — réplique rgba_to_yuv sans PIL (xp=np en CPU)."""
+    """rgba_to_yuv pour un RGBA backend (xp) float32 — réplique rgba_to_yuv sans PIL (xp=np en CPU).
+    Chemin CPU : conversion Y/U/V fusionnée en C (mvk ABI 2, image ≥ 0.12) quand disponible —
+    bit-exact (mêmes expressions float32, .so compilé -ffp-contract=off) ; alpha reste numpy."""
+    if _MVK and not (GPU and isinstance(arr, cp.ndarray)):
+        _got = getattr(bobimxl, "mvk_rgba2yuv", lambda *a: None)(
+            np.ascontiguousarray(arr, dtype=np.float32), _NP_DT, _SCALE, _MAXV, _CW, _CH)
+        if _got is not None:
+            _y, _u2, _v2 = _got
+            _a8 = arr[..., 3].astype(_NP_DT)
+            _am = _a8
+            if _CW == 2: _am = np.maximum(_am[:, 0::2], _am[:, 1::2])
+            if _CH == 2: _am = np.maximum(_am[0::2, :], _am[1::2, :])
+            return _y, _u2, _v2, _a8, _am
     r = arr[..., 0]; g = arr[..., 1]; b = arr[..., 2]; a = arr[..., 3]
     y = (( 0.299 * r + 0.587 * g + 0.114 * b      ) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
     u = ((-0.169 * r - 0.331 * g + 0.500 * b + 128) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
@@ -932,8 +944,21 @@ def resize_plane(plane, target_h, target_w):
     return plane[_xp.ix_(row_idx, col_idx)]
 
 def rgba_to_yuv(img):
-    """Image PIL RGBA → (Y full-res, U sub 2x2, V sub 2x2, alpha full, alpha sub 2x2)."""
+    """Image PIL RGBA → (Y full-res, U sub 2x2, V sub 2x2, alpha full, alpha sub 2x2).
+    Y/U/V fusionnés en C (mvk ABI 2) quand disponible — bit-exact au numpy ci-dessous
+    (mêmes expressions float32, -ffp-contract=off) ; l'alpha (uint8 brut) reste numpy.
+    Gros bénéficiaire : le re-bake du chrome PLEINE TRAME à chaque bascule tally."""
     arr = np.array(img)
+    if _MVK:
+        _got = getattr(bobimxl, "mvk_rgba2yuv", lambda *a: None)(
+            arr, _NP_DT, _SCALE, _MAXV, _CW, _CH)
+        if _got is not None:
+            _y, _u2, _v2 = _got
+            _a = arr[..., 3]
+            _am = _a
+            if _CW == 2: _am = np.maximum(_am[:, 0::2], _am[:, 1::2])
+            if _CH == 2: _am = np.maximum(_am[0::2, :], _am[1::2, :])
+            return _y, _u2, _v2, _a, _am
     r = arr[..., 0].astype(np.float32)
     g = arr[..., 1].astype(np.float32)
     b = arr[..., 2].astype(np.float32)

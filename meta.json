@@ -1,7 +1,10 @@
 {
-  "version": "0.31.0",
+  "version": "0.32.0",
   "date": "2026-07-12",
   "changes": {
+    "Conversion RGBA→YUV fusionnée en C (0.32.0, image ≥ 0.12)": [
+      "rgba_to_yuv (chemin PIL : bake du chrome pleine trame à chaque tally, tuiles horloges/ANC) et _rgba_to_yuv_xp (tuiles VU, chemin CPU) délèguent les plans Y/U/V à mvk_rgba2yuv (ABI 2) : 1 passe C au lieu de ~15 passes numpy. Alpha inchangé (numpy). Bit-exact prouvé (36 combinaisons u8/f32 × 8/10 bits × chromas × tailles, threads 1≡4) ; image 0.11 ou lib absente → repli numpy verbatim."
+    ],
     "Lot PIL : VU-mètres CPU sans PIL par-trame (0.31.0)": [
       "Le chemin CPU des VU-mètres passe sur la machinerie tuile introduite en 0.20.0 pour le GPU (backend-agnostique) : statique (fond/graduations dB/nos de canaux) rendu PIL UNE fois et caché, barres + peak-hold PEINTS par trame en opérations tableau, conversion _rgba_to_yuv_xp. Plus aucune rastérisation PIL par trame (~1-2 ms/meter économisés).",
       "Équivalence pixel RE-PROUVÉE avant bascule : max|Δ|=0 sur Y/U/V/alpha, 24 cas (8 bits 4:2:0 et 10 bits 4:2:2 × n=2/4/8 canaux × échelles dbfs/ppm × opacités 60/100).",
