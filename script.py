@@ -69,6 +69,15 @@ if CONFIG.get("force_cpu"):
     GPU = False
     _GPU_NAME = None
 
+# ─── Kernel compose fusionné C (libbobi_mvk, chantier fusion numpy→C 2026-07) ─────────────
+# Chemin CPU uniquement (le GPU garde ses ElementwiseKernel fusionnés) : blend / blend_pre /
+# place nearest en UNE passe mémoire chacun via bobimxl.mvk_* (image bobi-compute ≥ 0.11,
+# bit-exact au numpy — selftest mvk_selftest.py). Lib absente (vieille image) OU wrappers non
+# applicables → repli numpy intégral : le repli EST l'ancien code, octet-identique. Threads
+# OpenMP posés par bobimxl au chargement (env BOBI_MVK_THREADS, sinon cœurs physiques du
+# cpuset HT-aware). getattr : un bobimxl d'ancienne image n'a pas mvk_available.
+_MVK = (not GPU) and bool(getattr(bobimxl, "mvk_available", lambda: False)())
+
 FLUX_CONFIG   = CONFIG.get("flux_config") or []
 SHM_OUT_NAME  = CONFIG.get("shm_out") or "mxl_mix"
 SHM_OUT       = "/dev/shm/" + SHM_OUT_NAME   # conservé pour l'audio legacy / dérivations de noms
@@ -721,6 +730,7 @@ _tsl_combined = {{}}         # index → True si le contrôleur envoie des paque
 TSL_SLOT_TTL_FACTOR = 2.5   # TTL = factor × intervalle keepalive mesuré
 TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
+           "mvk": _MVK,                          # kernel compose fusionné C actif (chemin CPU)
            "gpu": GPU, "gpu_name": _GPU_NAME,    # GPU = compositing accéléré cupy (sinon numpy CPU)
            "gpu_slice": GPU_SLICE,               # tranche VRAM active (opt-in gpu_slice, banc gate)
            "gpu_batch_bands": GPU_BATCH_BANDS if GPU_SLICE else None}}   # bandes/lot GPU (micro-batch)
@@ -979,6 +989,34 @@ def blend_pre(dst, inv_a, src_a):
         return _blend_pre_k(dst, inv_a, src_a)
     return ((dst.astype(_ACC) * inv_a + src_a) // 255).astype(_NP_DT)
 
+# Variantes IN-PLACE pour les call-sites par-trame dont la destination est une VUE du canvas :
+# mvk = 1 passe mémoire directe dans la vue (plus d'intermédiaire ni de ré-assignation) ; repli
+# = strictement l'assignation d'origine `vue[...] = blend(...)` (mêmes octets). Ne PAS utiliser
+# sur un dst partagé/caché (mvk mute dst) — uniquement les vues canvas de la trame courante.
+def _blend_into(dv, s, aa):
+    if _MVK and bobimxl.mvk_blend_into(dv, s, aa):
+        return
+    dv[...] = blend(dv, s, aa)
+
+def _blend_pre_into(dv, ia, sa):
+    if _MVK and bobimxl.mvk_blend_pre_into(dv, ia, sa):
+        return
+    dv[...] = blend_pre(dv, ia, sa)
+
+def _mvk_place_plane(dstv, plane, th, tw):
+    """resize_plane + assignation FUSIONNÉS (mvk_place → écrit la vue canvas en 1 passe).
+    Indices nearest = MÊMES formules que resize_plane (pas entier, sinon troncature float),
+    calculées ici — le C ne fait que le gather. False → repli resize_plane (bit-exact)."""
+    if not _MVK or th <= 0 or tw <= 0:
+        return False
+    fh, fw = plane.shape
+    if fh % th == 0 and fw % tw == 0:
+        ri = (np.arange(th) * (fh // th)).astype(np.int32)
+        return bobimxl.mvk_place_into(dstv, plane, ri, col0=0, col_step=fw // tw)
+    ri = (np.arange(th) * fh / th).astype(np.int32)
+    ci = (np.arange(tw) * fw / tw).astype(np.int32)
+    return bobimxl.mvk_place_into(dstv, plane, ri, col_idx=ci)
+
 # ─── Placement groupé des tuiles vidéo (CPU direct / GPU upload épinglé groupé) ───────────────
 _pin = {{"host": None, "dev": None, "cap": 0}}   # buffers persistants GPU (staging épinglé entrées + device)
 _outpin = {{"buf": None}}                        # buffer hôte ÉPINGLÉ persistant pour le download sortie (GPU)
@@ -1038,6 +1076,14 @@ def _place_batch(cy, cu, cv, batch):
         return
     if not GPU:
         for (sy, su, sv, vy, vh, vx, vw) in batch:
+            # Chemin fusionné mvk (3 plans) ; l'échec d'UN plan (forme/contiguïté inattendue)
+            # rebascule la tuile ENTIÈRE sur le repli numpy (ré-écrit les 3 plans : sûr).
+            if _mvk_place_plane(cy[vy:vy+vh, vx:vx+vw], sy, vh, vw) \
+                    and _mvk_place_plane(cu[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW],
+                                         su, vh//_CH, vw//_CW) \
+                    and _mvk_place_plane(cv[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW],
+                                         sv, vh//_CH, vw//_CW):
+                continue
             cy[vy:vy+vh, vx:vx+vw] = resize_plane(sy, vh, vw)
             cu[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(su, vh//_CH, vw//_CW)
             cv[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(sv, vh//_CH, vw//_CW)
@@ -3448,12 +3494,12 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
         if GPU_SLICE:
             _blend_pre_k(dv, ia, sa, dv)
         else:
-            dv[...] = blend_pre(dv, ia, sa)
+            _blend_pre_into(dv, ia, sa)   # mvk 1 passe, sinon strictement l'ancien code
     def _bl(dv, s, aa):
         if GPU_SLICE:
             _blend_k(dv, s, aa, dv)
         else:
-            dv[...] = blend(dv, s, aa)
+            _blend_into(dv, s, aa)
     if GPU_SLICE:
         # Opérandes VU/horloges → VRAM UNE fois par trame (le chrome pré-calculé y réside déjà,
         # cf. _to_xp au bake) : les blends par bande restent alors 100 % en VRAM.
@@ -3467,13 +3513,17 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
     # FAST-PATH ratio ENTIER (grilles 2×2/3×3…) : vues STRIDÉES pré-calculées (comme resize_plane)
     # → placement de bande = simple slice-assign (~8 µs vs ~120 µs np.ix_ 2D, mesuré : le np.ix_
     # par bande×tuile coûtait ~15 ms/trame et faisait dériver le compose d'une demi-trame).
+    # Éléments [6..10] : plans SOURCE de base + pas de décimation — consommés par le placement
+    # fusionné mvk (_mvk_band, indices absolus) ; les index [0..5] historiques sont inchangés
+    # (repli _gather_band). cxi/cci en int32 (contrat mvk_place ; identique en fancy-indexing).
     def _tile_views(sy, su, sv, in_h, in_w, vh, vw):
         if vh > 0 and vw > 0 and in_h % vh == 0 and in_w % vw == 0:
             _sy, _sx = in_h // vh, in_w // vw
-            return ("v", sy[::_sy, ::_sx], su[::_sy, ::_sx], sv[::_sy, ::_sx], None, None)
-        cxi = (np.arange(vw) * in_w) // vw
-        cci = (np.arange(vw // _CW) * (in_w // _CW)) // (vw // _CW)
-        return ("g", sy, su, sv, cxi, cci)
+            return ("v", sy[::_sy, ::_sx], su[::_sy, ::_sx], sv[::_sy, ::_sx], None, None,
+                    sy, su, sv, _sy, _sx)
+        cxi = ((np.arange(vw) * in_w) // vw).astype(np.int32)
+        cci = ((np.arange(vw // _CW) * (in_w // _CW)) // (vw // _CW)).astype(np.int32)
+        return ("g", sy, su, sv, cxi, cci, sy, su, sv, 0, 0)
     def _gather_band(tv, in_h, vh, vy, a, b):
         """Rangées SOURCE (hôte) des lignes de sortie [a, b) d'une tuile : vue STRIDÉE (ratio
         entier, ~8 µs) sinon gather chaîné lignes→colonnes (~33 µs — np.ix_ 2D mesuré à ~120 µs,
@@ -3496,6 +3546,36 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                 _bu = tv[2][rc][:, tv[5]]
                 _bv = tv[3][rc][:, tv[5]]
         return _by, _bu, _bv, ca0, cb0
+    def _mvk_band(tv, in_h, vh, vy, a, b, vx, vw, cx0):
+        """Placement de bande FUSIONNÉ (mvk_place : plan source → canvas en 1 passe, plus de
+        gather intermédiaire + assignation). Indices SOURCE ABSOLUS = mêmes formules que
+        _gather_band/_tile_views (bit-exact). False → repli gather+assign (l'échec d'un plan
+        fait ré-écrire toute la bande de la tuile par le repli : sûr)."""
+        r0 = a - vy; r1 = r0 + (b - a)
+        ca0, cb0 = a // _CH, b // _CH
+        cw = vw // _CW
+        if tv[0] == "v":
+            sr, sc = tv[9], tv[10]
+            ry = (np.arange(r0, r1) * sr).astype(np.int32)
+            if not bobimxl.mvk_place_into(cy[a:b, vx:vx + vw], tv[6], ry, col0=0, col_step=sc):
+                return False
+            if cb0 > ca0:
+                rc0 = r0 // _CH
+                rc = (np.arange(rc0, rc0 + (cb0 - ca0)) * sr).astype(np.int32)
+                return bool(
+                    bobimxl.mvk_place_into(cu[ca0:cb0, cx0:cx0 + cw], tv[7], rc, col0=0, col_step=sc)
+                    and bobimxl.mvk_place_into(cv[ca0:cb0, cx0:cx0 + cw], tv[8], rc, col0=0, col_step=sc))
+            return True
+        ry = ((np.arange(r0, r1) * in_h) // vh).astype(np.int32)
+        if not bobimxl.mvk_place_into(cy[a:b, vx:vx + vw], tv[6], ry, col_idx=tv[4]):
+            return False
+        if cb0 > ca0:
+            rc = ((np.arange(r0 // _CH, r0 // _CH + (cb0 - ca0)) * (in_h // _CH))
+                  // (vh // _CH)).astype(np.int32)
+            return bool(
+                bobimxl.mvk_place_into(cu[ca0:cb0, cx0:cx0 + cw], tv[7], rc, col_idx=tv[5])
+                and bobimxl.mvk_place_into(cv[ca0:cb0, cx0:cx0 + cw], tv[8], rc, col_idx=tv[5]))
+        return True
     st = []
     for (ti, rd, fi, gi, sy, su, sv, in_h, in_w, vy, vh, vx, vw) in batch:
         total = int(gi.totalSlices or 1)
@@ -3575,11 +3655,12 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
             # Les rangées source de la bande (_by/_bu/_bv, HÔTE, _gather_band) sont soit posées
             # directement dans le canvas (CPU, copie = l'assignation, octet-identique à avant),
             # soit mises en attente pour l'upload H2D GROUPÉ (GPU SLICE k=1, _gpu_place_band).
-            _by, _bu, _bv, ca0, cb0 = _gather_band(tv, in_h, vh, vy, a, b)
             _cx0 = vx // _CW
             if GPU_SLICE:
+                _by, _bu, _bv, ca0, cb0 = _gather_band(tv, in_h, vh, vy, a, b)
                 _bstage.append((_by, _bu, _bv, a, b, ca0, cb0, vx, vw, _cx0, 1, 1))
-            else:
+            elif not (_MVK and _mvk_band(tv, in_h, vh, vy, a, b, vx, vw, _cx0)):
+                _by, _bu, _bv, ca0, cb0 = _gather_band(tv, in_h, vh, vy, a, b)
                 cy[a:b, vx:vx + vw] = _by
                 if _bu is not None:
                     cu[ca0:cb0, _cx0:_cx0 + vw//_CW] = _bu
@@ -4118,10 +4199,10 @@ while True:
         # MODE TRANCHE : blends + écriture faits BANDE PAR BANDE dans _compose_bands (plus bas).
         if _chrome_pre is not None and not SLICE_ON:
             bx0, by0, bx1, by1, _piY, _saY, _piC, _saU, _saV = _chrome_pre
-            canvas_y[by0:by1, bx0:bx1] = blend_pre(canvas_y[by0:by1, bx0:bx1], _piY, _saY)
+            _blend_pre_into(canvas_y[by0:by1, bx0:bx1], _piY, _saY)
             cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
-            canvas_u[cy0:cy1, cx0:cx1] = blend_pre(canvas_u[cy0:cy1, cx0:cx1], _piC, _saU)
-            canvas_v[cy0:cy1, cx0:cx1] = blend_pre(canvas_v[cy0:cy1, cx0:cx1], _piC, _saV)
+            _blend_pre_into(canvas_u[cy0:cy1, cx0:cx1], _piC, _saU)
+            _blend_pre_into(canvas_v[cy0:cy1, cx0:cx1], _piC, _saV)
         _ts_ov2 = time.time_ns()   # fin du blend chrome
         # 2) VU-mètres puis 3) horloges : blend de chaque TUILE sur sa propre bbox (z-ordre conservé :
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
@@ -4131,10 +4212,10 @@ while True:
             for (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) in _src_tiles:
                 # Petites tuiles per-frame : uploadées au backend pour le blend en VRAM (_to_xp=identité CPU).
                 _oy, _ou, _ov, _oa, _oa2 = (_to_xp(_oy), _to_xp(_ou), _to_xp(_ov), _to_xp(_oa), _to_xp(_oa2))
-                canvas_y[by0:by1, bx0:bx1] = blend(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
+                _blend_into(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
                 cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
-                canvas_u[cy0:cy1, cx0:cx1] = blend(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
-                canvas_v[cy0:cy1, cx0:cx1] = blend(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
+                _blend_into(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
+                _blend_into(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
         _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=blend VU+horloges (bbox)
         _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
