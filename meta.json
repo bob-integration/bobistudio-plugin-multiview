@@ -1,7 +1,10 @@
 {
-  "version": "0.27.0",
+  "version": "0.27.1",
   "date": "2026-07-12",
   "changes": {
+    "Réglages mode tranche (0.27.1)": [
+      "Exposition des réglages du mode tranche dans le panneau ⚙ Réglages et la palette (config_schema, scope system) : cadence, slice_mode, slice_lines, gpu_slice, gpu_batch_bands. Schéma/UI seulement — aucun changement de comportement du script."
+    ],
     "GPU SLICE : micro-batch de bandes (gpu_batch_bands) post-verdict banc gate GO-MEGA-135 (0.27.0)": [
       "Verdict du banc gate (T4 dl360Horace, sous charge réelle) : bandes fines 36 l REJETÉES (trame 15,26 ms — le coût de LANCEMENT des kernels domine : compose 10,6 ms à 30 lancements vs 0,71 ms pleine trame) ; GO méga-bandes 135 l (trame 5,66 ms, 1ʳᵉ bande 0,58 ms, surcoût transferts +0,12 ms, D2H recouvert ~0,44 ms gagnés).",
       "Implémentation retenue = micro-batch (TISSU_SLICE_GPU.md §b variante 2) : nouveau param `gpu_batch_bands` = NOMBRE DE BANDES MXL (slice_lines) PAR LOT GPU, défaut 4, dernier lot partiel si nb % k ≠ 0. Sémantique choisie (vs « nb de lots/trame ») car stable quelle que soit la hauteur de sortie et collée au grain MXL : à 1080p/36 l, k=4 → 8 lots de 144 l (7×4 + 1×2) ≈ les 135 l mesurés GO (1080/8 n'est pas un multiple de 36). k=1 = squelette 0.26.0 (bande à bande, D2H sync).",

@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.27.0",
+  "version": "0.27.1",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -203,6 +203,73 @@
       "min": 0,
       "max": 65535,
       "default": 0
+    },
+    {
+      "key": "cadence",
+      "type": "select",
+      "label": "Cadence de composition",
+      "help": "genlock : attend la grille PTP (défaut). input : émet dès qu'une entrée a une nouvelle trame (étage intermédiaire d'un tissu, whole-frame). flow : tissu en tranches — cible l'index d'epoch, exige le mode tranche éligible.",
+      "default": "genlock",
+      "scope": "system",
+      "options": [
+        {
+          "value": "genlock",
+          "label": "Genlock (grille PTP — défaut)"
+        },
+        {
+          "value": "input",
+          "label": "Input (data-driven, étage intermédiaire)"
+        },
+        {
+          "value": "flow",
+          "label": "Flow (tissu en tranches)"
+        }
+      ]
+    },
+    {
+      "key": "slice_mode",
+      "type": "checkbox",
+      "label": "Mode tranche (latence sous-image)",
+      "help": "La vidéo est publiée bande par bande sur le bus MXL : l'aval démarre sur la première bande sans attendre l'image complète (latence sous-image). Entrelacé ou hauteur non divisible → repli image entière. Désactivé (défaut) = comportement historique. CPU (GPU : voir Tranche GPU), paysage seulement.",
+      "default": false,
+      "scope": "system"
+    },
+    {
+      "key": "slice_lines",
+      "type": "number",
+      "label": "Lignes par tranche",
+      "help": "Hauteur des bandes (lignes). Doit être un diviseur de la hauteur d'image (36 pour 1080p) — sinon repli image entière.",
+      "min": 4,
+      "max": 540,
+      "default": 36,
+      "scope": "system",
+      "visible_if": {
+        "slice_mode": true
+      }
+    },
+    {
+      "key": "gpu_slice",
+      "type": "checkbox",
+      "label": "Tranche GPU (opt-in banc)",
+      "help": "Lève l'exclusion GPU du mode tranche : composition bande par bande en VRAM. Ne pas activer en prod sans le verdict du banc gate (TISSU_SLICE_GPU.md).",
+      "default": false,
+      "scope": "system",
+      "visible_if": {
+        "slice_mode": true
+      }
+    },
+    {
+      "key": "gpu_batch_bands",
+      "type": "number",
+      "label": "Bandes par lot GPU (micro-batch)",
+      "help": "Nombre de bandes MXL par lot GPU (verdict banc GO-MEGA-135 : 4 ≈ méga-bandes 144 lignes à 1080p/36). 1 = bande à bande.",
+      "min": 1,
+      "max": 8,
+      "default": 4,
+      "scope": "system",
+      "visible_if": {
+        "gpu_slice": true
+      }
     }
   ],
   "wiring": {
