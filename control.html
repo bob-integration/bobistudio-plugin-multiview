@@ -257,29 +257,15 @@
         </div>
         <div class="row">
             <div class="field"><label for="ed_max" data-i18n="plugin.multiview.max_inputs">Max entrées</label><input type="number" id="ed_max" min="1" max="32" onchange="onMaxChange()"></div>
-            <div class="field"><label for="ed_label_size" data-i18n="plugin.multiview.label_size">Taille texte (px)</label><input type="number" id="ed_label_size" min="6" max="80" onchange="onGlobalChange()"></div>
-        </div>
-        <div class="row">
-            <div class="field"><label for="ed_border_w" data-i18n="plugin.multiview.border_px">Bordure (px)</label><input type="number" id="ed_border_w" min="0" max="30" onchange="onGlobalChange()"></div>
-            <div class="field field-color"><label for="ed_border_color" data-i18n="plugin.multiview.border_color">Couleur bordure</label><input type="color" id="ed_border_color" onchange="onGlobalChange()"></div>
         </div>
         <div class="row">
             <div class="field"><label for="ed_default_template" title="Modèle de PiP appliqué par défaut à TOUTES les fenêtres du mur (héritage). Chaque fenêtre peut le surcharger (autre modèle ou habillage classique) dans son panneau." data-i18n="plugin.multiview.pip_default_template" data-i18n-title="plugin.multiview.pip_default_template_title">Modèle de PiP par défaut</label><select id="ed_default_template" onchange="onDefaultTemplateChange()"></select></div>
-        </div>
-        <div class="row">
-            <div class="field"><label for="ed_frame_style" data-i18n="plugin.multiview.frame_style">Style de cadre</label><select id="ed_frame_style" onchange="onGlobalChange()"><option value="none" data-i18n="plugin.multiview.fs_none">Aucun (bordure simple)</option><option value="stylized" data-i18n="plugin.multiview.fs_stylized">Moniteur (bezel)</option><option value="classic" data-i18n="plugin.multiview.fs_classic">UMD broadcast</option><option value="tally_border" data-i18n="plugin.multiview.fs_tally">Cadre tally</option><option value="viewfinder" data-i18n="plugin.multiview.fs_viewfinder">Viseur (coins)</option><option value="flat" data-i18n="plugin.multiview.fs_flat">Flat (soulignement)</option></select></div>
-        </div>
-        <div class="row">
-            <label class="field field-inline" for="ed_overlay_below"><input type="checkbox" class="ios-toggle" id="ed_overlay_below" onchange="onGlobalChange()"> <span data-i18n="plugin.multiview.overlay_below">Texte sous l'image</span></label>
         </div>
         <div class="row">
             <label class="field field-inline" for="ed_show_no_signal" title="Affiche un panneau NO SIGNAL dans la fenêtre quand sa source est absente" data-i18n-title="plugin.multiview.show_no_signal_title"><input type="checkbox" class="ios-toggle" id="ed_show_no_signal" onchange="onGlobalChange()"> <span data-i18n="plugin.multiview.show_no_signal">« NO SIGNAL » si source absente</span></label>
         </div>
         <div class="row">
             <div class="field"><label for="ed_freeze_detect" title="Badge FREEZE quand l'image source n'avance plus depuis N secondes" data-i18n="plugin.multiview.freeze_detect" data-i18n-title="plugin.multiview.freeze_detect_title">Détection freeze (s, 0 = off)</label><input type="number" id="ed_freeze_detect" min="0" max="30" step="0.5" onchange="onGlobalChange()"></div>
-        </div>
-        <div class="row">
-            <label class="field field-inline" for="ed_show_format" title="Chip discret en bas à droite de chaque fenêtre : format déclaré de la source (ex. 1920×1080p25)" data-i18n-title="plugin.multiview.show_format_title"><input type="checkbox" class="ios-toggle" id="ed_show_format" onchange="onGlobalChange()"> <span data-i18n="plugin.multiview.show_format">Format source par fenêtre</span></label>
         </div>
         <div class="row">
             <label class="field field-inline" for="ed_show_proxy" title="Mode ingénierie : badge en haut à gauche de chaque fenêtre indiquant le proxy pyramide lu et son coût (¼ ~ octave, 952×536 ✓ copie pure, plein ↯ gather)" data-i18n-title="plugin.multiview.show_proxy_title"><input type="checkbox" class="ios-toggle" id="ed_show_proxy" onchange="onGlobalChange()"> <span data-i18n="plugin.multiview.show_proxy">Proxies pyramide (ingénierie)</span></label>

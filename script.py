@@ -107,10 +107,10 @@ def _as_bool(v, default=False):
         return v.strip().lower() in ("1", "true", "yes", "on")
     return bool(v)
 
-BORDER_W      = int(CONFIG.get("border_w") or 0)        # bordure globale (px)
-BORDER_COLOR  = CONFIG.get("border_color") or "#ffffff" # couleur de bordure globale
-OVERLAY_BELOW = _as_bool(CONFIG.get("overlay_below"))   # bandeau sous l'image vs par-dessus
-LABEL_SIZE    = int(CONFIG.get("label_size") or 14)     # taille du texte du label (px)
+# L'habillage GLOBAL de mur (border_w/border_color/overlay_below/label_size/frame_style/
+# show_format) a été MIGRÉ dans les MODÈLES DE PIP (0.33.0) : le cadre est une propriété du
+# composant `video`, le « texte sous l'image » un layout de modèle. Le chemin de rendu
+# classique est SUPPRIMÉ ; le repli sans modèle = modèle « Classique » GÉNÉRÉ (_classic_comps).
 TSL_PORT      = int(CONFIG.get("tsl_port") or 0)        # port TCP TSL 5.0 local (mode Direct)
 # Mode tally/UMD : "central" (push /tally_bulk par l'orchestrateur) | "direct" (serveur TSL local).
 # Dérivation depuis l'ancien schéma tsl_port/tsl_remote si tsl_mode absent (compat sans migration).
@@ -121,7 +121,6 @@ try:
     FREEZE_DETECT_S = max(0.0, float(CONFIG.get("freeze_detect_s", 2.0)))  # s sans avance du frame_index → badge FREEZE (0 = off)
 except (TypeError, ValueError):
     FREEZE_DETECT_S = 2.0
-SHOW_FORMAT   = _as_bool(CONFIG.get("show_format"))     # chip format déclaré par fenêtre (mode ingénierie)
 SHOW_PROXY    = _as_bool(CONFIG.get("show_proxy"))      # badge proxy lu par tuile (mode ingénierie pyramide)
 # Heure CIVILE des horloges « PTP » : l'horloge du nœud est sur l'échelle PTP/TAI (PTP_CLOCK.md)
 # → heure civile = horloge − tai_utc_offset_s (mesuré, injecté par before_deploy), au fuseau du
@@ -281,32 +280,7 @@ TALLY_COLORS = {{
     "amber": (220,  40,  40, 230),  # rouge + bordure verte
     "off":   (  0,   0,   0,   0),  # transparent
 }}
-TALLY_BORDER_COLORS = {{
-    "off":   (255, 255, 255, 255),
-    "red":   (255, 255, 255, 255),
-    "green": (255, 255, 255, 255),
-    "amber": (255, 255, 255, 255),
-}}
-TALLY_TEXT_BG = {{
-    # fond coloré de la zone label quand le signal vert est actif
-    "off":   None,
-    "red":   None,
-    "green": ( 30, 150,  60, 210),
-    "amber": ( 30, 150,  60, 210),
-}}
-TALLY_TEXT_COLORS = {{
-    "off":   (200, 200, 200, 255),
-    "red":   (255,  90,  90, 255),   # rouge sur fond noir
-    "green": (255, 255, 255, 255),   # blanc sur fond vert
-    "amber": (255,  90,  90, 255),   # rouge sur fond vert
-}}
-# Tailles d'habillage (texte/bandeau/tally) calculées PAR FENÊTRE via _label_metrics()
-# (plafonnées à la hauteur du PiP) — LABEL_SIZE n'est que la taille DEMANDÉE.
-FRAME_STYLE = CONFIG.get("frame_style") or "none"  # none | classic(UMD) | tally_border | stylized(bezel) | viewfinder | flat
-# Styles d'habillage v0.12 : réservent leurs marges AUTOUR de l'image (_frame_metrics).
-_DRESS_STYLES = ("classic", "tally_border", "stylized", "viewfinder", "flat")
-
-# Couleurs de bordure épaisse selon tally dominant (styles tally_border / stylized)
+# Couleurs de bordure épaisse selon tally dominant (bordures tally des composants video)
 _TALLY_BORDER_RGBA = {{
     "off":   (  0,   0,   0,   0),
     "red":   (220,  40,  40, 255),
@@ -1171,103 +1145,6 @@ def _font(size):
         f = _make_font(size); _font_cache[size] = f
     return f
 
-def _label_metrics(cfg):
-    """Tailles d'habillage PAR FENÊTRE, plafonnées à la hauteur du PiP : le texte ne
-    dépasse jamais 30 % de la hauteur, le bandeau 40 % (45 % pour les barres hautes
-    classic/stylized). Sans plafond, un label_size global énorme mangeait la fenêtre.
-    `label_proportional` (par fenêtre) : le texte vaut LABEL_SIZE quand la fenêtre fait
-    1/4 de l'image (h = OUT_HEIGHT/2), puis grossit/réduit linéairement avec la hauteur
-    (les plafonds en aval bornent toujours contre le débordement).
-    Formules miroir côté éditeur : multiview.js dessiner()."""
-    h = max(2, int(cfg.get("h") or 0))
-    if cfg.get("label_proportional"):
-        eff = max(6, int(round(LABEL_SIZE * (2.0 * h / OUT_HEIGHT))))
-    else:
-        eff = max(6, min(LABEL_SIZE, int(h * 0.30)))
-    bar = min(max(14, int(round(eff * 2))), max(8, int(h * 0.40)))
-    eff = max(6, min(eff, bar - 4))
-    cbar = min(max(bar, int(round(eff * 2.5))), max(8, int(h * 0.45)))   # barre classic
-    grad = min(max(bar, int(round(eff * 2.2))), max(8, int(h * 0.45)))   # dégradé stylized
-    return {{
-        "size": eff, "font": _font(eff),
-        "bar_h": bar, "cbar": cbar, "grad_h": grad,
-        "tally": max(4, min(int(round(eff * 1.4)), bar - 2)),
-        "pad": max(2, int(round(eff * 0.35))),
-    }}
-
-def _bar_reserved_h(cfg, m):
-    """Hauteur réservée par le bandeau du style courant (pour le mode « sous l'image »)."""
-    if FRAME_STYLE == "classic":
-        return m["cbar"]
-    if FRAME_STYLE == "stylized":
-        return m["grad_h"]
-    return m["bar_h"]
-
-def _frame_metrics(cfg):
-    """Marges réservées par l'habillage (frame_style) AUTOUR de l'image — l'image est
-    réduite homothétiquement dans la zone restante (_video_rect), rien n'est recouvert.
-    Épaisseur auto : t = 3 % du petit côté de la fenêtre, bornée 3..24 px.
-    Renvoie {{t, ml, mt, mr, mb, band}} ; band = hauteur de la zone nom/tally du style.
-    Fenêtre trop petite : marges dégradées (bande puis côtés) plutôt que d'écraser
-    l'image. Formules miroir côté éditeur : multiview.js _frameMetrics()."""
-    w = max(2, int(cfg.get("w") or 0)); h = max(2, int(cfg.get("h") or 0))
-    m = _label_metrics(cfg)
-    t = max(3, min(24, int(round(min(w, h) * 0.03))))
-    show_label = bool(cfg.get("show_label"))
-    bar_on = show_label or bool(cfg.get("show_tally"))
-    band = m["bar_h"]
-    ml = mt = mr = mb = 0
-    if FRAME_STYLE == "stylized":        # Moniteur : bezel + menton nom/LED
-        bez = max(4, int(round(t * 2.2)))
-        ml = mr = mt = bez
-        mb = bez + (band if bar_on else 0)
-    elif FRAME_STYLE == "classic":       # UMD : cadre fin + boîtier sous l'image
-        f = max(2, t // 2)
-        ml = mr = mt = f
-        mb = f + ((band + max(2, t // 2)) if bar_on else 0)
-    elif FRAME_STYLE == "tally_border":  # cadre FIN (3 px) toujours visible + onglet nom AU-DESSUS
-        b = 3
-        ml = mr = mb = b
-        mt = b + (band if show_label else 0)
-    elif FRAME_STYLE == "viewfinder":    # équerres + chip nom
-        ml = mr = mb = t
-        mt = (band + 4) if show_label else t
-    elif FRAME_STYLE == "flat":          # nom + soulignement pleine largeur
-        mb = t + ((band + 2) if show_label else 0)
-    if h - mt - mb < 16:
-        mb = max(0, min(mb, h - 16 - mt))
-        if h - mt - mb < 16:
-            mt = max(0, h - 16 - mb)
-    if w - ml - mr < 16:
-        side = max(0, (w - 16) // 2)
-        ml = min(ml, side); mr = min(mr, side)
-    return {{"t": t, "ml": ml, "mt": mt, "mr": mr, "mb": mb, "band": band}}
-
-def _umd_geom(cfg, m, fm):
-    """Boîtier UMD (style classic) : rect (x0, y0, x1, y1) centré sous l'image,
-    largeur fixe ~55 % de la cellule (le texte est ajusté dedans), hauteur = band.
-    Les lampes tally G/D se posent de part et d'autre (render_dynamic)."""
-    x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
-    lamp_zone = m["tally"] + 2 * m["pad"] + 6
-    bw = max(24, min(int(w * 0.55), w - 2 * lamp_zone))
-    bx = x + (w - bw) // 2
-    by = y + h - fm["band"]
-    return bx, by, bx + bw - 1, y + h - 1
-
-def _fit_text(d, text, m, max_w):
-    """Police du label, réduite si le texte déborde de max_w (sinon il bave sur les
-    fenêtres voisines : l'overlay est dessiné sur le canvas complet)."""
-    font = m["font"]
-    if not text or max_w <= 0:
-        return font
-    try:
-        tw = d.textlength(text, font=font)
-        if tw > max_w > 0:
-            return _font(max(6, int(m["size"] * max_w / tw)))
-    except Exception:
-        pass
-    return font
-
 def _is_protocol_label(cfg):
     return cfg.get("show_label") and cfg.get("label_source") == "protocol"
 
@@ -1297,406 +1174,52 @@ def _render_border_colored(d, x, y, w, h, color_rgba, thickness):
         d.rectangle([x + k, y + k, x + w - 1 - k, y + h - 1 - k], outline=color_rgba)
 
 def _video_rect(cfg):
-    """Géométrie UNIQUE de la cellule — partagée par la boucle composite, la couche
-    bordure et les meters (plus de copie divergente). Renvoie un dict :
+    """Géométrie UNIQUE de la cellule — partagée par la boucle composite et les couches
+    d'habillage. Le rectangle vidéo vient du composant `video` du MODÈLE de la cellule
+    (toute cellule en a un : explicite, défaut du mur, ou « Classique » généré). Renvoie :
       x/y/w/h    : cellule clampée au canvas (dimensions paires) ;
-      vx/vy/vw/vh: rectangle de l'IMAGE vidéo — exclut la bande VU « hors image » et
-                   le bandeau « sous l'image ». L'image est réduite HOMOTHÉTIQUEMENT
-                   (ratio de la cellule conservé) dans la zone restante et centrée
-                   (pillarbox/letterbox) : on ne déforme JAMAIS l'image, ni pour le
-                   bandeau ni pour la bande VU ;
-      m          : _label_metrics(cfg) (tailles d'habillage par-fenêtre)."""
-    m = _label_metrics(cfg)
+      vx/vy/vw/vh: rectangle de l'IMAGE vidéo (fit contain = homothétique au ratio SOURCE,
+                   centré — letterbox/pillarbox, on ne déforme jamais l'image) ;
+      ay/ah      : zone verticale de l'image (compat consommateurs historiques).
+    Modèle sans composant vidéo → rect dégénéré (vw=0), la boucle composite saute la lecture."""
     x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
     x = max(0, min(x, OUT_WIDTH - 1)); y = max(0, min(y, OUT_HEIGHT - 1))
     w = max(2, min(w, OUT_WIDTH - x)); h = max(2, min(h, OUT_HEIGHT - y))
     w -= w % 2; h -= h % 2
-    # MODÈLE DE PIP : le rectangle vidéo vient du composant `video` du modèle (géométrie libre),
-    # pas des marges d'habillage legacy. Modèle sans composant vidéo → rect dégénéré (vw=0), la
-    # boucle composite saute la lecture ; les autres composants sont rendus par le chrome.
-    comps = _tpl_comps(cfg)
-    if comps is not None:
-        vr = _tpl_video_comp(cfg)
-        if vr is None:
-            return {{"x": x, "y": y, "w": w, "h": h, "vx": x, "vy": y, "vw": 0, "vh": 0,
-                     "ay": y, "ah": h, "fm": None, "m": m}}
-        rx, ry, rw, rh = _comp_rect(cfg, vr)
-        if (vr.get("fit") or "fill") == "contain":
-            # Homothétique au ratio SOURCE (in_w/in_h résolus par l'orchestrateur), centré.
-            sw = int(cfg.get("in_w") or 0); sh = int(cfg.get("in_h") or 0)
-            if sw > 1 and sh > 1:
-                sc = min(rw / sw, rh / sh)
-                nw = max(2, int(sw * sc)); nh = max(2, int(sh * sc))
-                rx += (rw - nw) // 2; ry += (rh - nh) // 2
-                rw, rh = nw, nh
-        vw = max(2, min(rw, OUT_WIDTH - rx)); vw -= vw % 2
-        vh = max(2, min(rh, OUT_HEIGHT - ry)); vh -= vh % 2
-        vx = rx - rx % 2
-        vy = ry - ry % 2
-        return {{"x": x, "y": y, "w": w, "h": h, "vx": vx, "vy": vy, "vw": vw, "vh": vh,
-                 "ay": vy, "ah": vh, "fm": None, "m": m}}
-    bar_on = bool(cfg.get("show_label") or cfg.get("show_tally"))
-    fm = None
-    if FRAME_STYLE in _DRESS_STYLES:
-        # Habillage v0.12 : marges réservées sur les 4 côtés (nom/tally intégrés au
-        # style) — le bandeau legacy OVERLAY_BELOW ne s'applique qu'au style 'none'.
-        fm = _frame_metrics(cfg)
-        ay = y + fm["mt"]
-        avail_h = h - fm["mt"] - fm["mb"]
-        ax0 = x + fm["ml"]
-        avail_w0 = w - fm["ml"] - fm["mr"]
-    else:
-        # 'none' : hauteur amputée du bandeau (mode « sous l'image »).
-        ay = y
-        avail_h = h - _bar_reserved_h(cfg, m) if (OVERLAY_BELOW and bar_on) else h
-        ax0 = x
-        avail_w0 = w
-    if avail_h < 2:
-        avail_h = h; ay = y  # cellule trop petite — fallback overlay
-    meter_n = int(cfg.get("meter_channels") or 0)
-    moff = 0
-    if meter_n > 0 and not cfg.get("meter_inside"):
-        moff = _meter_layout(meter_n) + 4
-        moff += moff % 2
-    avail_w = max(2, avail_w0 - moff)
-    ax = ax0 + (moff if cfg.get("meter_position") == "left" else 0)
-    # Fit homothétique du ratio de la cellule (w×h) dans la zone, centré.
-    scale = min(avail_w / w, avail_h / h)
-    vw = max(2, int(w * scale)); vw -= vw % 2
-    vh = max(2, int(h * scale)); vh -= vh % 2
-    vx = ax + (avail_w - vw) // 2
-    vx -= vx % 2   # alignement chroma (vx//_CW)
-    vy = ay + (avail_h - vh) // 2
-    vy -= vy % 2   # alignement chroma (vy//_CH en 4:2:0)
-    return {{"x": x, "y": y, "w": w, "h": h,
-             "vx": vx, "vy": vy, "vw": vw, "vh": vh,
-             "ay": ay,         # haut de la ZONE disponible (pour les VU-mètres)
-             "ah": avail_h,    # hauteur de la ZONE hors bandeau/marges (idem)
-             "fm": fm,         # marges d'habillage (None pour 'none')
-             "m": m}}
+    vr = _tpl_video_comp(cfg)
+    if vr is None:
+        return {{"x": x, "y": y, "w": w, "h": h, "vx": x, "vy": y, "vw": 0, "vh": 0,
+                 "ay": y, "ah": h}}
+    rx, ry, rw, rh = _comp_rect(cfg, vr)
+    if (vr.get("fit") or "fill") == "contain":
+        # Homothétique au ratio SOURCE (in_w/in_h résolus par l'orchestrateur), centré.
+        sw = int(cfg.get("in_w") or 0); sh = int(cfg.get("in_h") or 0)
+        if sw > 1 and sh > 1:
+            sc = min(rw / sw, rh / sh)
+            nw = max(2, int(sw * sc)); nh = max(2, int(sh * sc))
+            rx += (rw - nw) // 2; ry += (rh - nh) // 2
+            rw, rh = nw, nh
+    vw = max(2, min(rw, OUT_WIDTH - rx)); vw -= vw % 2
+    vh = max(2, min(rh, OUT_HEIGHT - ry)); vh -= vh % 2
+    vx = rx - rx % 2
+    vy = ry - ry % 2
+    return {{"x": x, "y": y, "w": w, "h": h, "vx": vx, "vy": vy, "vw": vw, "vh": vh,
+             "ay": vy, "ah": vh}}
 
 def _render_pill(d, cx, cy, r, fill, outline):
     """Pastille ronde centrée (cx, cy) de rayon r."""
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill, outline=outline, width=2)
 
-def _render_gradient_bar(img, x, y, w, h, rgb, a_top, a_bot):
-    """Dégradé vertical alpha (a_top → a_bot) de couleur `rgb`, collé sur `img` RGBA."""
-    if w <= 0 or h <= 0:
-        return
-    ramp = np.linspace(a_top, a_bot, h).astype(np.uint8)          # (h,)
-    alpha = np.repeat(ramp[:, None], w, axis=1)                   # (h, w)
-    tile = np.zeros((h, w, 4), dtype=np.uint8)
-    tile[..., 0] = rgb[0]; tile[..., 1] = rgb[1]; tile[..., 2] = rgb[2]
-    tile[..., 3] = alpha
-    img.alpha_composite(Image.fromarray(tile, "RGBA"), (x, y))
-
-def render_static():
-    """Pré-rendu une fois : décor fixe (bordures + bandeau + labels statiques).
-    Les labels 'protocol' et les éléments dépendant du tally → render_dynamic."""
-    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    for cfg in FLUX_CONFIG:
-        if cfg.get("hidden"):
-            continue
-        if _tpl_comps(cfg) is not None:
-            continue   # modèle de PiP : habillage 100 % défini par les composants (render_dynamic)
-        x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
-        m = _label_metrics(cfg)
-        show_label = bool(cfg.get("show_label"))
-        show_tally = bool(cfg.get("show_tally"))
-        bar_on = show_label or show_tally
-        static_label = show_label and not _is_protocol_label(cfg)
-        name = cfg.get("name", "") or ""
-
-        if FRAME_STYLE == "classic":
-            # UMD broadcast : boîtier noir centré sous l'image. Lampes G/D et texte
-            # protocole en dynamique ; cadre fin dans render_border.
-            if show_label:
-                fm = _frame_metrics(cfg)
-                bx0, by0, bx1, by1 = _umd_geom(cfg, m, fm)
-                d.rectangle([bx0, by0, bx1, by1], fill=(8, 8, 10, 255),
-                            outline=(130, 130, 138, 255))
-                if static_label:
-                    d.text(((bx0 + bx1) // 2, (by0 + by1) // 2), name,
-                           font=_fit_text(d, name, m, bx1 - bx0 - 2 * m["pad"]),
-                           fill=(240, 240, 245, 255), anchor="mm")
-
-        elif FRAME_STYLE == "tally_border":
-            pass  # onglet nom : suit la teinte tally → render_dynamic
-
-        elif FRAME_STYLE == "stylized":
-            # Moniteur : nom « gravé » dans le menton du bezel (corps du bezel dans
-            # render_border, LED tally en dynamique).
-            if static_label:
-                fm = _frame_metrics(cfg)
-                cx = x + w // 2
-                cy = y + h - fm["mb"] // 2 - 1
-                font = _fit_text(d, name, m, w - 2 * fm["ml"] - 4 * m["pad"])
-                d.text((cx, cy - 1), name, font=font, fill=(8, 8, 10, 255), anchor="mm")
-                d.text((cx, cy), name, font=font, fill=(168, 168, 178, 255), anchor="mm")
-
-        elif FRAME_STYLE == "viewfinder":
-            pass  # chip nom : pastille d'état tally intégrée → render_dynamic
-
-        elif FRAME_STYLE == "flat":
-            # Nom au-dessus du soulignement, aligné sur le bord gauche de l'image
-            # (le trait, coloré tally, est dans render_border).
-            if static_label:
-                g = _video_rect(cfg)
-                fm = g["fm"]
-                d.text((g["vx"] + 2, y + h - fm["t"] - 2 - fm["band"] // 2), name,
-                       font=_fit_text(d, name, m, g["vw"] - 4),
-                       fill=(235, 235, 240, 255), anchor="lm")
-
-        else:  # "none" — comportement historique
-            # Bordure globale → couche bordure (render_border), au-dessus du bandeau.
-            if bar_on:
-                bar_top = y + h - m["bar_h"]
-                d.rectangle([x, bar_top, x + w, y + h], fill=(0, 0, 0, 180))
-                if static_label:
-                    text_l, text_r = x, x + w
-                    if show_tally:
-                        text_l += m["pad"] + m["tally"] + 4
-                        text_r -= m["pad"] + m["tally"] + 4
-                    d.text(((text_l + text_r) // 2, bar_top + m["bar_h"] // 2), name,
-                           font=_fit_text(d, name, m, text_r - text_l),
-                           fill=(255, 255, 255, 255), anchor="mm")
-    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
-
 def render_dynamic():
-    """Re-rendu à chaque changement Tally/TSL : éléments dépendant de l'état tally
-    (bordures colorées, pastilles, lampes, labels protocole)."""
+    """Re-rendu à chaque changement Tally/TSL ou de géométrie : composants BAKÉS des modèles
+    de PiP (umd / tally / text / format / bordure video). Toute cellule a un modèle (explicite,
+    défaut du mur, ou « Classique » généré — cf. _tpl_comps) : c'est l'UNIQUE moteur d'habillage."""
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     for i, cfg in enumerate(FLUX_CONFIG):
         if cfg.get("hidden"):
             continue
-        comps = _tpl_comps(cfg)
-        if comps is not None:
-            # Modèle de PiP : composants bakés (umd/tally/text/format, conditions incluses).
-            _tpl_render_dynamic(d, img, i, cfg, comps)
-            continue
-        show_label = bool(cfg.get("show_label"))
-        show_tally = bool(cfg.get("show_tally"))
-        if not (show_label or show_tally):
-            continue
-        x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
-        m = _label_metrics(cfg)
-        tally_sz, tally_pad = m["tally"], m["pad"]
-        is_proto = _is_protocol_label(cfg)
-        proto_txt = (tsl_text.get(i, "") or "") if is_proto else ""
-        dom = _window_tally_dominant(i)
-
-        if FRAME_STYLE == "classic":
-            # UMD : lampes carrées G/D de part et d'autre du boîtier + texte protocole.
-            fm = _frame_metrics(cfg)
-            bx0, by0, bx1, by1 = _umd_geom(cfg, m, fm)
-            cy = (by0 + by1) // 2
-            if show_tally:
-                ty = cy - tally_sz // 2
-                for st, lx in ((tally_state.get(f"{{i}}_L", "off"),
-                                bx0 - tally_pad - 6 - tally_sz),
-                               (tally_state.get(f"{{i}}_R", "off"),
-                                bx1 + tally_pad + 6)):
-                    fill = _TALLY_BORDER_RGBA.get(st, (0, 0, 0, 0))
-                    if fill[3] == 0:
-                        fill = (40, 40, 44, 220)
-                    d.rectangle([lx, ty, lx + tally_sz, ty + tally_sz],
-                                fill=fill, outline=(205, 205, 212, 255))
-            if is_proto and proto_txt and show_label:
-                d.text(((bx0 + bx1) // 2, cy), proto_txt,
-                       font=_fit_text(d, proto_txt, m, bx1 - bx0 - 2 * tally_pad),
-                       fill=(240, 240, 245, 255), anchor="mm")
-
-        elif FRAME_STYLE == "tally_border":
-            # Onglet nom intégré sous le bord haut, teinté par la dominante tally
-            # (la bordure épaisse est tracée par render_border).
-            if show_label:
-                g = _video_rect(cfg)
-                fm = g["fm"]
-                b = fm["ml"]
-                txt = proto_txt if is_proto else (cfg.get("name", "") or "")
-                # Onglet AU-DESSUS du cadre fin (dehors), aligné sur le bord externe du cadre.
-                tab_y0 = g["vy"] - b - fm["band"]
-                tab_y1 = g["vy"] - b - 1
-                try:
-                    tw = int(d.textlength(txt, font=m["font"])) if txt else 0
-                except Exception:
-                    tw = 0
-                tab_w = max(24, min(g["vw"] + 2 * b, tw + 4 * tally_pad))
-                tab_x0 = g["vx"] - b
-                d.rectangle([tab_x0, tab_y0, tab_x0 + tab_w - 1, tab_y1],
-                            fill=_BAR_TINTS.get(dom, _BAR_TINTS["off"]))
-                if txt:
-                    d.text((tab_x0 + 2 * tally_pad, (tab_y0 + tab_y1) // 2), txt,
-                           font=_fit_text(d, txt, m, tab_w - 4 * tally_pad),
-                           fill=(245, 245, 250, 255), anchor="lm")
-
-        elif FRAME_STYLE == "stylized":
-            # Moniteur : LED tally rondes G/D dans le menton + texte protocole gravé.
-            fm = _frame_metrics(cfg)
-            cy = y + h - fm["mb"] // 2 - 1
-            if show_tally:
-                r = max(3, min(max(3, fm["band"] // 3), int(round(m["size"] * 0.45))))
-                stL = tally_state.get(f"{{i}}_L", "off")
-                stR = tally_state.get(f"{{i}}_R", "off")
-                fL, oL = _PILL_COLORS.get(stL, _PILL_COLORS["off"])
-                fR, oR = _PILL_COLORS.get(stR, _PILL_COLORS["off"])
-                _render_pill(d, x + fm["ml"] + r + 4,     cy, r, fL, oL)
-                _render_pill(d, x + w - fm["mr"] - r - 4, cy, r, fR, oR)
-            if is_proto and proto_txt:
-                font = _fit_text(d, proto_txt, m, w - 2 * fm["ml"] - 4 * m["pad"])
-                d.text((x + w // 2, cy - 1), proto_txt, font=font,
-                       fill=(8, 8, 10, 255), anchor="mm")
-                d.text((x + w // 2, cy), proto_txt, font=font,
-                       fill=_TALLY_TEXT_BY_DOMINANT[dom], anchor="mm")
-
-        elif FRAME_STYLE == "viewfinder":
-            # Chip nom arrondi haut-gauche + pastille d'état (équerres → render_border).
-            if show_label:
-                g = _video_rect(cfg)
-                fm = g["fm"]
-                txt = proto_txt if is_proto else (cfg.get("name", "") or "")
-                chip_h = fm["band"]
-                dot_r = max(2, int(round(m["size"] * 0.3))) if show_tally else 0
-                try:
-                    tw = int(d.textlength(txt, font=m["font"])) if txt else 0
-                except Exception:
-                    tw = 0
-                chip_w = max(20, min(w - 8, tw + 4 * tally_pad
-                                     + ((dot_r * 2 + tally_pad) if dot_r else 0)))
-                cx0 = g["vx"]
-                cy0 = y + 1
-                d.rounded_rectangle([cx0, cy0, cx0 + chip_w - 1, cy0 + chip_h - 1],
-                                    radius=max(2, chip_h // 2), fill=(10, 10, 12, 215))
-                tx = cx0 + 2 * tally_pad
-                if dot_r:
-                    dot_fill = _TALLY_BORDER_RGBA[dom] if dom != "off" else (90, 90, 98, 255)
-                    d.ellipse([tx, cy0 + chip_h // 2 - dot_r,
-                               tx + 2 * dot_r, cy0 + chip_h // 2 + dot_r], fill=dot_fill)
-                    tx += 2 * dot_r + tally_pad
-                if txt:
-                    d.text((tx, cy0 + chip_h // 2), txt,
-                           font=_fit_text(d, txt, m, cx0 + chip_w - tx - 2 * tally_pad),
-                           fill=(240, 240, 245, 255), anchor="lm")
-
-        elif FRAME_STYLE == "flat":
-            # Le soulignement (couleur tally) est dans render_border ; ici seul le
-            # texte protocole (le nom statique est dans render_static).
-            if is_proto and proto_txt:
-                g = _video_rect(cfg)
-                fm = g["fm"]
-                d.text((g["vx"] + 2, y + h - fm["t"] - 2 - fm["band"] // 2), proto_txt,
-                       font=_fit_text(d, proto_txt, m, g["vw"] - 4),
-                       fill=(235, 235, 240, 255), anchor="lm")
-
-        else:  # "none" — comportement historique
-            bar_top = y + h - m["bar_h"]
-            if is_proto:
-                text_l, text_r = x, x + w
-                tally_color = tally_state.get(f"{{i}}_L", "off")
-                if show_tally:
-                    text_l += tally_pad + tally_sz + 4
-                    text_r -= tally_pad + tally_sz + 4
-                bg = TALLY_TEXT_BG.get(tally_color)
-                if bg:
-                    d.rectangle([text_l, bar_top, text_r, y + h], fill=bg)
-                txt_fill = TALLY_TEXT_COLORS.get(tally_color, (200, 200, 200, 255))
-                d.text(((text_l + text_r) // 2, bar_top + m["bar_h"] // 2), proto_txt,
-                       font=_fit_text(d, proto_txt, m, text_r - text_l),
-                       fill=txt_fill, anchor="mm")
-            if show_tally:
-                # Pavés tally centrés sur le rectangle VIDÉO (vx/vw), pas la cellule entière
-                # (qui inclut la bande VU audio).
-                g = _video_rect(cfg)
-                vx, vw = g["vx"], g["vw"]
-                ty = bar_top + (m["bar_h"] - tally_sz) // 2
-                stL = tally_state.get(f"{{i}}_L", "off")
-                stR = tally_state.get(f"{{i}}_R", "off")
-                cL = TALLY_COLORS[stL]; bL = TALLY_BORDER_COLORS[stL]
-                cR = TALLY_COLORS[stR]; bR = TALLY_BORDER_COLORS[stR]
-                d.rectangle([vx + tally_pad, ty,
-                             vx + tally_pad + tally_sz, ty + tally_sz],
-                            fill=cL, outline=bL)
-                d.rectangle([vx + vw - tally_pad - tally_sz, ty,
-                             vx + vw - tally_pad, ty + tally_sz],
-                            fill=cR, outline=bR)
-    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
-
-def render_border():
-    """Couche bordure SEULE, blendée juste APRÈS la vidéo : au-dessus de l'image
-    mais SOUS le bandeau, les labels, les pavés tally et les VU-mètres (elle ne
-    barre plus la zone de texte). Cerne le rectangle image (_video_rect, même
-    géométrie que la boucle composite) selon le style courant. Dépend du tally
-    pour 'tally_border'."""
-    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    for i, cfg in enumerate(FLUX_CONFIG):
-        if cfg.get("hidden"):
-            continue
-        if _tpl_comps(cfg) is not None:
-            continue   # modèle de PiP : bordures/tally via les composants (render_dynamic)
-        g = _video_rect(cfg)
-        x, y, w, h = g["x"], g["y"], g["w"], g["h"]
-        vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]
-        fm = g["fm"]
-        dom = _window_tally_dominant(i)
-
-        if FRAME_STYLE == "stylized":
-            # Bezel « moniteur » : corps sombre arrondi plein sur la cellule, trou
-            # percé pour l'écran (ImageDraw écrit les pixels : fill transparent =
-            # trou), lèvre interne claire autour de l'écran.
-            t = fm["t"]
-            rad = max(3, t)
-            inset = max(1, t // 2)
-            d.rounded_rectangle([x, y, x + w - 1, y + h - 1], radius=rad,
-                                fill=(46, 46, 53, 255))
-            d.rounded_rectangle([x + inset, y + inset,
-                                 x + w - 1 - inset, y + h - 1 - inset],
-                                radius=max(2, rad - inset), fill=(27, 27, 32, 255))
-            d.rectangle([vx, vy, vx + vw - 1, vy + vh - 1], fill=(0, 0, 0, 0))
-            d.rectangle([vx - 1, vy - 1, vx + vw, vy + vh], outline=(98, 98, 108, 255))
-
-        elif FRAME_STYLE == "classic":
-            # UMD : cadre fin neutre cernant l'image.
-            f = max(2, fm["t"] // 2)
-            _render_border_colored(d, vx - f, vy - f, vw + 2 * f, vh + 2 * f,
-                                   _FRAME_NEUTRAL, f)
-
-        elif FRAME_STYLE == "tally_border":
-            # Bordure FINE (3 px) TOUJOURS visible (neutre au repos), cernant SEULEMENT l'image.
-            # L'onglet nom est posé AU-DESSUS du cadre (dehors) → render_dynamic.
-            b = fm["ml"]
-            color = _TALLY_BORDER_RGBA[dom] if dom != "off" else _FRAME_NEUTRAL
-            _render_border_colored(d, vx - b, vy - b, vw + 2 * b, vh + 2 * b, color, b)
-
-        elif FRAME_STYLE == "viewfinder":
-            # Équerres de viseur aux 4 coins (blanches au repos, couleur tally sinon).
-            bt = max(2, fm["t"] // 2)
-            gap = max(2, fm["t"] // 2)
-            color = _TALLY_BORDER_RGBA[dom] if dom != "off" else (225, 225, 232, 255)
-            arm = max(8, int(round(min(vw, vh) * 0.14)))
-            x0, y0 = vx - gap, vy - gap
-            x1, y1 = vx + vw - 1 + gap, vy + vh - 1 + gap
-            for cx, cy, sx, sy in ((x0, y0, 1, 1), (x1, y0, -1, 1),
-                                   (x0, y1, 1, -1), (x1, y1, -1, -1)):
-                ex, ey = cx + sx * arm, cy + sy * (bt - 1)
-                d.rectangle([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)],
-                            fill=color)
-                ex, ey = cx + sx * (bt - 1), cy + sy * arm
-                d.rectangle([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)],
-                            fill=color)
-
-        elif FRAME_STYLE == "flat":
-            # Soulignement plein pleine largeur, collé au bas de la cellule.
-            color = _TALLY_BORDER_RGBA[dom] if dom != "off" else _FLAT_NEUTRAL
-            d.rectangle([vx, y + h - fm["t"], vx + vw - 1, y + h - 1], fill=color)
-
-        else:  # "none" — bordure globale historique
-            if BORDER_W > 0:
-                for k in range(BORDER_W):
-                    d.rectangle([vx + k, vy + k, vx + vw - 1 - k, vy + vh - 1 - k],
-                                outline=BORDER_COLOR)
+        _tpl_render_dynamic(d, img, i, cfg, _tpl_comps(cfg))
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
@@ -1732,21 +1255,6 @@ def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
         d.text((cx, cyc), ch, font=f, fill=col + (255,), anchor="mm")
     oy, ou, ov, oa, oa2 = rgba_to_yuv(img)
     return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
-
-def _tile_peaks(i, cfg, n, now):
-    """Peaks/holds/statut audio de la tuile i pour n canaux (état lazy-init partagé)."""
-    st = audio_states.get(i)
-    if st is None:
-        st = _open_audio_state(i, cfg)
-        audio_states[i] = st  # peut être None (audio absent) → on dessine quand même un meter "vide"
-    peaks = holds = None
-    status = "absence"   # pas de flux audio du tout → absence (st None)
-    if st is not None:
-        peaks, holds, status = _update_peaks(st, n, now)
-    if peaks is None:
-        peaks = np.full(n, METER_MIN_DB)
-        holds = np.full(n, METER_MIN_DB)
-    return peaks, holds, status
 
 def _tile_peaks_range(i, cfg, start0, count, now):
     """Peaks/holds/statut pour la FENÊTRE de canaux [start0, start0+count) d'un espace de
@@ -1862,36 +1370,6 @@ def render_meters(now):
                                     ch0=s0)
                 except Exception:
                     continue
-            continue
-        n = int(cfg.get("meter_channels") or 0)
-        if n == 0:
-            continue
-        peaks, holds, status = _tile_peaks(i, cfg, n, now)
-        # Geometry du meter dans la cellule (géométrie partagée _video_rect). Le meter
-        # occupe toute la hauteur de la ZONE hors bandeau (ah), pas celle de la vidéo
-        # letterboxée — la bande VU réserve sa largeur, la vidéo est réduite au ratio.
-        g = _video_rect(cfg)
-        x, y, w, h = g["x"], g["y"], g["w"], g["h"]
-        mw = _meter_layout(n)
-        mh = max(20, g["ah"] - 4)
-        if mw >= w or mh < 20:
-            continue
-        inside = bool(cfg.get("meter_inside"))
-        # Bande VU posée DANS l'habillage (entre la marge du cadre et l'image),
-        # alignée verticalement sur la zone disponible (ay/ah).
-        fm = g.get("fm")
-        ml = fm["ml"] if fm else 0
-        mr = fm["mr"] if fm else 0
-        if cfg.get("meter_position") == "left":
-            mx = x + ml + 2
-        else:
-            mx = x + w - mr - mw - 2
-        my = g["ay"] + 2
-        opacity_pct = int(cfg.get("meter_opacity") or 70)
-        if not inside:
-            opacity_pct = 100  # hors image = totalement opaque (zone réservée)
-        _meter_tiles_at(mx, my, mw, mh, n, peaks, holds,
-                        cfg.get("meter_scale") or "dbfs", opacity_pct, status, tiles)
     return tiles or None
 
 
@@ -2623,8 +2101,10 @@ _tpl_status_prev = {{}}   # dernier état publié → détection de transition (
 _TPL_SIGNAL_CONDS = ("no_signal", "freeze", "signal_ok")
 
 # HÉRITAGE : le MUR peut définir un modèle PAR DÉFAUT (CONFIG.default_template, modifiable à
-# chaud via /style). Résolution par cellule : template explicite > template_none (habillage
-# classique forcé) > modèle par défaut du mur > habillage classique.
+# chaud via /style). Résolution par cellule : template explicite > modèle par défaut du mur >
+# modèle « Classique » GÉNÉRÉ (_classic_comps). Toute cellule a donc TOUJOURS un modèle —
+# le chemin de rendu legacy (frame_style/overlay_below/label_size globaux) a été supprimé en
+# 0.33.0 (l'habillage de mur vit dans les modèles ; cf. builtin:* côté orchestrateur).
 DEFAULT_TEMPLATE = CONFIG.get("default_template") or None
 
 def _tpl_dict_comps(t):
@@ -2633,14 +2113,69 @@ def _tpl_dict_comps(t):
     comps = t.get("components")
     return comps if isinstance(comps, list) and comps else None
 
+# ─── Modèle « Classique » GÉNÉRÉ (repli sans modèle ni défaut de mur) ────────
+# Réplique l'habillage historique par défaut (bandeau nom translucide en BAS de l'image +
+# pavés tally G/D + bande VU opt-in), GÉNÉRÉ depuis les flags par-fenêtre du composer
+# (show_label/show_tally/meter_*) → les cases par-fenêtre continuent de piloter le repli,
+# mais TOUT le rendu passe par l'unique moteur de composants. Miroir : app/pip_library.py
+# builtin:classic (version statique sélectionnable). Cache par cellule invalidé sur les
+# flags (les /window à chaud mutent cfg en place → la clé change, on regénère).
+_CLASSIC_KEYS = ("show_label", "show_tally", "label_source", "meter_channels",
+                 "meter_position", "meter_inside", "meter_opacity", "meter_scale", "w", "h")
+
+def _classic_comps(cfg):
+    key = tuple(str(cfg.get(k)) for k in _CLASSIC_KEYS)
+    cached = cfg.get("_classic_gen")
+    if cached and cached[0] == key:
+        return cached[1]
+    w = max(2, int(cfg.get("w") or 0)); h = max(2, int(cfg.get("h") or 0))
+    bar_px = min(28, max(14, int(h * 0.18)))          # bandeau ~ historique (label_size 14)
+    bh = min(0.40, bar_px / float(h))
+    comps = [{{"id": "video", "type": "video", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0,
+              "fit": "fill", "border": "none"}}]
+    show_label = _as_bool(cfg.get("show_label"))
+    show_tally = _as_bool(cfg.get("show_tally"))
+    if show_label:
+        comps.append({{"id": "umd", "type": "umd", "x": 0.0, "y": 1.0 - bh, "w": 1.0, "h": bh,
+                      "text_source": ("tsl" if cfg.get("label_source") == "protocol" else "name"),
+                      "tally_bg": False, "bg_color": "#000000", "bg_opacity": 70}})
+    if show_tally:
+        # Pavés carrés L/R dans le bandeau (côté = ~70 % du bandeau), collés aux bords.
+        side = max(6, int(bar_px * 0.7))
+        tw = side / float(w); th = side / float(h)
+        ty = 1.0 - bh + (bh - th) / 2.0
+        pad = max(2, int(bar_px * 0.25)) / float(w)
+        comps.append({{"id": "talL", "type": "tally", "shape": "bar", "slot": "L",
+                      "x": pad, "y": ty, "w": tw, "h": th}})
+        comps.append({{"id": "talR", "type": "tally", "shape": "bar", "slot": "R",
+                      "x": 1.0 - pad - tw, "y": ty, "w": tw, "h": th}})
+    try:
+        n = int(cfg.get("meter_channels") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n > 0:
+        try:
+            op = int(cfg.get("meter_opacity") or 70)
+        except (TypeError, ValueError):
+            op = 70
+        comps.append({{"id": "vu", "type": "meters", "channels": n, "ch_start": 1,
+                      "scale": cfg.get("meter_scale") or "dbfs",
+                      "opacity": (op if _as_bool(cfg.get("meter_inside")) else 100),
+                      "align": ("left" if cfg.get("meter_position") == "left" else "right"),
+                      "x": 0.01, "y": 0.02, "w": 0.98,
+                      "h": max(0.1, 0.96 - (bh if show_label else 0.0))}})
+    cfg["_classic_gen"] = (key, comps)
+    return comps
+
 def _tpl_comps(cfg):
-    """Liste des composants du modèle EFFECTIF de la cellule (héritage résolu), ou None."""
+    """Composants du modèle EFFECTIF de la cellule (héritage résolu) — jamais None."""
     comps = _tpl_dict_comps(cfg.get("template"))
     if comps is not None:
         return comps
-    if _as_bool(cfg.get("template_none"), False):
-        return None
-    return _tpl_dict_comps(DEFAULT_TEMPLATE)
+    comps = _tpl_dict_comps(DEFAULT_TEMPLATE)
+    if comps is not None:
+        return comps
+    return _classic_comps(cfg)
 
 def _tpl_video_comp(cfg):
     for c in (_tpl_comps(cfg) or ()):
@@ -2745,6 +2280,68 @@ def _tpl_draw_tally(d, i, comp, rect):
         r = max(2, min(rw, rh) // 2 - 1)
         _render_pill(d, rx + rw // 2, ry + rh // 2, r, fill, outline)
 
+def _tpl_draw_video_border(d, img, i, cfg, comp):
+    """CADRE du composant vidéo — l'habillage de cadre historique (ex-frame_style global de
+    mur) migré dans le MODÈLE (0.33.0). Dessiné sur le rectangle IMAGE réel (_video_rect :
+    fit contain compris → le cadre épouse l'image, letterbox inclus), vers l'INTÉRIEUR
+    (jamais de débord sur les cellules voisines). Styles de `border` :
+      fixed      : couleur pleine (border_color), épaisseur border_w ;
+      tally      : fin, teinté par la dominante tally (neutre au repos) ;
+      classic    : cadre fin neutre (ex-UMD broadcast) ;
+      stylized   : bezel « moniteur » arrondi sombre, lèvre interne claire ;
+      viewfinder : équerres de viseur aux 4 coins (teintées tally) ;
+      flat       : soulignement bas pleine largeur (teinté tally)."""
+    mode = comp.get("border") or "none"
+    if mode == "none":
+        return
+    g = _video_rect(cfg)
+    vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]
+    if vw < 2 or vh < 2:
+        return
+    try:
+        bw = max(1, min(24, int(comp.get("border_w") or 3)))
+    except (TypeError, ValueError):
+        bw = 3
+    dom = _window_tally_dominant(i)
+    tally_col = _TALLY_BORDER_RGBA[dom] if dom != "off" else None
+    if mode == "fixed":
+        col = _hex_rgb(comp.get("border_color"), (255, 255, 255)) + (255,)
+        _render_border_colored(d, vx, vy, vw, vh, col, bw)
+    elif mode == "tally":
+        _render_border_colored(d, vx, vy, vw, vh, tally_col or _FRAME_NEUTRAL, bw)
+    elif mode == "classic":
+        _render_border_colored(d, vx, vy, vw, vh, _FRAME_NEUTRAL, max(2, bw))
+    elif mode == "stylized":
+        # Bezel « moniteur » : anneau sombre arrondi sur le pourtour de l'image, PERCÉ sur
+        # une tuile RGBA séparée (fill alpha 0 = trou) puis composée — le trou laisse la
+        # vidéo ET les composants déjà dessinés intacts (contrairement à un perçage in-situ).
+        t = max(4, int(round(bw * 2.2)))
+        if vw <= 2 * t + 4 or vh <= 2 * t + 4:
+            return
+        tile = Image.new("RGBA", (vw, vh), (0, 0, 0, 0))
+        dd = ImageDraw.Draw(tile)
+        dd.rounded_rectangle([0, 0, vw - 1, vh - 1], radius=max(3, t), fill=(46, 46, 53, 255))
+        dd.rectangle([t, t, vw - 1 - t, vh - 1 - t], fill=(0, 0, 0, 0))
+        dd.rectangle([t - 1, t - 1, vw - t, vh - t], outline=(98, 98, 108, 255))
+        img.alpha_composite(tile, (vx, vy))
+    elif mode == "viewfinder":
+        # Équerres de viseur aux 4 coins (blanches au repos, couleur tally sinon).
+        col = tally_col or (225, 225, 232, 255)
+        bt = max(2, bw)
+        arm = max(8, int(round(min(vw, vh) * 0.14)))
+        x0, y0, x1, y1 = vx, vy, vx + vw - 1, vy + vh - 1
+        for cx, cy, sx, sy in ((x0, y0, 1, 1), (x1, y0, -1, 1),
+                               (x0, y1, 1, -1), (x1, y1, -1, -1)):
+            ex, ey = cx + sx * arm, cy + sy * (bt - 1)
+            d.rectangle([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)], fill=col)
+            ex, ey = cx + sx * (bt - 1), cy + sy * arm
+            d.rectangle([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)], fill=col)
+    elif mode == "flat":
+        # Soulignement bas pleine largeur de l'image (neutre au repos, teinté tally).
+        t = max(2, bw)
+        d.rectangle([vx, vy + vh - t, vx + vw - 1, vy + vh - 1],
+                    fill=tally_col or _FLAT_NEUTRAL)
+
 def _tpl_render_dynamic(d, img, i, cfg, comps):
     """Composants BAKÉS d'un modèle (umd / tally / text / format) — re-rendus sur tally_dirty
     (changement tally, texte TSL, ou transition d'état signal pour les conditions), jamais
@@ -2760,24 +2357,7 @@ def _tpl_render_dynamic(d, img, i, cfg, comps):
             if not _comp_visible(i, cfg, comp):
                 continue
             if k == "video":
-                # Bordure du composant vidéo : fixe (couleur) ou pilotée par le tally
-                # (neutre au repos, rouge/vert/ambre sinon). Cerne le rectangle IMAGE réel
-                # (_video_rect : fit contain compris), pas le rectangle du composant.
-                mode = comp.get("border") or "none"
-                if mode == "none":
-                    continue
-                try:
-                    bw = max(1, min(24, int(comp.get("border_w") or 3)))
-                except (TypeError, ValueError):
-                    bw = 3
-                if mode == "tally":
-                    dom = _window_tally_dominant(i)
-                    col = _TALLY_BORDER_RGBA[dom] if dom != "off" else _FRAME_NEUTRAL
-                else:
-                    col = _hex_rgb(comp.get("border_color"), (255, 255, 255)) + (255,)
-                g = _video_rect(cfg)
-                if g["vw"] >= 2 and g["vh"] >= 2:
-                    _render_border_colored(d, g["vx"], g["vy"], g["vw"], g["vh"], col, bw)
+                _tpl_draw_video_border(d, img, i, cfg, comp)
                 continue
             rect = _comp_rect(cfg, comp)
             if k == "tally":
@@ -2995,10 +2575,8 @@ def render_clock_tiles(now):
         tiles.append((bx0, by0, bx1, by1, oy, ou, ovv, oa, oa2))
     return tiles or None
 
-static_rgba  = render_static()   # couches d'habillage CACHÉES, conservées en RGBA (PIL)
-dyn_rgba     = None
+dyn_rgba     = None              # couche d'habillage des MODÈLES (cachée, re-bake sur dirty)
 overlay_fg_rgba = render_overlays_fg_static()   # overlays texte/images fixes, bakés dans le chrome
-border_rgba  = render_border()
 _chrome_rgba = None              # info+bordure+statique+dynamique pré-composés en UNE image RGBA (caché)
 _chrome_yuv  = None              # sa conversion YUV+alpha (refaite seulement sur changement)
 _chrome_pre  = None              # opérandes de blend PRÉ-CALCULÉS du chrome (inv_a, src_a par plan) — chemin rapide
@@ -3283,16 +2861,13 @@ class MvControlHandler(BaseHTTPRequestHandler):
                     if k in b and b[k] is not None:
                         cfg[k] = _as_bool(b[k])
                 # Modèle de PiP : dict {{name, components}} appliqué à chaud, null/{{}} = retour
-                # à l'héritage (défaut du mur, sinon habillage legacy). template_none = forcer
-                # l'habillage classique malgré un modèle par défaut du mur.
+                # à l'héritage (défaut du mur, sinon modèle « Classique » généré).
                 if "template" in b:
                     t = b.get("template")
                     if isinstance(t, dict) and t.get("components"):
                         cfg["template"] = t
                     else:
                         cfg.pop("template", None)
-                if "template_none" in b:
-                    cfg["template_none"] = _as_bool(b.get("template_none"))
                 ok = True
                 geom_dirty.set()
                 tally_dirty.set()
@@ -3300,37 +2875,21 @@ class MvControlHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": ok}}).encode())
     def _do_style(self):
-        # Params globaux visuels : border_w, border_color, overlay_below, label_size,
-        # frame_style, show_no_signal, freeze_detect_s, show_format.
+        # Params globaux visuels restants : default_template (modèle de PiP par défaut du mur),
+        # show_no_signal, freeze_detect_s, show_proxy. L'habillage de mur historique
+        # (border_w/overlay_below/label_size/frame_style/show_format) vit dans les MODÈLES.
         b = self._json()
         with state_lock:
-            global BORDER_W, BORDER_COLOR, OVERLAY_BELOW, LABEL_SIZE, FRAME_STYLE
-            global SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_FORMAT, SHOW_PROXY, DEFAULT_TEMPLATE
+            global SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_PROXY, DEFAULT_TEMPLATE
             if "default_template" in b:
                 # Modèle de PiP par défaut du MUR (héritage) : dict {{name, components}} ou null.
                 t = b.get("default_template")
                 DEFAULT_TEMPLATE = t if (isinstance(t, dict) and t.get("components")) else None
-            if "border_w" in b:
-                try: BORDER_W = max(0, int(b["border_w"]))
-                except (TypeError, ValueError): pass
-            if "border_color" in b:
-                BORDER_COLOR = str(b["border_color"])
-            if "overlay_below" in b:
-                OVERLAY_BELOW = _as_bool(b["overlay_below"])
-            if "label_size" in b:
-                # Tailles dérivées (bandeau/tally/police) recalculées PAR FENÊTRE au
-                # rendu via _label_metrics — seul le réglage de base change ici.
-                try: LABEL_SIZE = max(6, int(b["label_size"]))
-                except (TypeError, ValueError): pass
-            if "frame_style" in b:
-                FRAME_STYLE = str(b["frame_style"])
             if "show_no_signal" in b:
                 SHOW_NO_SIGNAL = _as_bool(b["show_no_signal"])
             if "freeze_detect_s" in b:
                 try: FREEZE_DETECT_S = max(0.0, float(b["freeze_detect_s"]))
                 except (TypeError, ValueError): pass
-            if "show_format" in b:
-                SHOW_FORMAT = _as_bool(b["show_format"])
             if "show_proxy" in b:
                 SHOW_PROXY = _as_bool(b["show_proxy"])
             geom_dirty.set()
@@ -4105,9 +3664,8 @@ while True:
                 tr["fi"] = fi; tr["t"] = now_m
             _st = "freeze" if (FREEZE_DETECT_S > 0 and now_m - tr["t"] > FREEZE_DETECT_S) else ""
             _tile_status[i] = _st
-            _chip = _fmt_chip_txt(cfg, src) if SHOW_FORMAT else ""
-            if _st or _chip or _proxy_chip:
-                _statuses.append((i, _st, _chip, _proxy_chip))
+            if _st or _proxy_chip:
+                _statuses.append((i, _st, "", _proxy_chip))
             # Freeze PROLONGÉ : même cause racine que le « No Signal » (Reader périmé sur flux amont
             # recréé) — l'ancien ring peut renvoyer indéfiniment son dernier grain (index figé) au
             # lieu de None. Au-delà de FREEZE_DETECT_S + REOPEN_STALE_S, on reconnecte le Reader.
@@ -4171,13 +3729,11 @@ while True:
         # Re-bake des couches d'habillage CACHÉES (RGBA) sur changement, puis (re)composition du
         # « chrome » consolidé (z-ordre info < bordure < statique < dynamique) en UNE image RGBA cachée.
         if geom_dirty.is_set():
-            with state_lock:
-                static_rgba = render_static()
             geom_dirty.clear(); tally_dirty.set(); _info_sig = None; _chrome_dirty = True
 
         if tally_dirty.is_set():
-            dyn_rgba    = render_dynamic()
-            border_rgba = render_border()
+            with state_lock:
+                dyn_rgba = render_dynamic()   # composants bakés des modèles (géométrie incluse)
             overlay_fg_rgba = render_overlays_fg_static()   # texte tally-réactif (couleur on/off)
             tally_dirty.clear(); _chrome_dirty = True
 
@@ -4189,7 +3745,7 @@ while True:
 
         if _chrome_dirty:
             _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-            for _lyr in (_info_layer, border_rgba, static_rgba, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé (overlays fixes au-dessus)
+            for _lyr in (_info_layer, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé (overlays fixes au-dessus)
                 if _lyr is not None:
                     _ch.alpha_composite(_lyr)
             # Bornage à la BBOX réelle du chrome (chroma-alignée) : on ne blende plus tout l'écran à

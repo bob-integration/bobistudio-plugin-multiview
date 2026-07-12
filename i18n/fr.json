@@ -180,6 +180,7 @@
   "plugin.multiview.pip_default_template_title": "Modèle de PiP appliqué par défaut à TOUTES les fenêtres du mur (héritage). Chaque fenêtre peut le surcharger (autre modèle, ou « habillage classique ») dans son panneau.",
   "plugin.multiview.pip_template": "Modèle de PiP",
   "plugin.multiview.pip_template_inherit": "— hériter du mur —",
+  "plugin.multiview.pip_template_classic": "— Classique (généré) —",
   "plugin.multiview.pip_template_none": "— habillage classique —",
   "plugin.multiview.pip_template_title": "Remplace l'habillage de la fenêtre (nom/tally/VU/ANC) par un modèle composé dans Réglages → PiP. « habillage classique » = réglages historiques ci-dessous.",
   "plugin.multiview.placement": "Placement",

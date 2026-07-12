@@ -18,7 +18,7 @@ function mwApplyI18n(root) {
 let allContainers = [];
 let videoSources = [];   // sorties vidéo individuelles de la flotte (cf. loadVideoSources)
 let editorVmid    = null;
-let editorParams  = null;   // {flux_config, shm_out, out_width, out_height, border_w, border_color, overlay_below, max_inputs}
+let editorParams  = null;   // {flux_config, shm_out, out_width, out_height, max_inputs, default_template…}
 let selectedIdxs  = [];     // multi-select : le dernier est le primary (référence pour align/match-size)
 let dragMode      = null;   // 'move' | 'resize'
 let dragStart     = null;
@@ -142,9 +142,6 @@ function drawMiniPreview(canvas, params) {
     ctx.fillStyle = _cs.getPropertyValue('--canvas-bg').trim() || '#0d1117';
     ctx.fillRect(0, 0, cw, ch);
 
-    const borderW     = (params.border_w || 0) * Math.min(sx, sy);
-    const borderColor = params.border_color || '#ffffff';
-
     (params.flux_config || []).filter(f => !f.hidden).forEach((f, i) => {
         const x = f.x * sx, y = f.y * sy;
         const w = f.w * sx, h = f.h * sy;
@@ -152,12 +149,6 @@ function drawMiniPreview(canvas, params) {
         ctx.fillStyle   = COLORS[i % COLORS.length];
         ctx.fillRect(x, y, w, h);
         ctx.globalAlpha = 1;
-        if (borderW > 0.5) {
-            ctx.strokeStyle = borderColor;
-            ctx.lineWidth = Math.max(1, borderW);
-            ctx.strokeRect(x + borderW/2, y + borderW/2,
-                           Math.max(1, w - borderW), Math.max(1, h - borderW));
-        }
     });
 }
 
@@ -313,14 +304,8 @@ async function chargerMw(vmid) {
     editorParams = Object.assign({
         flux_config: [],
         shm_out: 'mxl_mix',
-        border_w: 0,
-        border_color: '#ffffff',
-        overlay_below: false,
-        label_size: 14,
-        frame_style: 'none',
         show_no_signal: true,
         freeze_detect_s: 2,
-        show_format: false,
         show_proxy: false,
         max_inputs: 4,
         genlock: true,
@@ -372,14 +357,8 @@ function renderEditor(hostname) {
     document.getElementById('ed_vmid').textContent     = editorVmid ?? '';
 
     document.getElementById('ed_max').value             = p.max_inputs;
-    document.getElementById('ed_border_w').value        = p.border_w;
-    document.getElementById('ed_border_color').value    = p.border_color;
-    document.getElementById('ed_label_size').value      = p.label_size || 14;
-    document.getElementById('ed_frame_style').value     = p.frame_style || 'none';
-    document.getElementById('ed_overlay_below').checked = !!p.overlay_below;
     document.getElementById('ed_show_no_signal').checked = p.show_no_signal !== false;
     document.getElementById('ed_freeze_detect').value    = p.freeze_detect_s ?? 2;
-    document.getElementById('ed_show_format').checked    = !!p.show_format;
     document.getElementById('ed_show_proxy').checked     = !!p.show_proxy;
     document.getElementById('ed_genlock').checked       = p.genlock !== false;
     { const _ft = document.getElementById('ed_fps_target'); if (_ft) _ft.value = String(parseInt(p.fps_target) || 0); }
@@ -566,14 +545,8 @@ function onTslModeChange() {
 }
 
 function onGlobalChange() {
-    editorParams.border_w      = parseInt(document.getElementById('ed_border_w').value) || 0;
-    editorParams.border_color  = document.getElementById('ed_border_color').value;
-    editorParams.overlay_below = document.getElementById('ed_overlay_below').checked;
-    editorParams.label_size    = Math.max(6, parseInt(document.getElementById('ed_label_size').value) || 14);
-    { const fs = document.getElementById('ed_frame_style'); if (fs) editorParams.frame_style = fs.value; }
     editorParams.show_no_signal  = document.getElementById('ed_show_no_signal').checked;
     editorParams.freeze_detect_s = Math.max(0, parseFloat(document.getElementById('ed_freeze_detect').value) || 0);
-    editorParams.show_format     = document.getElementById('ed_show_format').checked;
     editorParams.show_proxy      = document.getElementById('ed_show_proxy').checked;
     { const _tm = document.getElementById('ed_tsl_mode'); if (_tm) editorParams.tsl_mode = _tm.value; }
     { const _tp = document.getElementById('ed_tsl_port'); if (_tp) editorParams.tsl_port = parseInt(_tp.value) || 0; }
@@ -654,11 +627,11 @@ function newEntry(idx, hidden) {
         anc_crc: false,              // paquets au checksum invalide (métadonnée corrompue)
         anc_position: 'bottom',      // bottom | top
         anc_opacity: 60,             // 0..100 (fond du bandeau)
-        // Modèle de PiP (bibliothèque Réglages → PiP) : null = habillage classique (flags
-        // ci-dessus) ; sinon {name, components} RÉSOLU (embarqué dans le deploy_config).
+        // Modèle de PiP (bibliothèque Réglages → PiP) : null = hériter (défaut du mur, sinon
+        // « Classique » généré depuis les flags ci-dessus) ; sinon {name, components} RÉSOLU
+        // (embarqué dans le deploy_config).
         template: null,
-        template_ref: '',            // '' = hériter du mur | '__none__' = classique | id bibliothèque
-        template_none: false,        // habillage classique FORCÉ malgré un défaut de mur
+        template_ref: '',            // '' = hériter du mur | id bibliothèque
     };
 }
 
@@ -679,11 +652,11 @@ function mwResolveTemplate(ref) {
                   components: JSON.parse(JSON.stringify((tp.config || {}).components || [])) } : null;
 }
 
-// HÉRITAGE : modèle EFFECTIF d'une fenêtre = son modèle explicite, sinon (sauf « habillage
-// classique » forcé, template_none) le modèle PAR DÉFAUT du mur. Miroir de _tpl_comps (script.py).
+// HÉRITAGE : modèle EFFECTIF d'une fenêtre = son modèle explicite, sinon le modèle PAR DÉFAUT
+// du mur. null = modèle « Classique » GÉNÉRÉ côté moteur depuis les flags par-fenêtre
+// (_classic_comps, script.py) — l'aperçu bandeau/tally/VU de drawCanvas en est le miroir.
 function mwEffectiveTemplate(f) {
     if (f.template && f.template.components && f.template.components.length) return f.template;
-    if (f.template_none) return null;
     const d = editorParams && editorParams.default_template;
     return (d && d.components && d.components.length) ? d : null;
 }
@@ -692,15 +665,14 @@ function _pipTemplateOptions(selectedRef, withInherit) {
     const opts = [];
     if (withInherit) {
         opts.push('<option value="">' + escapeHtml(T('plugin.multiview.pip_template_inherit')) + '</option>');
-        opts.push('<option value="__none__">' + escapeHtml(T('plugin.multiview.pip_template_none')) + '</option>');
     } else {
-        opts.push('<option value="">' + escapeHtml(T('plugin.multiview.pip_template_none')) + '</option>');
+        opts.push('<option value="">' + escapeHtml(T('plugin.multiview.pip_template_classic')) + '</option>');
     }
     mwPipTemplates.forEach(tp => {
         opts.push(`<option value="${escapeHtml(String(tp.id))}">${escapeHtml(tp.name)}</option>`);
     });
     // Réf affectée mais absente de la bibliothèque (modèle supprimé) : option conservée.
-    if (selectedRef && selectedRef !== '__none__'
+    if (selectedRef
             && !mwPipTemplates.some(tp => String(tp.id) === String(selectedRef))) {
         opts.push(`<option value="${escapeHtml(String(selectedRef))}">${escapeHtml(String(selectedRef))}</option>`);
     }
@@ -883,11 +855,10 @@ function onEntryChange() {
     if (tplSel) {
         const ref = tplSel.value || '';
         if (ref !== (f.template_ref || '')) {
-            // '' = hériter du mur ; '__none__' = habillage classique forcé ; sinon id bibliothèque.
+            // '' = hériter du mur (défaut, sinon « Classique » généré) ; sinon id bibliothèque.
             f.template_ref = ref;
-            f.template_none = (ref === '__none__');
-            f.template = (ref && ref !== '__none__') ? (mwResolveTemplate(ref) || f.template) : null;
-            refreshEntryPanel();   // re-masque/affiche les réglages legacy
+            f.template = ref ? (mwResolveTemplate(ref) || f.template) : null;
+            refreshEntryPanel();   // re-masque/affiche les réglages du repli Classique
         }
     }
     f.label_source = document.getElementById('ed_label_source').value || 'hostname';
@@ -937,7 +908,7 @@ function onEntryGeomChange() {
 const COPY_FIELDS = ['w', 'h', 'label_source', 'show_label', 'show_tally', 'label_proportional', 'tsl_index',
     'label_col', 'tally_level', 'tally_red', 'tally_green',
     'meter_channels', 'meter_position', 'meter_inside', 'meter_opacity', 'meter_scale',
-    ...ANC_FLAGS, 'anc_position', 'anc_opacity', 'template', 'template_ref', 'template_none'];
+    ...ANC_FLAGS, 'anc_position', 'anc_opacity', 'template', 'template_ref'];
 let reglagesClipboard = null;
 
 function mwFlash(msg) {
@@ -990,174 +961,10 @@ function _readTokens() {
     return _tok;
 }
 
-// Miroir de _frame_metrics (script.py) : marges réservées par l'habillage
-// (frame_style) autour de l'image. t = 3 % du petit côté, borné 3..24 px.
-function mwFrameMetrics(f) {
-    const w = f.w, h = f.h;
-    const labelSize = Math.max(6, editorParams.label_size || 14);
-    const effRaw = f.label_proportional
-        ? Math.max(6, Math.round(labelSize * (2 * h / editorParams.out_height)))
-        : Math.max(6, Math.min(labelSize, Math.floor(h * 0.30)));
-    const band = Math.min(Math.max(14, Math.round(effRaw * 2)), Math.max(8, Math.floor(h * 0.40)));
-    const t = Math.max(3, Math.min(24, Math.round(Math.min(w, h) * 0.03)));
-    const barOn = !!(f.show_label || f.show_tally);
-    const style = editorParams.frame_style || 'none';
-    let ml = 0, mt = 0, mr = 0, mb = 0;
-    if (style === 'stylized') {              // Moniteur : bezel + menton nom/LED
-        const bez = Math.max(4, Math.round(t * 2.2));
-        ml = mr = mt = bez;
-        mb = bez + (barOn ? band : 0);
-    } else if (style === 'classic') {        // UMD : cadre fin + boîtier sous l'image
-        const fr = Math.max(2, Math.floor(t / 2));
-        ml = mr = mt = fr;
-        mb = fr + (barOn ? band + Math.max(2, Math.floor(t / 2)) : 0);
-    } else if (style === 'tally_border') {   // cadre FIN (3 px) + onglet nom AU-DESSUS
-        const b = 3;
-        ml = mr = mb = b;
-        mt = b + (f.show_label ? band : 0);
-    } else if (style === 'viewfinder') {     // équerres + chip nom
-        ml = mr = mb = t;
-        mt = f.show_label ? band + 4 : t;
-    } else if (style === 'flat') {           // nom + soulignement
-        mb = t + (f.show_label ? band + 2 : 0);
-    }
-    if (h - mt - mb < 16) {
-        mb = Math.max(0, Math.min(mb, h - 16 - mt));
-        if (h - mt - mb < 16) mt = Math.max(0, h - 16 - mb);
-    }
-    if (w - ml - mr < 16) {
-        const side = Math.max(0, Math.floor((w - 16) / 2));
-        ml = Math.min(ml, side); mr = Math.min(mr, side);
-    }
-    return { t, ml, mt, mr, mb, band };
-}
-
 function _roundRectPath(ctx, x, y, w, h, r) {
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
     else ctx.rect(x, y, w, h);
-}
-
-// Corps du bezel « Moniteur » : dessiné AVANT le rectangle vidéo factice
-// (les autres habillages n'occupent que les marges → dessinés après).
-function drawDressingBack(ctx, f, fm, style) {
-    if (style !== 'stylized') return;
-    const rad = Math.max(3, fm.t);
-    const inset = Math.max(1, Math.floor(fm.t / 2));
-    ctx.save();
-    ctx.fillStyle = '#2e2e35';
-    _roundRectPath(ctx, f.x, f.y, f.w, f.h, rad);
-    ctx.fill();
-    ctx.fillStyle = '#1b1b20';
-    _roundRectPath(ctx, f.x + inset, f.y + inset, f.w - 2 * inset, f.h - 2 * inset,
-                   Math.max(2, rad - inset));
-    ctx.fill();
-    ctx.restore();
-}
-
-// Habillage schématique (état tally « repos ») — miroir visuel de
-// render_border / render_static / render_dynamic (script.py).
-function drawDressing(ctx, f, fm, style, vx, vy, vw, vh, eff) {
-    const x = f.x, y = f.y, w = f.w, h = f.h;
-    const name = computeDisplayName(f);
-    ctx.save();
-    ctx.font = `bold ${eff}px monospace`;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-
-    if (style === 'stylized') {
-        ctx.strokeStyle = '#62626a'; ctx.lineWidth = 1;
-        ctx.strokeRect(vx - 0.5, vy - 0.5, vw + 1, vh + 1);
-        const cy = y + h - fm.mb / 2;
-        if (f.show_label) {
-            ctx.fillStyle = '#a8a8b2'; ctx.textAlign = 'center';
-            ctx.fillText(name, x + w / 2, cy);
-        }
-        if (f.show_tally) {
-            const r = Math.max(3, Math.min(Math.max(3, Math.floor(fm.band / 3)),
-                                           Math.round(eff * 0.45)));
-            ctx.fillStyle = '#3a3a40';
-            [x + fm.ml + r + 4, x + w - fm.mr - r - 4].forEach(cx => {
-                ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
-            });
-        }
-
-    } else if (style === 'classic') {
-        const fr = Math.max(2, Math.floor(fm.t / 2));
-        ctx.strokeStyle = '#46464e'; ctx.lineWidth = fr;
-        ctx.strokeRect(vx - fr / 2, vy - fr / 2, vw + fr, vh + fr);
-        if (f.show_label || f.show_tally) {
-            const bw = Math.max(24, Math.min(Math.floor(w * 0.55), w - 60));
-            const bx = x + (w - bw) / 2;
-            const by = y + h - fm.band;
-            if (f.show_label) {
-                ctx.fillStyle = '#08080a'; ctx.fillRect(bx, by, bw, fm.band - 1);
-                ctx.strokeStyle = '#82828a'; ctx.lineWidth = 1;
-                ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, fm.band - 2);
-                ctx.fillStyle = '#f0f0f5'; ctx.textAlign = 'center';
-                ctx.fillText(name, bx + bw / 2, by + fm.band / 2);
-            }
-            if (f.show_tally) {
-                const sz = Math.max(4, Math.round(eff * 1.4));
-                const ty = by + (fm.band - sz) / 2;
-                ctx.fillStyle = '#28282c'; ctx.strokeStyle = '#cdcdd4'; ctx.lineWidth = 1;
-                ctx.fillRect(bx - 6 - sz, ty, sz, sz); ctx.strokeRect(bx - 6 - sz, ty, sz, sz);
-                ctx.fillRect(bx + bw + 6, ty, sz, sz); ctx.strokeRect(bx + bw + 6, ty, sz, sz);
-            }
-        }
-
-    } else if (style === 'tally_border') {
-        const b = fm.ml;
-        const band = Math.max(0, fm.mt - b);
-        // Cadre fin autour de l'IMAGE seule ; onglet nom AU-DESSUS du cadre (dehors).
-        ctx.strokeStyle = '#46464e'; ctx.lineWidth = b;
-        ctx.strokeRect(vx - b / 2, vy - b / 2, vw + b, vh + b);
-        if (f.show_label) {
-            const tabW = Math.max(24, Math.min(vw + 2 * b, ctx.measureText(name).width + 16));
-            ctx.fillStyle = '#323238';
-            ctx.fillRect(vx - b, vy - b - band, tabW, band);
-            ctx.fillStyle = '#f5f5fa';
-            ctx.fillText(name, vx - b + 6, vy - b - band / 2);
-        }
-
-    } else if (style === 'viewfinder') {
-        const bt = Math.max(2, Math.floor(fm.t / 2));
-        const gap = bt;
-        const arm = Math.max(8, Math.round(Math.min(vw, vh) * 0.14));
-        ctx.fillStyle = '#e1e1e8';
-        const x0 = vx - gap, y0 = vy - gap, x1 = vx + vw + gap, y1 = vy + vh + gap;
-        [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]
-            .forEach(([cx, cy, sx, sy]) => {
-                ctx.fillRect(Math.min(cx, cx + sx * arm), Math.min(cy, cy + sy * bt), arm, bt);
-                ctx.fillRect(Math.min(cx, cx + sx * bt), Math.min(cy, cy + sy * arm), bt, arm);
-            });
-        if (f.show_label) {
-            const dotR = f.show_tally ? Math.max(2, Math.round(eff * 0.3)) : 0;
-            const chipH = fm.band;
-            const chipW = Math.max(20, Math.min(w - 8,
-                ctx.measureText(name).width + 16 + (dotR ? dotR * 2 + 4 : 0)));
-            ctx.fillStyle = 'rgba(10,10,12,0.85)';
-            _roundRectPath(ctx, vx, y + 1, chipW, chipH, chipH / 2);
-            ctx.fill();
-            let tx = vx + 8;
-            if (dotR) {
-                ctx.fillStyle = '#5a5a62';
-                ctx.beginPath(); ctx.arc(tx + dotR, y + 1 + chipH / 2, dotR, 0, Math.PI * 2); ctx.fill();
-                tx += dotR * 2 + 4;
-            }
-            ctx.fillStyle = '#f0f0f5';
-            ctx.fillText(name, tx, y + 1 + chipH / 2);
-        }
-
-    } else if (style === 'flat') {
-        ctx.fillStyle = '#5a5a62';
-        ctx.fillRect(vx, y + h - fm.t, vw, fm.t);
-        if (f.show_label) {
-            ctx.fillStyle = '#ebebf0';
-            ctx.fillText(name, vx + 2, y + h - fm.t - 2 - fm.band / 2);
-        }
-    }
-    ctx.restore();
 }
 
 function dessiner() {
@@ -1234,10 +1041,6 @@ function drawCanvas() {
     for (let x = 0; x < w; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
     for (let y = 0; y < h; y += 64) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
 
-    const borderW      = editorParams.border_w || 0;
-    const borderColor  = editorParams.border_color || '#ffffff';
-    const overlayBelow = !!editorParams.overlay_below;
-    const labelSize    = Math.max(6, editorParams.label_size || 14);
 
     // Images de fond (overlay layer=background) : sous les fenêtres vidéo.
     drawOverlayLayer(ctx, 'background');
@@ -1254,52 +1057,19 @@ function drawCanvas() {
             return;
         }
         const barOn = f.show_label || f.show_tally;
-        // Plafonds PAR FENÊTRE — formules miroir de _label_metrics (script.py) :
-        // texte ≤ 30 % de la hauteur du PiP, bandeau ≤ 40 %. En mode proportionnel,
-        // texte = labelSize quand la fenêtre fait 1/4 de l'image (h = sortie/2).
-        const effRaw     = f.label_proportional
-            ? Math.max(6, Math.round(labelSize * (2 * f.h / editorParams.out_height)))
-            : Math.max(6, Math.min(labelSize, Math.floor(f.h * 0.30)));
-        const BAR_H      = Math.min(Math.max(14, Math.round(effRaw * 2)), Math.max(8, Math.floor(f.h * 0.40)));
-        const eff        = Math.max(6, Math.min(effRaw, BAR_H - 4));
-        const TALLY_SIZE = Math.max(4, Math.min(Math.round(eff * 1.4), BAR_H - 2));
-        const TALLY_PAD  = Math.max(2, Math.round(eff * 0.35));
-        // Habillage (frame_style) : marges réservées AUTOUR de l'image — miroir de
-        // _frame_metrics/_video_rect (script.py). Le bandeau legacy (overlay_below)
-        // ne s'applique qu'au style 'none'.
-        const style = editorParams.frame_style || 'none';
-        const fm = style !== 'none' ? mwFrameMetrics(f) : null;
-        let videoX, videoY, videoW, videoH;
-        if (fm) {
-            const availW = Math.max(2, f.w - fm.ml - fm.mr);
-            const availH = Math.max(2, f.h - fm.mt - fm.mb);
-            const sc = Math.min(availW / f.w, availH / f.h);
-            videoW = Math.max(2, Math.round(f.w * sc));
-            videoH = Math.max(2, Math.round(f.h * sc));
-            videoX = f.x + fm.ml + Math.floor((availW - videoW) / 2);
-            videoY = f.y + fm.mt + Math.floor((availH - videoH) / 2);
-        } else {
-            videoY = f.y;
-            videoH = (overlayBelow && barOn) ? Math.max(2, f.h - BAR_H) : f.h;
-            // Bandeau sous l'image : largeur réduite au même ratio (pillarbox centré,
-            // pas d'étirement) — même géométrie que _video_rect (script.py).
-            videoW = videoH < f.h ? Math.max(2, Math.round(f.w * videoH / f.h)) : f.w;
-            videoX = f.x + Math.floor((f.w - videoW) / 2);
-        }
-
-        if (fm) drawDressingBack(ctx, f, fm, style);
+        // Aperçu du modèle « Classique » GÉNÉRÉ (miroir de _classic_comps, script.py) :
+        // vidéo pleine cellule + bandeau nom translucide SUR le bas de l'image + pavés
+        // tally + bande VU opt-in.
+        const BAR_H      = Math.min(28, Math.max(14, Math.floor(f.h * 0.18)));
+        const eff        = Math.max(6, Math.min(14, BAR_H - 4));
+        const TALLY_SIZE = Math.max(6, Math.round(BAR_H * 0.7));
+        const TALLY_PAD  = Math.max(2, Math.round(BAR_H * 0.25));
+        const videoX = f.x, videoY = f.y, videoW = f.w, videoH = f.h;
 
         ctx.globalAlpha = sel ? 0.8 : 0.4;
         ctx.fillStyle   = f.color;
         ctx.fillRect(videoX, videoY, videoW, videoH);
         ctx.globalAlpha = 1;
-
-        if (!fm && borderW > 0) {
-            ctx.strokeStyle = borderColor;
-            ctx.lineWidth   = borderW;
-            ctx.strokeRect(f.x + borderW/2, f.y + borderW/2,
-                           f.w - borderW, f.h - borderW);
-        }
 
         ctx.strokeStyle = isPrimary ? '#ffffff' : (sel ? t.accent : f.color);
         ctx.lineWidth   = sel ? 2 : 1;
@@ -1307,10 +1077,7 @@ function drawCanvas() {
         ctx.strokeRect(f.x, f.y, f.w, f.h);
         ctx.setLineDash([]);
 
-        if (fm) {
-            // Habillage v0.12 : aperçu schématique fidèle (cadre/bezel/UMD/chip/trait).
-            drawDressing(ctx, f, fm, style, videoX, videoY, videoW, videoH, eff);
-        } else if (barOn) {
+        if (barOn) {
             const barTop = f.y + f.h - BAR_H;
             ctx.fillStyle = 'rgba(0,0,0,0.7)';
             ctx.fillRect(f.x, barTop, f.w, BAR_H);
@@ -1351,12 +1118,8 @@ function drawCanvas() {
             const TICK_W = 14;
             const meterW = TICK_W + N * BAR_W + (N - 1) * GAP;
             const meterH = videoH - 4;
-            let mx;
-            if (f.meter_position === 'left') {
-                mx = f.x + (fm ? fm.ml : 0) + 2;
-            } else {
-                mx = f.x + f.w - (fm ? fm.mr : 0) - meterW - 2;
-            }
+            const mx = (f.meter_position === 'left') ? f.x + 2
+                                                      : f.x + f.w - meterW - 2;
             const my = videoY + 2;
             const alpha = f.meter_inside ? (f.meter_opacity / 100) : 0.95;
             // Fond du meter
@@ -1730,9 +1493,8 @@ function hotApplyWindow(idx) {
             ...Object.fromEntries(ANC_FLAGS.map(k => [k, f[k] ? 1 : 0])),
             anc_position:   f.anc_position || 'bottom',
             anc_opacity:    f.anc_opacity ?? 60,
-            // Modèle de PiP (null = hériter du mur ; template_none = classique forcé)
+            // Modèle de PiP (null = hériter : défaut du mur, sinon « Classique » généré)
             template:       f.template || null,
-            template_none:  !!f.template_none,
         })
     }).catch(() => {});
 }
@@ -1747,17 +1509,14 @@ function hotApplyStyle() {
     fetch(`/api/containers/${editorVmid}/plugin/style`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-            border_w:      editorParams.border_w,
-            border_color:  editorParams.border_color,
-            overlay_below: editorParams.overlay_below,
-            label_size:    editorParams.label_size,
-            frame_style:   editorParams.frame_style || 'none',
             show_no_signal:  editorParams.show_no_signal !== false,
             freeze_detect_s: editorParams.freeze_detect_s ?? 2,
-            show_format:     !!editorParams.show_format,
             show_proxy:      !!editorParams.show_proxy,
-            // Modèle de PiP PAR DÉFAUT du mur (héritage) — appliqué à chaud.
+            // Modèle de PiP PAR DÉFAUT du mur (héritage) — appliqué à chaud. Le ref accompagne
+            // le modèle résolu pour que la persistance côté proxy (deploy_config) garde le lien
+            // bibliothèque (sinon le select retombe sur '' au rechargement de l'éditeur).
             default_template: editorParams.default_template || null,
+            default_template_ref: editorParams.default_template_ref || '',
         })
     }).catch(() => {});
 }
@@ -2286,14 +2045,8 @@ async function deployerEditor() {
 
     // Lit les champs globaux au cas où ils n'auraient pas déclenché onchange
     editorParams.max_inputs    = parseInt(document.getElementById('ed_max').value) || editorParams.max_inputs;
-    editorParams.border_w      = parseInt(document.getElementById('ed_border_w').value) || 0;
-    editorParams.border_color  = document.getElementById('ed_border_color').value;
-    editorParams.overlay_below = document.getElementById('ed_overlay_below').checked;
-    editorParams.label_size    = Math.max(6, parseInt(document.getElementById('ed_label_size').value) || 14);
-    { const fs = document.getElementById('ed_frame_style'); if (fs) editorParams.frame_style = fs.value; }
     editorParams.show_no_signal  = document.getElementById('ed_show_no_signal').checked;
     editorParams.freeze_detect_s = Math.max(0, parseFloat(document.getElementById('ed_freeze_detect').value) || 0);
-    editorParams.show_format     = document.getElementById('ed_show_format').checked;
     editorParams.show_proxy      = document.getElementById('ed_show_proxy').checked;
     editorParams.genlock = document.getElementById('ed_genlock').checked;
     { const _ft = document.getElementById('ed_fps_target'); if (_ft) editorParams.fps_target = parseInt(_ft.value) || 0; }
@@ -2342,7 +2095,6 @@ async function deployerEditor() {
         // Modèle de PiP (résolu, embarqué dans le deploy_config → snapshoté avec les projets)
         template:       f.template || null,
         template_ref:   f.template_ref || '',
-        template_none:  !!f.template_none,
     }));
 
     const params = {
@@ -2354,14 +2106,8 @@ async function deployerEditor() {
         orientation:   editorParams.orientation || 'landscape',
         fps:           editorParams.fps,
         scan:          editorParams.scan || 'p',
-        border_w:      editorParams.border_w,
-        border_color:  editorParams.border_color,
-        overlay_below: editorParams.overlay_below,
-        label_size:    editorParams.label_size,
-        frame_style:   editorParams.frame_style || 'none',
         show_no_signal:  editorParams.show_no_signal !== false,
         freeze_detect_s: editorParams.freeze_detect_s ?? 2,
-        show_format:     !!editorParams.show_format,
         show_proxy:      !!editorParams.show_proxy,
         max_inputs:    editorParams.max_inputs,
         genlock:       editorParams.genlock,
@@ -2641,11 +2387,6 @@ async function enregistrerLayout() {
     const config = {
         out_width:     editorParams.out_width,
         out_height:    editorParams.out_height,
-        border_w:      editorParams.border_w,
-        border_color:  editorParams.border_color,
-        overlay_below: editorParams.overlay_below,
-        label_size:    editorParams.label_size,
-        frame_style:   editorParams.frame_style || 'none',
         max_inputs:    editorParams.max_inputs,
         // Modèle de PiP par défaut du mur (héritage) : fait partie de l'habillage du layout.
         default_template:     editorParams.default_template || null,
@@ -2665,8 +2406,7 @@ async function enregistrerLayout() {
             tally_green: !!f.tally_green,
             // Modèle de PiP : fait partie de l'habillage mémorisé par le layout.
             template: f.template || null,
-            template_ref: f.template_ref || '',
-            template_none: !!f.template_none
+            template_ref: f.template_ref || ''
         }))
     };
     let r = null;
@@ -2696,11 +2436,6 @@ function appliquerLayout(lid) {
     // shm_out conservé tel quel (lié au container, pas au layout)
     editorParams.out_width     = cfg.out_width  || editorParams.out_width;
     editorParams.out_height    = cfg.out_height || editorParams.out_height;
-    editorParams.border_w      = cfg.border_w || 0;
-    editorParams.border_color  = cfg.border_color || '#ffffff';
-    editorParams.overlay_below = !!cfg.overlay_below;
-    editorParams.label_size    = cfg.label_size || editorParams.label_size || 14;
-    editorParams.frame_style   = cfg.frame_style || editorParams.frame_style || 'none';
     editorParams.max_inputs    = cfg.max_inputs || editorParams.max_inputs;
     editorParams.default_template     = cfg.default_template || null;
     editorParams.default_template_ref = cfg.default_template_ref || '';

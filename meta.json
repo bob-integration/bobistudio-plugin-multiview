@@ -1,7 +1,13 @@
 {
-  "version": "0.32.2",
-  "date": "2026-07-12",
+  "version": "0.33.0",
+  "date": "2026-07-13",
   "changes": {
+    "L'habillage de mur vit dans les MODÈLES DE PIP — chrome legacy SUPPRIMÉ (0.33.0)": [
+      "Le cadre est une propriété `border` du composant video du modèle : fixed | tally | classic (cadre fin neutre) | stylized (bezel moniteur) | viewfinder (équerres) | flat (soulignement) — dessiné sur le rectangle IMAGE réel (letterbox compris), vers l'intérieur.",
+      "Les réglages GLOBAUX de mur border_w/border_color/overlay_below/label_size/frame_style/show_format sont retirés (script, /style, deploy_defaults, config_schema) : « texte sous l'image » = un layout de modèle (video réduite + umd dessous), le chip format = le composant `format`.",
+      "Le chemin de rendu classique (render_static/render_border/_frame_metrics…) est supprimé : TOUTE cellule rend via le moteur de composants. Repli sans modèle ni défaut de mur = modèle « Classique » GÉNÉRÉ depuis les flags par-fenêtre (show_label/show_tally/meter_*) → les cases Nom/Tally/VU du composer continuent de piloter le repli.",
+      "template_none (« classique forcé » par tuile) supprimé — remplacé par un modèle « Vidéo seule » de bibliothèque."
+    ],
     "Gate mvk HÔTE : le re-bake du chrome des murs GPU profite du kernel C (0.32.2)": [
       "Le gate global _MVK (not GPU) privait les passes RESTÉES numpy hôte — le re-bake du chrome pleine trame (rgba_to_yuv sur l'image PIL, à chaque tally/statut) en tête — du kernel C sur les murs GPU (observé sur un mur T4 : ov_render 5-7 ms de re-bakes en numpy pur). Nouveau gate par-appel _MVK_HOST : rgba_to_yuv (toujours numpy hôte) et _rgba_to_yuv_xp (avec garde isinstance cupy) utilisent mvk_rgba2yuv dès que la lib est là, GPU ou pas ; le chemin VRAM garde ses kernels cupy."
     ],
