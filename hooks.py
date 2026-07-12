@@ -40,8 +40,12 @@ def topology_ports(hostname, params, ctx):
         produces.append(pp)
     # Ordonné PAR TYPE DE SIGNAL (toutes les vidéos, puis tous les audios, puis tous les ANC) —
     # harmonisé avec les autres conteneurs (ex. 2110_io). Le champ `group` (in<slot>) garde
-    # l'association visuelle vidéo↔audio↔ANC d'une même entrée.
+    # l'association visuelle vidéo↔audio↔ANC d'une même entrée. Les ports AUDIO et ANC sont
+    # désormais de VRAIS ports câblables (wiring audio_path / anc_path) ; quand ils ne sont pas
+    # câblés mais que la vidéo du même slot l'est, on affiche le flux DÉRIVÉ du nom de la source
+    # (repli du moteur, marqué `derived` = informatif) plutôt qu'un port déconnecté.
     vids, auds, ancs = [], [], []
+    video_shm_by_slot = {}
     for spec in (w.get("consumes") or []):
         ess = spec.get("essence") or "video"
         slot = spec.get("slot")
@@ -59,21 +63,21 @@ def topology_ports(hostname, params, ctx):
             port["shm"] = shm
         else:
             port["shm"] = ""; port["disconnected"] = True
-        vids.append(port)
-        # Audio + ANC dérivés (uniquement si la vidéo est câblée), groupés avec l'entrée.
-        if shm:
-            an = _derive_essence_shm(shm, "audio")
-            if an:
-                ap = {"kind": "audio", "group": grp, "shm": an, "derived": True}
-                if slot is not None: ap["slot"] = slot
-                if lbl: ap["label"] = lbl + " ♪"
-                auds.append(ap)
-            nn = _derive_essence_shm(shm, "anc")
-            if nn:
-                npp = {"kind": "data", "group": grp, "shm": nn, "derived": True}
-                if slot is not None: npp["slot"] = slot
-                if lbl: npp["label"] = lbl + " ANC"
-                ancs.append(npp)
+        if ess == "video":
+            video_shm_by_slot[slot] = shm
+            vids.append(port)
+            continue
+        # Port audio/ANC non câblé + vidéo du slot câblée → repli dérivé du moteur (informatif).
+        if port.get("disconnected"):
+            vshm = video_shm_by_slot.get(slot) or ""
+            dn = _derive_essence_shm(vshm, "audio" if ess == "audio" else "anc") if vshm else None
+            if dn:
+                port = {"kind": ess, "group": grp, "shm": dn, "derived": True}
+                if slot is not None:
+                    port["slot"] = slot
+                if lbl:
+                    port["label"] = lbl
+        (auds if ess == "audio" else ancs).append(port)
     return {"produces": produces, "consumes": vids + auds + ancs}
 
 
@@ -151,6 +155,16 @@ def before_deploy(params, context):
         _fc = str(settings.get("multiview_force_cpu") or "").strip().lower()
         if _fc in ("1", "true", "yes", "on"):
             params["force_cpu"] = True
+
+    # 6. Heure CIVILE pour les horloges « PTP » (overlays + composants clock des modèles de
+    #    PiP) : fuseau du contrôleur (`tz` — images runtime en UTC) + `tai_utc_offset_s`
+    #    (l'horloge des nœuds est sur l'échelle PTP/TAI, cf. PTP_CLOCK.md — offset MESURÉ
+    #    contre le contrôleur, jamais 37 figé). Ré-évalué à chaque déploiement.
+    try:
+        from app.ptp import civil_clock_params
+        params.update(civil_clock_params(context.get("vmid")))
+    except Exception:
+        pass
 
     return params
 

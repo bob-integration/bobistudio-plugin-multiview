@@ -294,7 +294,8 @@ function _tslSetSelects(labelCol, tallyLevel, tallyColors) {
 async function chargerMw(vmid) {
     let c;
     try {
-        await Promise.all([loadAllContainers(), loadVideoSources(), _loadTslLabelNames()]);
+        await Promise.all([loadAllContainers(), loadVideoSources(), _loadTslLabelNames(),
+                           loadPipTemplates()]);
         const r = await fetch('/api/containers/' + vmid + '/config');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         c = await r.json();
@@ -325,8 +326,11 @@ async function chargerMw(vmid) {
         genlock: true,
         tsl_mode: 'central',
         tsl_port: 4801,
-        overlays: []
+        overlays: [],
+        default_template: null,
+        default_template_ref: ''
     }, dc.params || {});
+    populateDefaultTemplateSelect();
     // Format de sortie : pas de littéral en dur → vient du réglage système (Formats vidéo) si la
     // config persistée ne le porte pas. L'explicite (dc.params, semé à la création) prime.
     // DÉFENSIF : le chargement des formats ne doit JAMAIS empêcher de sélectionner un multiview.
@@ -650,7 +654,75 @@ function newEntry(idx, hidden) {
         anc_crc: false,              // paquets au checksum invalide (métadonnée corrompue)
         anc_position: 'bottom',      // bottom | top
         anc_opacity: 60,             // 0..100 (fond du bandeau)
+        // Modèle de PiP (bibliothèque Réglages → PiP) : null = habillage classique (flags
+        // ci-dessus) ; sinon {name, components} RÉSOLU (embarqué dans le deploy_config).
+        template: null,
+        template_ref: '',            // '' = hériter du mur | '__none__' = classique | id bibliothèque
+        template_none: false,        // habillage classique FORCÉ malgré un défaut de mur
     };
+}
+
+// ─── Modèles de PiP (bibliothèque /api/pip_templates) ────────
+let mwPipTemplates = [];
+async function loadPipTemplates() {
+    try {
+        const r = await fetch('/api/pip_templates');
+        mwPipTemplates = r.ok ? await r.json() : [];
+    } catch (e) { mwPipTemplates = []; }
+    populateDefaultTemplateSelect();
+    refreshEntryPanel();
+}
+
+function mwResolveTemplate(ref) {
+    const tp = mwPipTemplates.find(x => String(x.id) === String(ref));
+    return tp ? { name: tp.name,
+                  components: JSON.parse(JSON.stringify((tp.config || {}).components || [])) } : null;
+}
+
+// HÉRITAGE : modèle EFFECTIF d'une fenêtre = son modèle explicite, sinon (sauf « habillage
+// classique » forcé, template_none) le modèle PAR DÉFAUT du mur. Miroir de _tpl_comps (script.py).
+function mwEffectiveTemplate(f) {
+    if (f.template && f.template.components && f.template.components.length) return f.template;
+    if (f.template_none) return null;
+    const d = editorParams && editorParams.default_template;
+    return (d && d.components && d.components.length) ? d : null;
+}
+
+function _pipTemplateOptions(selectedRef, withInherit) {
+    const opts = [];
+    if (withInherit) {
+        opts.push('<option value="">' + escapeHtml(T('plugin.multiview.pip_template_inherit')) + '</option>');
+        opts.push('<option value="__none__">' + escapeHtml(T('plugin.multiview.pip_template_none')) + '</option>');
+    } else {
+        opts.push('<option value="">' + escapeHtml(T('plugin.multiview.pip_template_none')) + '</option>');
+    }
+    mwPipTemplates.forEach(tp => {
+        opts.push(`<option value="${escapeHtml(String(tp.id))}">${escapeHtml(tp.name)}</option>`);
+    });
+    // Réf affectée mais absente de la bibliothèque (modèle supprimé) : option conservée.
+    if (selectedRef && selectedRef !== '__none__'
+            && !mwPipTemplates.some(tp => String(tp.id) === String(selectedRef))) {
+        opts.push(`<option value="${escapeHtml(String(selectedRef))}">${escapeHtml(String(selectedRef))}</option>`);
+    }
+    return opts.join('');
+}
+
+function populateDefaultTemplateSelect() {
+    const sel = document.getElementById('ed_default_template');
+    if (!sel || !editorParams) return;
+    sel.innerHTML = _pipTemplateOptions(editorParams.default_template_ref || '', false);
+    sel.value = editorParams.default_template_ref || '';
+}
+
+function onDefaultTemplateChange() {
+    if (!editorParams) return;
+    const sel = document.getElementById('ed_default_template');
+    const ref = sel.value || '';
+    editorParams.default_template_ref = ref;
+    editorParams.default_template = ref ? mwResolveTemplate(ref) : null;
+    dessiner();
+    refreshEntryPanel();
+    hotApplyStyle();
 }
 
 function padBank() {
@@ -751,6 +823,19 @@ function refreshEntryPanel() {
     }
     const f = editorParams.flux_config[primary];
     panel.hidden = false;
+    // Modèle de PiP : select peuplé depuis la bibliothèque ; un modèle actif REMPLACE
+    // l'habillage legacy → on masque les réglages ignorés (nom/tally visuels, VU, ANC),
+    // en gardant source + routing TSL (le tally alimente les composants du modèle).
+    const tplSel = document.getElementById('ed_pip_template');
+    if (tplSel) {
+        tplSel.innerHTML = _pipTemplateOptions(f.template_ref || '', true);
+        tplSel.value = f.template_ref || '';
+    }
+    const hasTpl = !!mwEffectiveTemplate(f);
+    ['ed_show_label_row', 'ed_label_proportional_row', 'ed_row_meters', 'ed_row_anc'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = hasTpl ? 'none' : '';
+    });
     document.getElementById('ed_label_source').value = f.label_source || 'hostname';
     document.getElementById('ed_show_label').checked = !!f.show_label;
     document.getElementById('ed_label_proportional').checked = !!f.label_proportional;
@@ -794,6 +879,17 @@ function onEntryChange() {
     const primary = primaryIdx();
     if (primary < 0) return;
     const f = editorParams.flux_config[primary];
+    const tplSel = document.getElementById('ed_pip_template');
+    if (tplSel) {
+        const ref = tplSel.value || '';
+        if (ref !== (f.template_ref || '')) {
+            // '' = hériter du mur ; '__none__' = habillage classique forcé ; sinon id bibliothèque.
+            f.template_ref = ref;
+            f.template_none = (ref === '__none__');
+            f.template = (ref && ref !== '__none__') ? (mwResolveTemplate(ref) || f.template) : null;
+            refreshEntryPanel();   // re-masque/affiche les réglages legacy
+        }
+    }
     f.label_source = document.getElementById('ed_label_source').value || 'hostname';
     f.path         = document.getElementById('ed_path').value;
     f.show_label   = document.getElementById('ed_show_label').checked;
@@ -841,7 +937,7 @@ function onEntryGeomChange() {
 const COPY_FIELDS = ['w', 'h', 'label_source', 'show_label', 'show_tally', 'label_proportional', 'tsl_index',
     'label_col', 'tally_level', 'tally_red', 'tally_green',
     'meter_channels', 'meter_position', 'meter_inside', 'meter_opacity', 'meter_scale',
-    ...ANC_FLAGS, 'anc_position', 'anc_opacity'];
+    ...ANC_FLAGS, 'anc_position', 'anc_opacity', 'template', 'template_ref', 'template_none'];
 let reglagesClipboard = null;
 
 function mwFlash(msg) {
@@ -1085,6 +1181,44 @@ function mwRefreshSidebarPreview() {
 
 // Peinture du canvas seule : appelée à chaque frame de drag — le DOM (table,
 // panneaux, dropdown source) n'est resynchronisé qu'aux changements de sélection.
+// Aperçu schématique d'une fenêtre à MODÈLE de PiP : le composant vidéo en fond (couleur de la
+// fenêtre), les autres composants en boîtes translucides étiquetées. L'édition fine du modèle se
+// fait dans Réglages → PiP ; ici on montre l'encombrement dans le mur.
+const _TPL_PREVIEW_COLORS = { umd: 'rgba(74,74,82,0.85)', tally: 'rgba(220,40,40,0.8)',
+    meters: 'rgba(60,200,60,0.55)', anc: 'rgba(143,106,210,0.6)', clock: 'rgba(210,160,40,0.7)',
+    text: 'rgba(200,200,208,0.5)', format: 'rgba(90,138,210,0.65)' };
+function drawTemplatePreview(ctx, f, tpl, sel, isPrimary, t) {
+    const comps = tpl.components;
+    const px = c => ({ x: f.x + (c.x || 0) * f.w, y: f.y + (c.y || 0) * f.h,
+                       w: Math.max(2, (c.w || 0) * f.w), h: Math.max(2, (c.h || 0) * f.h) });
+    const vid = comps.find(c => c.type === 'video');
+    if (vid) {
+        const r = px(vid);
+        ctx.globalAlpha = sel ? 0.8 : 0.4;
+        ctx.fillStyle = f.color;
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.globalAlpha = 1;
+    }
+    comps.forEach(c => {
+        if (c.type === 'video') return;
+        const r = px(c);
+        ctx.fillStyle = _TPL_PREVIEW_COLORS[c.type] || 'rgba(128,128,128,0.5)';
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+    });
+    // Nom + badge modèle dans la fenêtre
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(computeDisplayName(f) + ' · ' + (tpl.name || 'PiP'), f.x + 4, f.y + 4);
+    ctx.textBaseline = 'alphabetic';
+    // Cadre de sélection (même convention que les fenêtres legacy)
+    ctx.strokeStyle = isPrimary ? '#ffffff' : (sel ? t.accent : f.color);
+    ctx.lineWidth = sel ? 2 : 1;
+    ctx.setLineDash(isPrimary ? [6, 4] : (sel ? [3, 3] : []));
+    ctx.strokeRect(f.x, f.y, f.w, f.h);
+    ctx.setLineDash([]);
+}
+
 function drawCanvas() {
     const canvas = document.getElementById('ed_canvas');
     if (!canvas) return;
@@ -1113,6 +1247,12 @@ function drawCanvas() {
         if (f.hidden) return;   // entrée de la banque non affichée
         const sel = isSelected(i);
         const isPrimary = i === primary;
+        // Modèle de PiP EFFECTIF (explicite ou hérité du mur) : aperçu schématique par composants.
+        const efft = mwEffectiveTemplate(f);
+        if (efft) {
+            drawTemplatePreview(ctx, f, efft, sel, isPrimary, t);
+            return;
+        }
         const barOn = f.show_label || f.show_tally;
         // Plafonds PAR FENÊTRE — formules miroir de _label_metrics (script.py) :
         // texte ≤ 30 % de la hauteur du PiP, bandeau ≤ 40 %. En mode proportionnel,
@@ -1585,6 +1725,14 @@ function hotApplyWindow(idx) {
             meter_inside:   !!f.meter_inside,
             meter_opacity:  f.meter_opacity ?? 70,
             meter_scale:    f.meter_scale || 'dbfs',
+            // Métadonnées ANC par fenêtre (absentes du hot-apply avant 0.29.0 — les cases
+            // cochées dans le composer n'atteignaient jamais le container).
+            ...Object.fromEntries(ANC_FLAGS.map(k => [k, f[k] ? 1 : 0])),
+            anc_position:   f.anc_position || 'bottom',
+            anc_opacity:    f.anc_opacity ?? 60,
+            // Modèle de PiP (null = hériter du mur ; template_none = classique forcé)
+            template:       f.template || null,
+            template_none:  !!f.template_none,
         })
     }).catch(() => {});
 }
@@ -1608,6 +1756,8 @@ function hotApplyStyle() {
             freeze_detect_s: editorParams.freeze_detect_s ?? 2,
             show_format:     !!editorParams.show_format,
             show_proxy:      !!editorParams.show_proxy,
+            // Modèle de PiP PAR DÉFAUT du mur (héritage) — appliqué à chaud.
+            default_template: editorParams.default_template || null,
         })
     }).catch(() => {});
 }
@@ -2176,6 +2326,15 @@ async function deployerEditor() {
         meter_inside:   !!f.meter_inside,
         meter_opacity:  Math.max(10, Math.min(100, parseInt(f.meter_opacity) || 70)),
         meter_scale:    f.meter_scale || 'dbfs',
+        // Métadonnées ANC par fenêtre (absentes de la sérialisation avant 0.29.0 →
+        // les flags étaient PERDUS au déploiement).
+        ...Object.fromEntries(ANC_FLAGS.map(k => [k, !!f[k]])),
+        anc_position:   f.anc_position || 'bottom',
+        anc_opacity:    Math.max(0, Math.min(100, parseInt(f.anc_opacity ?? 60))),
+        // Modèle de PiP (résolu, embarqué dans le deploy_config → snapshoté avec les projets)
+        template:       f.template || null,
+        template_ref:   f.template_ref || '',
+        template_none:  !!f.template_none,
     }));
 
     const params = {
@@ -2200,7 +2359,10 @@ async function deployerEditor() {
         genlock:       editorParams.genlock,
         fps_target:    editorParams.fps_target || 0,
         tsl_mode:      editorParams.tsl_mode || 'central',
-        tsl_port:      editorParams.tsl_port ?? 4801
+        tsl_port:      editorParams.tsl_port ?? 4801,
+        // Modèle de PiP par défaut du mur (héritage)
+        default_template:     editorParams.default_template || null,
+        default_template_ref: editorParams.default_template_ref || ''
     };
 
     const btn = document.getElementById('ed_deploy_btn');
@@ -2477,6 +2639,9 @@ async function enregistrerLayout() {
         label_size:    editorParams.label_size,
         frame_style:   editorParams.frame_style || 'none',
         max_inputs:    editorParams.max_inputs,
+        // Modèle de PiP par défaut du mur (héritage) : fait partie de l'habillage du layout.
+        default_template:     editorParams.default_template || null,
+        default_template_ref: editorParams.default_template_ref || '',
         // Path et in_w/in_h volontairement omis : un layout = réglages géométriques + style,
         // pas l'affectation de source. Les sources sont restaurées à l'apply depuis l'éditeur.
         // Seuls les PiP AFFICHÉS font partie du layout (les entrées masquées de la banque, non).
@@ -2489,7 +2654,11 @@ async function enregistrerLayout() {
             label_col: f.label_col ?? 0,
             tally_level: f.tally_level ?? 0,
             tally_red: !!f.tally_red,
-            tally_green: !!f.tally_green
+            tally_green: !!f.tally_green,
+            // Modèle de PiP : fait partie de l'habillage mémorisé par le layout.
+            template: f.template || null,
+            template_ref: f.template_ref || '',
+            template_none: !!f.template_none
         }))
     };
     let r = null;
@@ -2525,6 +2694,9 @@ function appliquerLayout(lid) {
     editorParams.label_size    = cfg.label_size || editorParams.label_size || 14;
     editorParams.frame_style   = cfg.frame_style || editorParams.frame_style || 'none';
     editorParams.max_inputs    = cfg.max_inputs || editorParams.max_inputs;
+    editorParams.default_template     = cfg.default_template || null;
+    editorParams.default_template_ref = cfg.default_template_ref || '';
+    populateDefaultTemplateSelect();
     // Préserve les sources affectées dans l'éditeur (par index) — le layout n'apporte
     // que les réglages géométriques et de style.
     const existing = editorParams.flux_config || [];

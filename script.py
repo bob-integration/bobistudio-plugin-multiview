@@ -82,8 +82,12 @@ ORIENTATION   = (CONFIG.get("orientation") or "landscape").strip().lower()
 _PORTRAIT     = ORIENTATION in ("portrait_cw", "portrait_ccw")
 OUTPUT_W      = OUT_HEIGHT if _PORTRAIT else OUT_WIDTH    # largeur du flux émis (après rotation)
 OUTPUT_H      = OUT_WIDTH  if _PORTRAIT else OUT_HEIGHT   # hauteur du flux émis (après rotation)
-def _as_bool(v):
+def _as_bool(v, default=False):
     # bool("False") == True : on parse explicitement les chaînes de CONFIG.
+    # `default` rendu pour v=None (les appels 0.28.0 `_as_bool(x, False)` levaient TypeError →
+    # tout affichage ANC par cellule crashait la trame ; corrigé en 0.29.0).
+    if v is None:
+        return default
     if isinstance(v, str):
         return v.strip().lower() in ("1", "true", "yes", "on")
     return bool(v)
@@ -104,6 +108,21 @@ except (TypeError, ValueError):
     FREEZE_DETECT_S = 2.0
 SHOW_FORMAT   = _as_bool(CONFIG.get("show_format"))     # chip format déclaré par fenêtre (mode ingénierie)
 SHOW_PROXY    = _as_bool(CONFIG.get("show_proxy"))      # badge proxy lu par tuile (mode ingénierie pyramide)
+# Heure CIVILE des horloges « PTP » : l'horloge du nœud est sur l'échelle PTP/TAI (PTP_CLOCK.md)
+# → heure civile = horloge − tai_utc_offset_s (mesuré, injecté par before_deploy), au fuseau du
+# contrôleur (`tz` — les images runtime sont en UTC). N'affecte QUE l'affichage des horloges ;
+# la grille genlock/TAI du compositing est intouchée.
+_TZ_NAME = str(CONFIG.get("tz") or "").strip()
+if _TZ_NAME:
+    os.environ["TZ"] = _TZ_NAME
+    try:
+        time.tzset()
+    except Exception:
+        pass
+try:
+    TAI_UTC_OFFSET_S = max(0, int(CONFIG.get("tai_utc_offset_s") or 0))
+except (TypeError, ValueError):
+    TAI_UTC_OFFSET_S = 0
 
 # Monitoring pyramide : dernier choix de proxy par tuile (lu par _refresh_lat_metrics → :8080).
 _proxy_usage_latest = {{}}   # {{idx: {{src, read, cost, kind}}}}
@@ -324,15 +343,30 @@ METER_DECAY_DB_PER_S = 20.0    # vitesse de chute du peak hold
 # audio_states[flux_idx] = {{ar (bobimxl.AudioReader), name, peaks (np), holds (np), hold_ts (np)}}
 audio_states = {{}}
 
-def _derive_audio_name(video_path):
-    """`mire1_0` (ou `/dev/shm/mire1_0`) → nom de flux audio `mire1_audio_0`. None si pas de _N final."""
+def _derive_audio_name(video_path, flow=0):
+    """`mire1_0` (ou `/dev/shm/mire1_0`) → nom de flux audio `mire1_audio_0`. None si pas de _N final.
+    `flow` : décalage de flux — les composants meters des modèles de PiP adressent un espace de
+    16 canaux = 2 FLUX de 8 (canaux 1-8 = flux dérivé, 9-16 = flux dérivé SUIVANT `_audio_{{N+1}}`)."""
     name = (video_path or "").removeprefix("/dev/shm/")
     m = re.match(r"(.+?)_(\d+)$", name)
-    return f"{{m.group(1)}}_audio_{{m.group(2)}}" if m else None
+    return f"{{m.group(1)}}_audio_{{int(m.group(2)) + flow}}" if m else None
 
-def _open_audio_state(flux_idx, video_path):
-    """Ouvre le FLUX MXL audio dérivé du flux vidéo (bobimxl.AudioReader). Renvoie state ou None."""
-    nm = _derive_audio_name(video_path)
+def _audio_name_for(cfg, flow=0):
+    """Nom du flux audio de la fenêtre : le port CÂBLÉ (`audio_path`, page Câbles) sinon la
+    dérivation historique depuis la vidéo. `flow`=1 : flux SUIVANT (canaux 9-16) — dérivé en
+    bumpant l'index final du nom du flux 0 (câblé ou dérivé)."""
+    wired = (cfg.get("audio_path") or "").strip() if isinstance(cfg.get("audio_path"), str) else ""
+    wired = wired.removeprefix("/dev/shm/")
+    if wired:
+        if flow == 0:
+            return wired
+        m = re.match(r"(.+?)_(\d+)$", wired)
+        return f"{{m.group(1)}}_{{int(m.group(2)) + flow}}" if m else None
+    return _derive_audio_name(cfg.get("path") or "", flow)
+
+def _open_audio_state(flux_idx, cfg, flow=0):
+    """Ouvre le FLUX MXL audio de la fenêtre (bobimxl.AudioReader). Renvoie state ou None."""
+    nm = _audio_name_for(cfg, flow)
     if not nm:
         return None
     try:
@@ -461,9 +495,11 @@ def _meter_layout(n_channels):
     """Renvoie (width, ...) pour un meter à N canaux. Sans bordure."""
     return METER_TICK_W + n_channels * METER_BAR_W + (n_channels - 1) * METER_GAP
 
-def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opacity_pct):
+def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opacity_pct, ch0=0):
     """Dessine un peak meter sur l'image RGBA. opacity_pct 10..100.
-    Réserve 12 px en bas pour afficher le numéro de canal sous chaque barre."""
+    Réserve 12 px en bas pour afficher le numéro de canal sous chaque barre.
+    `ch0` : décalage d'étiquetage (composants meters à affectation de canaux : la barre k
+    affiche le n° réel ch0+k+1 — le rendu des barres est inchangé)."""
     d = ImageDraw.Draw(img, "RGBA")
     a_bg   = int(180 * opacity_pct / 100)
     a_bar  = int(220 * opacity_pct / 100)
@@ -539,8 +575,8 @@ def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opac
         if hold_h > 0:
             yh = bars_bottom - hold_h
             d.line([bx, yh, bx + METER_BAR_W - 1, yh], fill=(255, 255, 255, a_hold), width=1)
-        # Numéro de canal sous la barre (centré sur la barre, ch+1 = 1-indexé)
-        ch_label = str(ch + 1)
+        # Numéro de canal sous la barre (centré sur la barre, ch0+ch+1 = 1-indexé réel)
+        ch_label = str(ch0 + ch + 1)
         # ImageFont.load_default() est très petit, label sur 1 caractère → ~5px wide
         lx = bx + (METER_BAR_W // 2) - 2
         ly = bars_bottom + 2
@@ -566,7 +602,7 @@ def _meter_scale_params(scale):
         return max(0.0, min(1.0, (dbfs - METER_MIN_DB) / (-METER_MIN_DB)))
     return to_frac, to_frac(-20.0), to_frac(-6.0)
 
-def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct):
+def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct, ch0=0):
     """Partie STATIQUE du meter (fond + graduations + labels dB + n° de canal), SANS les barres —
     identique à _draw_meter hors boucle barres/hold. Rendu une seule fois (caché)."""
     d = ImageDraw.Draw(img, "RGBA")
@@ -591,16 +627,16 @@ def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct):
             last_label_y = y_tick
     for ch in range(n_channels):
         bx = mx + METER_TICK_W + ch * (METER_BAR_W + METER_GAP)
-        d.text((bx + (METER_BAR_W // 2) - 2, bars_bottom + 2), str(ch + 1),
+        d.text((bx + (METER_BAR_W // 2) - 2, bars_bottom + 2), str(ch0 + ch + 1),
                font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
 
-def _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct):
+def _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0=0):
     """RGBA statique (backend float32) cachée pour cette config de meter — l'idée 'graduations en VRAM'."""
-    key = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct)
+    key = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0)
     arr = _meter_static_xp_cache.get(key)
     if arr is None:
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        _draw_meter_static(img, rmx, rmy, mw, mh, n, scale, opacity_pct)
+        _draw_meter_static(img, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0)
         host = np.array(img).astype(np.float32)
         arr = xp.asarray(host) if GPU else host
         _meter_static_xp_cache[key] = arr
@@ -637,9 +673,9 @@ def _meter_comp_rect(tile, x0, y0, x1, y1, rgb, a):
     tile[y0:y1, x0:x1, 2] = rgb[2]
     tile[y0:y1, x0:x1, 3] = a
 
-def _meter_tile_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct):
+def _meter_tile_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0):
     """Tuile YUV d'un meter (chemin GPU) : statique caché copié + barres/hold composées en RGBA (xp)."""
-    tile = _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct).copy()
+    tile = _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0).copy()
     a_bar = int(220 * opacity_pct / 100); a_hold = int(255 * opacity_pct / 100)
     bars_mh = max(20, mh - 12); bars_bottom = rmy + bars_mh
     to_frac, green_top, yellow_top = _meter_scale_params(scale)
@@ -1194,6 +1230,30 @@ def _video_rect(cfg):
     x = max(0, min(x, OUT_WIDTH - 1)); y = max(0, min(y, OUT_HEIGHT - 1))
     w = max(2, min(w, OUT_WIDTH - x)); h = max(2, min(h, OUT_HEIGHT - y))
     w -= w % 2; h -= h % 2
+    # MODÈLE DE PIP : le rectangle vidéo vient du composant `video` du modèle (géométrie libre),
+    # pas des marges d'habillage legacy. Modèle sans composant vidéo → rect dégénéré (vw=0), la
+    # boucle composite saute la lecture ; les autres composants sont rendus par le chrome.
+    comps = _tpl_comps(cfg)
+    if comps is not None:
+        vr = _tpl_video_comp(cfg)
+        if vr is None:
+            return {{"x": x, "y": y, "w": w, "h": h, "vx": x, "vy": y, "vw": 0, "vh": 0,
+                     "ay": y, "ah": h, "fm": None, "m": m}}
+        rx, ry, rw, rh = _comp_rect(cfg, vr)
+        if (vr.get("fit") or "fill") == "contain":
+            # Homothétique au ratio SOURCE (in_w/in_h résolus par l'orchestrateur), centré.
+            sw = int(cfg.get("in_w") or 0); sh = int(cfg.get("in_h") or 0)
+            if sw > 1 and sh > 1:
+                sc = min(rw / sw, rh / sh)
+                nw = max(2, int(sw * sc)); nh = max(2, int(sh * sc))
+                rx += (rw - nw) // 2; ry += (rh - nh) // 2
+                rw, rh = nw, nh
+        vw = max(2, min(rw, OUT_WIDTH - rx)); vw -= vw % 2
+        vh = max(2, min(rh, OUT_HEIGHT - ry)); vh -= vh % 2
+        vx = rx - rx % 2
+        vy = ry - ry % 2
+        return {{"x": x, "y": y, "w": w, "h": h, "vx": vx, "vy": vy, "vw": vw, "vh": vh,
+                 "ay": vy, "ah": vh, "fm": None, "m": m}}
     bar_on = bool(cfg.get("show_label") or cfg.get("show_tally"))
     fm = None
     if FRAME_STYLE in _DRESS_STYLES:
@@ -1257,6 +1317,8 @@ def render_static():
     for cfg in FLUX_CONFIG:
         if cfg.get("hidden"):
             continue
+        if _tpl_comps(cfg) is not None:
+            continue   # modèle de PiP : habillage 100 % défini par les composants (render_dynamic)
         x, y, w, h = cfg["x"], cfg["y"], cfg["w"], cfg["h"]
         m = _label_metrics(cfg)
         show_label = bool(cfg.get("show_label"))
@@ -1327,6 +1389,11 @@ def render_dynamic():
     d = ImageDraw.Draw(img)
     for i, cfg in enumerate(FLUX_CONFIG):
         if cfg.get("hidden"):
+            continue
+        comps = _tpl_comps(cfg)
+        if comps is not None:
+            # Modèle de PiP : composants bakés (umd/tally/text/format, conditions incluses).
+            _tpl_render_dynamic(d, img, i, cfg, comps)
             continue
         show_label = bool(cfg.get("show_label"))
         show_tally = bool(cfg.get("show_tally"))
@@ -1486,6 +1553,8 @@ def render_border():
     for i, cfg in enumerate(FLUX_CONFIG):
         if cfg.get("hidden"):
             continue
+        if _tpl_comps(cfg) is not None:
+            continue   # modèle de PiP : bordures/tally via les composants (render_dynamic)
         g = _video_rect(cfg)
         x, y, w, h = g["x"], g["y"], g["w"], g["h"]
         vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]
@@ -1583,30 +1652,136 @@ def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
     oy, ou, ov, oa, oa2 = rgba_to_yuv(img)
     return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
 
+def _tile_peaks(i, cfg, n, now):
+    """Peaks/holds/statut audio de la tuile i pour n canaux (état lazy-init partagé)."""
+    st = audio_states.get(i)
+    if st is None:
+        st = _open_audio_state(i, cfg)
+        audio_states[i] = st  # peut être None (audio absent) → on dessine quand même un meter "vide"
+    peaks = holds = None
+    status = "absence"   # pas de flux audio du tout → absence (st None)
+    if st is not None:
+        peaks, holds, status = _update_peaks(st, n, now)
+    if peaks is None:
+        peaks = np.full(n, METER_MIN_DB)
+        holds = np.full(n, METER_MIN_DB)
+    return peaks, holds, status
+
+def _tile_peaks_range(i, cfg, start0, count, now):
+    """Peaks/holds/statut pour la FENÊTRE de canaux [start0, start0+count) d'un espace de
+    16 canaux : canaux 0..7 = flux audio dérivé de la source, 8..15 = flux dérivé SUIVANT
+    (`_audio_{{N+1}}` — convention « 2 flux de 8 »). États partagés par (tuile, flux) ; statut
+    combiné : ok si AU MOINS un flux lu est frais, sinon silence, sinon absence."""
+    peaks = np.full(count, METER_MIN_DB)
+    holds = np.full(count, METER_MIN_DB)
+    got_ok = got_sil = False
+    for flow in (0, 1):
+        f0 = flow * A_CHANNELS_MAX
+        a = max(start0, f0); b = min(start0 + count, f0 + A_CHANNELS_MAX)
+        if a >= b:
+            continue
+        key = (i, flow)
+        st = audio_states.get(key)
+        if st is None:
+            st = _open_audio_state(i, cfg, flow)
+            audio_states[key] = st
+        if st is None:
+            continue
+        p, h, s = _update_peaks(st, A_CHANNELS_MAX, now)
+        if p is None:
+            continue
+        peaks[a - start0:b - start0] = p[a - f0:b - f0]
+        holds[a - start0:b - start0] = h[a - f0:b - f0]
+        if s == "ok":
+            got_ok = True
+        elif s == "silence":
+            got_sil = True
+    return peaks, holds, ("ok" if got_ok else ("silence" if got_sil else "absence"))
+
+def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status, tiles, ch0=0):
+    """Tuile(s) YUV d'un meter à la géométrie donnée (bbox chroma-alignée + étiquette
+    SILENCE/ABSENCE) — corps commun aux meters legacy et aux composants de modèle.
+    bbox locale du meter (_draw_meter dessine jusqu'à mx+mw / my+mh inclus → +1), bornée à
+    la sortie et alignée chroma : origine ramenée à un multiple de _CW/_CH, dimensions
+    complétées au multiple supérieur (rgba_to_yuv sous-échantillonne par _CW/_CH)."""
+    bx0 = max(0, mx); by0 = max(0, my)
+    bx1 = min(OUT_WIDTH, mx + mw + 1); by1 = min(OUT_HEIGHT, my + mh + 1)
+    bx0 -= bx0 % _CW; by0 -= by0 % _CH
+    if (bx1 - bx0) % _CW: bx1 = min(OUT_WIDTH, bx1 + (_CW - (bx1 - bx0) % _CW))
+    if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - (by1 - by0) % _CH))
+    if bx1 <= bx0 or by1 <= by0:
+        return
+    if GPU:
+        # Chemin GPU : statique caché en VRAM + barres composées en RGBA (xp), aucune PIL par trame.
+        oy, ou, ov, oa, oa2 = _meter_tile_gpu(bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, n,
+                                              peaks, holds, scale, opacity_pct, ch0)
+    else:
+        # Chemin CPU ÉPROUVÉ — INCHANGÉ (PIL par trame). Ne pas modifier (garantie 'sans GPU identique').
+        tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
+        _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds, scale, opacity_pct, ch0)
+        oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
+    tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
+    # Étiquette SILENCE / ABSENCE par-dessus (tuile séparée, même bbox → blend après le meter).
+    # Cosmétique → ne jamais casser le rendu d'une trame si l'étiquette échoue.
+    if status in ("silence", "absence"):
+        try:
+            lab = _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh)
+        except Exception:
+            lab = None
+        if lab is not None:
+            tiles.append(lab)
+
 def render_meters(now):
     """Re-rendu par frame des peak meters. Renvoie une LISTE de TUILES YUV prêtes à blender
     [(bx0, by0, bx1, by1, y, u, v, a, a2), ...] — UNE tuile par meter, sur sa propre bbox locale
     (alignée chroma paire), PAS une couche plein écran. Les VU changent à chaque trame (jamais
     cachés) : convertir/blender chaque petit rectangle (≈ une bande VU dans une cellule) au lieu
     d'une bbox-union quasi plein écran (meters dispersés sur un mur 16 fenêtres) supprime le gros
-    du coût de l'habillage per-frame. Renvoie None si aucun meter activé."""
+    du coût de l'habillage per-frame. Renvoie None si aucun meter activé.
+    Cellule à MODÈLE de PiP : les meters sont les composants `meters` du modèle (géométrie libre,
+    largeur intrinsèque du meter ancrée left/center/right dans le rectangle du composant) ;
+    l'état audio (_update_peaks) est calculé UNE fois par tuile au max de canaux demandé."""
     tiles = []
     for i, cfg in enumerate(FLUX_CONFIG):
-        n = int(cfg.get("meter_channels") or 0)
-        if n == 0 or cfg.get("hidden"):
+        if cfg.get("hidden"):
             continue
-        # État audio lazy-init depuis le shm vidéo dérivé
-        st = audio_states.get(i)
-        if st is None:
-            st = _open_audio_state(i, cfg.get("path") or "")
-            audio_states[i] = st  # peut être None (audio absent) → on dessine quand même un meter "vide"
-        peaks = holds = None
-        status = "absence"   # pas de flux audio du tout → absence (st None)
-        if st is not None:
-            peaks, holds, status = _update_peaks(st, n, now)
-        if peaks is None:
-            peaks = np.full(n, METER_MIN_DB)
-            holds = np.full(n, METER_MIN_DB)
+        comps = _tpl_comps(cfg)
+        if comps is not None:
+            mcs = [c for c in comps if isinstance(c, dict) and c.get("type") == "meters"
+                   and _comp_visible(i, cfg, c)]
+            if not mcs:
+                continue
+            for comp in mcs:
+                try:
+                    # Affectation de canaux : ch_start (1-based) + channels dans un espace de
+                    # 16 canaux (2 flux de 8) — ex. « 1-2 à gauche, 3-4 à droite » = 2 composants.
+                    try:
+                        n = max(1, min(A_CHANNELS_MAX, int(comp.get("channels") or 2)))
+                    except (TypeError, ValueError):
+                        n = 2
+                    try:
+                        s0 = max(0, min(2 * A_CHANNELS_MAX - 1, int(comp.get("ch_start") or 1) - 1))
+                    except (TypeError, ValueError):
+                        s0 = 0
+                    n = min(n, 2 * A_CHANNELS_MAX - s0)
+                    peaks, holds, status = _tile_peaks_range(i, cfg, s0, n, now)
+                    rx, ry, rw, rh = _comp_rect(cfg, comp)
+                    mw = _meter_layout(n)
+                    mh = max(20, rh - 1)
+                    al = comp.get("align") or "left"
+                    mx = rx + ((rw - mw) // 2 if al == "center"
+                               else (rw - mw if al == "right" else 0))
+                    opacity_pct = max(10, min(100, int(comp.get("opacity") or 70)))
+                    _meter_tiles_at(mx, ry, mw, mh, n, peaks, holds,
+                                    comp.get("scale") or "dbfs", opacity_pct, status, tiles,
+                                    ch0=s0)
+                except Exception:
+                    continue
+            continue
+        n = int(cfg.get("meter_channels") or 0)
+        if n == 0:
+            continue
+        peaks, holds, status = _tile_peaks(i, cfg, n, now)
         # Geometry du meter dans la cellule (géométrie partagée _video_rect). Le meter
         # occupe toute la hauteur de la ZONE hors bandeau (ah), pas celle de la vidéo
         # letterboxée — la bande VU réserve sa largeur, la vidéo est réduite au ratio.
@@ -1630,36 +1805,8 @@ def render_meters(now):
         opacity_pct = int(cfg.get("meter_opacity") or 70)
         if not inside:
             opacity_pct = 100  # hors image = totalement opaque (zone réservée)
-        # bbox locale du meter (_draw_meter dessine jusqu'à mx+mw / my+mh inclus → +1), bornée à
-        # la sortie et alignée chroma : origine ramenée à un multiple de _CW/_CH, dimensions
-        # complétées au multiple supérieur (rgba_to_yuv sous-échantillonne par _CW/_CH).
-        bx0 = max(0, mx); by0 = max(0, my)
-        bx1 = min(OUT_WIDTH, mx + mw + 1); by1 = min(OUT_HEIGHT, my + mh + 1)
-        bx0 -= bx0 % _CW; by0 -= by0 % _CH
-        if (bx1 - bx0) % _CW: bx1 = min(OUT_WIDTH, bx1 + (_CW - (bx1 - bx0) % _CW))
-        if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - (by1 - by0) % _CH))
-        if bx1 <= bx0 or by1 <= by0:
-            continue
-        if GPU:
-            # Chemin GPU : statique caché en VRAM + barres composées en RGBA (xp), aucune PIL par trame.
-            oy, ou, ov, oa, oa2 = _meter_tile_gpu(bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, n,
-                                                  peaks, holds, cfg.get("meter_scale") or "dbfs", opacity_pct)
-        else:
-            # Chemin CPU ÉPROUVÉ — INCHANGÉ (PIL par trame). Ne pas modifier (garantie 'sans GPU identique').
-            tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
-            _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds,
-                        cfg.get("meter_scale") or "dbfs", opacity_pct)
-            oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
-        tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
-        # Étiquette SILENCE / ABSENCE par-dessus (tuile séparée, même bbox → blend après le meter).
-        # Cosmétique → ne jamais casser le rendu d'une trame si l'étiquette échoue.
-        if status in ("silence", "absence"):
-            try:
-                lab = _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh)
-            except Exception:
-                lab = None
-            if lab is not None:
-                tiles.append(lab)
+        _meter_tiles_at(mx, my, mw, mh, n, peaks, holds,
+                        cfg.get("meter_scale") or "dbfs", opacity_pct, status, tiles)
     return tiles or None
 
 
@@ -1669,23 +1816,54 @@ def render_meters(now):
 # PIL+YUV est gaté par SIGNATURE (comme les horloges) ; seul le blend par petite bbox est
 # per-frame. Défini APRÈS _format_anc_cell (qui vit avec les helpers ANC, plus bas) : appelé
 # depuis la boucle, jamais à l'import.
-def render_anc_tiles(now):
-    """Une tuile YUV par cellule ayant au moins une information ANC cochée, ou None."""
-    tiles = []
+def _anc_units():
+    """Unités d'affichage ANC : (i, flags, rect|None). rect None = bandeau legacy (haut/bas de
+    l'image, flags = la cfg de la fenêtre) ; rect = composant `anc` d'un modèle de PiP (flags =
+    le composant, mêmes clés anc_*, géométrie libre)."""
+    out = []
     for i, cfg in enumerate(FLUX_CONFIG):
-        if cfg.get("hidden") or not _anc_enabled(cfg):
+        if cfg.get("hidden"):
             continue
-        txt = _format_anc_cell(i, cfg)
+        comps = _tpl_comps(cfg)
+        if comps is None:
+            if _anc_enabled(cfg):
+                out.append((i, cfg, None))
+            continue
+        for comp in comps:
+            if (isinstance(comp, dict) and comp.get("type") == "anc"
+                    and _comp_visible(i, cfg, comp) and _anc_enabled(comp)):
+                try:
+                    out.append((i, comp, _comp_rect(FLUX_CONFIG[i], comp)))
+                except Exception:
+                    continue
+    return out
+
+def render_anc_tiles(now):
+    """Une tuile YUV par unité ANC (bandeau de cellule ou composant de modèle), ou None."""
+    tiles = []
+    for i, flags, rect in _anc_units():
+        txt = _format_anc_cell(i, flags)
         if not txt:
             continue
-        g = _video_rect(cfg)
-        vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]     # DANS l'image, pas l'habillage
-        size = max(10, min(28, vh // 18))
+        cfg = FLUX_CONFIG[i]
+        if rect is None:
+            g = _video_rect(cfg)
+            vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]     # DANS l'image, pas l'habillage
+            size = max(10, min(28, vh // 18))
+            pad = 4
+            bh = size + 2 * pad
+            # Position : « bottom » (défaut) = bas de l'image, « top » = haut.
+            by = (vy + vh - bh) if (flags.get("anc_position") or "bottom") != "top" else vy
+        else:
+            vx, by, vw, bh = rect
+            try:
+                size = int(flags.get("font_size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if size <= 0:
+                size = max(8, bh - 8)
+            pad = max(2, (bh - size) // 2)
         fnt = _font(size)
-        pad = 4
-        bh = size + 2 * pad
-        # Position : « bottom » (défaut) = bas de l'image, « top » = haut.
-        by = (vy + vh - bh) if (cfg.get("anc_position") or "bottom") != "top" else vy
         bx0, by0 = max(0, vx), max(0, by)
         bx1, by1 = min(OUT_WIDTH, vx + vw), min(OUT_HEIGHT, by + bh)
         bx0 -= bx0 % _CW; by0 -= by0 % _CH
@@ -1693,7 +1871,7 @@ def render_anc_tiles(now):
         if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - (by1 - by0) % _CH))
         if bx1 <= bx0 or by1 <= by0:
             continue
-        a_bg = max(0, min(100, int(cfg.get("anc_opacity") or 60))) * 255 // 100
+        a_bg = max(0, min(100, int(flags.get("anc_opacity") or 60))) * 255 // 100
         tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
         d = ImageDraw.Draw(tile, "RGBA")
         d.rectangle([0, 0, bx1 - bx0 - 1, by1 - by0 - 1], fill=(0, 0, 0, a_bg))
@@ -1706,9 +1884,8 @@ def render_anc_tiles(now):
     return tiles or None
 
 def _anc_sig():
-    """Signature des bandeaux ANC (gate du re-rendu PIL/YUV) — vide si aucune cellule n'en veut."""
-    return tuple(_format_anc_cell(i, cfg) for i, cfg in enumerate(FLUX_CONFIG)
-                 if (not cfg.get("hidden")) and _anc_enabled(cfg))
+    """Signature des bandeaux ANC (gate du re-rendu PIL/YUV) — vide si aucune unité active."""
+    return tuple(_format_anc_cell(i, flags) for i, flags, _r in _anc_units())
 
 
 # ─── Couche « info » : NO SIGNAL / FREEZE / format source ────────────────────
@@ -1899,7 +2076,13 @@ def _apply_tsl(index, control, text):
             tally_state[f"{{i}}_L"] = new_L; changed = True
         if tally_state.get(f"{{i}}_R") != new_R:
             tally_state[f"{{i}}_R"] = new_R; changed = True
-        if _is_protocol_label(cfg) and tsl_text.get(i) != text:
+        # Consommateurs du TEXTE TSL de la fenêtre : label legacy 'protocol' OU composant umd
+        # d'un modèle de PiP sourcé TSL (sinon le re-bake du chrome raterait le changement).
+        wants_tsl_text = _is_protocol_label(cfg) or any(
+            isinstance(c, dict) and c.get("type") == "umd"
+            and (c.get("text_source") or "name") == "tsl"
+            for c in (_tpl_comps(cfg) or ()))
+        if wants_tsl_text and tsl_text.get(i) != text:
             tsl_text[i] = text; changed = True
     if changed:
         tally_dirty.set()
@@ -2199,10 +2382,17 @@ def _open_anc_state(anc_path):
     except Exception:
         return None
 
+_ANC_STALE_S = 2.0   # index de grain ANC figé au-delà → reader PÉRIMÉ (flux recréé) → réouverture
+
 def _anc_packets(idx):
     """Paquets ANC du DERNIER grain de l'entrée `idx` (liste, éventuellement vide). Le décodage
     est MIS EN CACHE par index de grain : plusieurs incrustations (timecode + sous-titres + AFD…)
-    sur la même entrée ne le paient qu'une fois par trame."""
+    sur la même entrée ne le paient qu'une fois par trame.
+    RECONNEXION : un producteur qui DÉTRUIT+RECRÉE son flux ANC sous le même nom (redéploiement
+    de la source) laisse le reader collé à l'ancienne génération MORTE — get_latest y rejoue le
+    dernier grain à l'infini (timecode FIGÉ) ou rend None, sans exception. Comme pour l'audio
+    (head figé) et la vidéo (REOPEN_STALE_S) : index figé/illisible > _ANC_STALE_S → close +
+    garbage_collect + réouverture sur la génération vivante."""
     path = _anc_path_for(idx)
     rec = anc_states.get(idx)
     # (ré)ouvre si l'entrée a changé de source, ou tant que le flux ANC n'est pas encore là.
@@ -2215,13 +2405,31 @@ def _anc_packets(idx):
     st = rec["state"]
     if not st:
         return []
+    now_m = time.monotonic()
+    def _stale_reopen():
+        # Péremption : lâcher le reader + purger l'ancienne génération → réouverture au
+        # prochain appel (rec["state"] None). Timer ré-armé = retentes bornées à 1/_ANC_STALE_S.
+        try: st["reader"].close()
+        except Exception: pass
+        try: inst.garbage_collect()
+        except Exception: pass
+        rec["state"] = None
+        return []
     try:
         got = st["reader"].get_latest()
         if got is None:
+            # Aucun grain lisible : flux pas encore écrit OU reader sur une génération morte —
+            # dans les deux cas, réouverture bornée (1/_ANC_STALE_S) jusqu'à lecture.
+            st.setdefault("fresh_t", now_m)
+            if now_m - st["fresh_t"] > _ANC_STALE_S:
+                return _stale_reopen()
             return []
         if got[0] != st["gidx"]:                # nouveau grain → décoder une fois
             st["gidx"] = got[0]
+            st["fresh_t"] = now_m
             st["packets"] = bobimxl.anc_unpack(bytes(got[2]), st.get("flow_def"))
+        elif now_m - st.get("fresh_t", now_m) > _ANC_STALE_S:
+            return _stale_reopen()
         return st["packets"]
     except Exception:
         return []
@@ -2313,6 +2521,238 @@ def _anc_report():
         }}
     return out
 
+# ─── Modèles de PiP (bibliothèque composable — Réglages → PiP) ────────────────
+# Une cellule peut porter un MODÈLE (`cfg["template"] = {{"name", "components": […]}}`) qui
+# REMPLACE l'habillage legacy de la fenêtre (label/tally/meters/ANC pilotés par flags, positions
+# imposées) par une liste de COMPOSANTS librement positionnés. Géométrie NORMALISÉE 0..1
+# relative à la cellule → un même modèle sert à une tuile 640×360 comme à une 1920×1080.
+# Types : video / umd / tally / meters / anc / clock / text / format.
+# Une cellule SANS modèle rend par le chemin historique, STRICTEMENT inchangé.
+# Chaque composant peut porter :
+#   when  : always | tally_red | tally_green | tally_any | tally_off | no_signal | freeze |
+#           signal_ok — condition de visibilité (re-bake sur tally_dirty ; les transitions
+#           d'état signal lèvent tally_dirty depuis la boucle, cf. _tile_status) ;
+#   min_w : largeur de cellule (px) sous laquelle le composant est MASQUÉ (repli petites tuiles).
+_tile_status = {{}}       # i → "" | "nosignal" | "freeze" (état signal par tuile, boucle de mix)
+_tpl_status_prev = {{}}   # dernier état publié → détection de transition (re-bake conditions)
+_TPL_SIGNAL_CONDS = ("no_signal", "freeze", "signal_ok")
+
+# HÉRITAGE : le MUR peut définir un modèle PAR DÉFAUT (CONFIG.default_template, modifiable à
+# chaud via /style). Résolution par cellule : template explicite > template_none (habillage
+# classique forcé) > modèle par défaut du mur > habillage classique.
+DEFAULT_TEMPLATE = CONFIG.get("default_template") or None
+
+def _tpl_dict_comps(t):
+    if not isinstance(t, dict):
+        return None
+    comps = t.get("components")
+    return comps if isinstance(comps, list) and comps else None
+
+def _tpl_comps(cfg):
+    """Liste des composants du modèle EFFECTIF de la cellule (héritage résolu), ou None."""
+    comps = _tpl_dict_comps(cfg.get("template"))
+    if comps is not None:
+        return comps
+    if _as_bool(cfg.get("template_none"), False):
+        return None
+    return _tpl_dict_comps(DEFAULT_TEMPLATE)
+
+def _tpl_video_comp(cfg):
+    for c in (_tpl_comps(cfg) or ()):
+        if isinstance(c, dict) and c.get("type") == "video":
+            return c
+    return None
+
+def _comp_rect(cfg, comp):
+    """Rectangle ABSOLU (px, borné à la cellule et au canvas) d'un composant."""
+    x, y, w, h = int(cfg["x"]), int(cfg["y"]), int(cfg["w"]), int(cfg["h"])
+    x = max(0, min(x, OUT_WIDTH - 1)); y = max(0, min(y, OUT_HEIGHT - 1))
+    w = max(2, min(w, OUT_WIDTH - x)); h = max(2, min(h, OUT_HEIGHT - y))
+    def _f(k, dflt):
+        try:
+            return max(0.0, min(1.0, float(comp.get(k, dflt))))
+        except (TypeError, ValueError):
+            return dflt
+    rx = x + int(round(_f("x", 0.0) * w))
+    ry = y + int(round(_f("y", 0.0) * h))
+    rw = max(2, int(round(_f("w", 1.0) * w)))
+    rh = max(2, int(round(_f("h", 1.0) * h)))
+    rw = max(2, min(rw, x + w - rx))
+    rh = max(2, min(rh, y + h - ry))
+    return rx, ry, rw, rh
+
+def _comp_visible(i, cfg, comp):
+    """Visibilité d'un composant : seuil min_w (repli petites tuiles) + condition `when`."""
+    try:
+        if int(comp.get("min_w") or 0) > int(cfg.get("w") or 0):
+            return False
+    except (TypeError, ValueError):
+        pass
+    when = comp.get("when") or "always"
+    if when == "always":
+        return True
+    if when in _TPL_SIGNAL_CONDS:
+        st = _tile_status.get(i) or ""
+        return {{"no_signal": st == "nosignal", "freeze": st == "freeze",
+                 "signal_ok": st == ""}}.get(when, True)
+    dom = _window_tally_dominant(i)
+    return {{"tally_red":   dom in ("red", "amber"),
+             "tally_green": dom in ("green", "amber"),
+             "tally_any":   dom != "off",
+             "tally_off":   dom == "off"}}.get(when, True)
+
+def _tpl_pseudo_ov(i, comp, rect, bg_default="", bg_op_default=100):
+    """Adapte un composant texte-like au contrat de _draw_text_overlay (pseudo-overlay,
+    coordonnées ABSOLUES). bg_color absent → défaut du type ; "" explicite → pas de fond."""
+    bg = comp.get("bg_color")
+    if bg is None:
+        bg = bg_default
+    try:
+        fs = int(comp.get("font_size") or 0)
+    except (TypeError, ValueError):
+        fs = 0
+    return {{"id": "tpl%s_%s" % (i, comp.get("id") or comp.get("type") or ""),
+             "x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3],
+             "font": comp.get("font") or "dejavu-sans-bold", "font_size": fs,
+             "align": comp.get("align") or "center",
+             "color": comp.get("color") or "#ffffff",
+             "bg_color": bg, "bg_opacity": comp.get("bg_opacity", bg_op_default)}}
+
+def _tpl_text_value(i, cfg, comp):
+    """Texte d'un composant umd : nom résolu de la source (défaut), texte TSL ou texte fixe."""
+    src = comp.get("text_source") or "name"
+    if src == "tsl":
+        return tsl_text.get(i, "") or ""
+    if src == "fixed":
+        return comp.get("text") or ""
+    return cfg.get("name", "") or ""
+
+# Couleur de texte par dominante tally (option tally_text des umd).
+_TPL_TALLY_TEXT_HEX = {{"red": "#ff5a5a", "green": "#78ff8c", "amber": "#ffc83c"}}
+
+def _tpl_draw_tally(d, i, comp, rect):
+    """Composant tally : lamp (pastille ronde), bar (pavé plein) ou border (cadre)."""
+    slot = comp.get("slot") or "dominant"
+    if slot == "L":
+        st = tally_state.get(f"{{i}}_L", "off")
+    elif slot == "R":
+        st = tally_state.get(f"{{i}}_R", "off")
+    else:
+        st = _window_tally_dominant(i)
+    rx, ry, rw, rh = rect
+    shape = comp.get("shape") or "lamp"
+    if shape == "border":
+        col = _TALLY_BORDER_RGBA.get(st, (0, 0, 0, 0))
+        if st == "off":
+            col = _FRAME_NEUTRAL
+        try:
+            t = max(2, int(comp.get("thickness") or 4))
+        except (TypeError, ValueError):
+            t = 4
+        _render_border_colored(d, rx, ry, rw, rh, col, min(t, rw // 2, rh // 2))
+    elif shape == "bar":
+        col = _TALLY_BORDER_RGBA.get(st, (0, 0, 0, 0))
+        if st == "off":
+            col = (50, 50, 56, 235)
+        d.rectangle([rx, ry, rx + rw - 1, ry + rh - 1], fill=col)
+    else:  # lamp
+        fill, outline = _PILL_COLORS.get(st, _PILL_COLORS["off"])
+        r = max(2, min(rw, rh) // 2 - 1)
+        _render_pill(d, rx + rw // 2, ry + rh // 2, r, fill, outline)
+
+def _tpl_render_dynamic(d, img, i, cfg, comps):
+    """Composants BAKÉS d'un modèle (umd / tally / text / format) — re-rendus sur tally_dirty
+    (changement tally, texte TSL, ou transition d'état signal pour les conditions), jamais
+    per-frame. Les composants per-frame (meters / anc / clock) ont leur propre machinerie.
+    Un composant malformé est ignoré (jamais de trame perdue pour un modèle cassé)."""
+    for comp in comps:
+        if not isinstance(comp, dict):
+            continue
+        k = comp.get("type")
+        if k not in ("umd", "tally", "text", "format", "video"):
+            continue
+        try:
+            if not _comp_visible(i, cfg, comp):
+                continue
+            if k == "video":
+                # Bordure du composant vidéo : fixe (couleur) ou pilotée par le tally
+                # (neutre au repos, rouge/vert/ambre sinon). Cerne le rectangle IMAGE réel
+                # (_video_rect : fit contain compris), pas le rectangle du composant.
+                mode = comp.get("border") or "none"
+                if mode == "none":
+                    continue
+                try:
+                    bw = max(1, min(24, int(comp.get("border_w") or 3)))
+                except (TypeError, ValueError):
+                    bw = 3
+                if mode == "tally":
+                    dom = _window_tally_dominant(i)
+                    col = _TALLY_BORDER_RGBA[dom] if dom != "off" else _FRAME_NEUTRAL
+                else:
+                    col = _hex_rgb(comp.get("border_color"), (255, 255, 255)) + (255,)
+                g = _video_rect(cfg)
+                if g["vw"] >= 2 and g["vh"] >= 2:
+                    _render_border_colored(d, g["vx"], g["vy"], g["vw"], g["vh"], col, bw)
+                continue
+            rect = _comp_rect(cfg, comp)
+            if k == "tally":
+                _tpl_draw_tally(d, i, comp, rect)
+                continue
+            if k == "umd":
+                txt = _tpl_text_value(i, cfg, comp)
+                ov = _tpl_pseudo_ov(i, comp, rect, bg_default="#000000", bg_op_default=70)
+                col_over = None
+                dom = _window_tally_dominant(i)
+                if _as_bool(comp.get("tally_bg"), False):
+                    d.rectangle([rect[0], rect[1], rect[0] + rect[2] - 1, rect[1] + rect[3] - 1],
+                                fill=_BAR_TINTS.get(dom, _BAR_TINTS["off"]))
+                    ov["bg_color"] = ""
+                if _as_bool(comp.get("tally_text"), False) and dom != "off":
+                    col_over = _TPL_TALLY_TEXT_HEX.get(dom)
+                _draw_text_overlay(d, ov, txt, color_override=col_over)
+            elif k == "format":
+                ov = _tpl_pseudo_ov(i, comp, rect, bg_default="#000000", bg_op_default=65)
+                _draw_text_overlay(d, ov, _fmt_chip_txt(cfg, None))
+            else:  # text fixe
+                ov = _tpl_pseudo_ov(i, comp, rect)
+                _draw_text_overlay(d, ov, comp.get("text") or "")
+        except Exception:
+            continue
+
+def _tpl_clock_ovs():
+    """Pseudo-overlays HORLOGE des modèles de PiP affichés — injectés dans la machinerie des
+    horloges (_dyn_overlays : cache par signature + tuiles YUV par bbox). tc_source = l'entrée
+    de la tuile (une horloge ANC lit LE timecode de SA source)."""
+    out = []
+    for i, cfg in enumerate(FLUX_CONFIG):
+        if cfg.get("hidden"):
+            continue
+        comps = _tpl_comps(cfg)
+        if not comps:
+            continue
+        for comp in comps:
+            if not isinstance(comp, dict) or comp.get("type") != "clock":
+                continue
+            try:
+                if not _comp_visible(i, cfg, comp):
+                    continue
+                ov = _tpl_pseudo_ov(i, comp, _comp_rect(cfg, comp),
+                                    bg_default="#000000", bg_op_default=60)
+                ov.update({{"kind": "clock",
+                            "clock_source": comp.get("clock_source") or "ptp",
+                            "tc_source": i,
+                            "show_hh": _as_bool(comp.get("show_hh", True)),
+                            "show_mm": _as_bool(comp.get("show_mm", True)),
+                            "show_ss": _as_bool(comp.get("show_ss", True)),
+                            "show_ff": _as_bool(comp.get("show_ff", False)),
+                            "offset_ms": comp.get("offset_ms") or 0,
+                            "chrono_start": comp.get("chrono_start") or "00:00:00",
+                            "chrono_running": _as_bool(comp.get("chrono_running", False))}})
+                out.append(ov)
+            except Exception:
+                continue
+    return out
+
 def _fmt_clock_fields(ov, hh, mm, ss, ff, df=False, dash=False):
     """Met en forme HH/MM/SS/II selon les cases activées ; séparateur images ';' si drop-frame.
     dash=True → tirets (timecode ANC indisponible)."""
@@ -2340,8 +2780,10 @@ def _format_clock(ov, now):
             val = max(0.0, _parse_tc_seconds(ov.get("chrono_start")) - elapsed)
         else:  # chrono : compte À PARTIR de la valeur de départ (0 par défaut)
             val = _parse_tc_seconds(ov.get("chrono_start")) + elapsed
-    else:  # ptp : heure du jour (CLOCK_REALTIME disciplinée phc2sys) + offset signé
-        val = (now + int(_overlay_get(ov, "offset_ms", 0)) / 1000.0) % 86400
+    else:  # ptp : heure CIVILE LOCALE (horloge nœud TAI − offset TAI→UTC, fuseau injecté) + offset signé
+        _civ = now - TAI_UTC_OFFSET_S + int(_overlay_get(ov, "offset_ms", 0)) / 1000.0
+        _lt = time.localtime(_civ)
+        val = _lt.tm_hour * 3600 + _lt.tm_min * 60 + _lt.tm_sec + (_civ % 1.0)
     hh = int(val // 3600)
     mm = int((val % 3600) // 60)
     ss = int(val % 60)
@@ -2420,7 +2862,9 @@ def render_overlays_fg_static():
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def _dyn_overlays():
-    return [ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") == "clock"]
+    # Horloges globales (overlays) + horloges des modèles de PiP (pseudo-overlays absolus).
+    return ([ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") == "clock"]
+            + _tpl_clock_ovs())
 
 def _dyn_text(ov, now):
     return _format_clock(ov, now)
@@ -2702,10 +3146,27 @@ class MvControlHandler(BaseHTTPRequestHandler):
         ok = False
         # essence `data` = port ANC de l'entrée (un flux ANC par entrée vidéo). Le lecteur ANC
         # est rouvert tout seul au prochain accès (_anc_packets compare `for_path`).
-        if (b.get("essence") or "video") == "data":
+        _ess = b.get("essence") or "video"
+        if _ess == "data":
             with state_lock:
                 if 0 <= idx < len(FLUX_CONFIG):
                     FLUX_CONFIG[idx]["anc_path"] = path; ok = True
+        elif _ess == "audio":
+            # Port AUDIO câblé de l'entrée (VU-mètres) : les états audio de la tuile sont
+            # PURGÉS (clé legacy i + clés (i, flux)) → réouverture sur le nouveau nom au
+            # prochain rendu (le nom est capturé à l'ouverture du state).
+            with state_lock:
+                if 0 <= idx < len(FLUX_CONFIG):
+                    FLUX_CONFIG[idx]["audio_path"] = path; ok = True
+            if ok:
+                for k in list(audio_states):
+                    if k == idx or (isinstance(k, tuple) and k and k[0] == idx):
+                        st = audio_states.pop(k, None)
+                        try:
+                            if st and st.get("ar"):
+                                st["ar"].close()
+                        except Exception:
+                            pass
         else:
             with state_lock:
                 if 0 <= idx < len(mv_state["inputs"]):
@@ -2724,16 +3185,29 @@ class MvControlHandler(BaseHTTPRequestHandler):
             if 0 <= idx < len(FLUX_CONFIG):
                 cfg = FLUX_CONFIG[idx]
                 for k in ("x", "y", "w", "h", "tsl_index", "meter_channels", "meter_opacity",
-                          "anc_position", "anc_opacity") + ANC_FIELDS:
+                          "anc_opacity") + ANC_FIELDS:
                     if k in b and b[k] is not None:
                         try: cfg[k] = int(b[k])
                         except (TypeError, ValueError): pass
-                for k in ("name", "meter_position", "meter_scale"):
+                # anc_position est une CHAÎNE (top/bottom) — avant 0.29.0 elle passait dans la
+                # coercition int ci-dessus et n'était donc JAMAIS appliquée à chaud.
+                for k in ("name", "meter_position", "meter_scale", "anc_position"):
                     if k in b and b[k] is not None:
                         cfg[k] = str(b[k])
                 for k in ("show_label", "show_tally", "meter_inside", "hidden", "label_proportional"):
                     if k in b and b[k] is not None:
                         cfg[k] = _as_bool(b[k])
+                # Modèle de PiP : dict {{name, components}} appliqué à chaud, null/{{}} = retour
+                # à l'héritage (défaut du mur, sinon habillage legacy). template_none = forcer
+                # l'habillage classique malgré un modèle par défaut du mur.
+                if "template" in b:
+                    t = b.get("template")
+                    if isinstance(t, dict) and t.get("components"):
+                        cfg["template"] = t
+                    else:
+                        cfg.pop("template", None)
+                if "template_none" in b:
+                    cfg["template_none"] = _as_bool(b.get("template_none"))
                 ok = True
                 geom_dirty.set()
                 tally_dirty.set()
@@ -2746,7 +3220,11 @@ class MvControlHandler(BaseHTTPRequestHandler):
         b = self._json()
         with state_lock:
             global BORDER_W, BORDER_COLOR, OVERLAY_BELOW, LABEL_SIZE, FRAME_STYLE
-            global SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_FORMAT, SHOW_PROXY
+            global SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_FORMAT, SHOW_PROXY, DEFAULT_TEMPLATE
+            if "default_template" in b:
+                # Modèle de PiP par défaut du MUR (héritage) : dict {{name, components}} ou null.
+                t = b.get("default_template")
+                DEFAULT_TEMPLATE = t if (isinstance(t, dict) and t.get("components")) else None
             if "border_w" in b:
                 try: BORDER_W = max(0, int(b["border_w"]))
                 except (TypeError, ValueError): pass
@@ -3401,7 +3879,13 @@ while True:
 
     for i, cfg in enumerate(_fc):
         if cfg.get("hidden"):
+            _tile_status.pop(i, None)
             continue   # entrée de la banque non affichée : source câblée conservée, pas de rendu
+        # Modèle de PiP SANS composant vidéo : rien à lire ni à poser (cellule d'habillage pur,
+        # composants rendus par le chrome/les tuiles per-frame).
+        if _tpl_comps(cfg) is not None and _tpl_video_comp(cfg) is None:
+            _tile_status[i] = ""
+            continue
         # Géométrie partagée (bandeau sous l'image SANS déformation, bande VU hors image)
         g = _video_rect(cfg)
         vy, vh = g["vy"], g["vh"]
@@ -3418,6 +3902,7 @@ while True:
 
         if src is None:
             canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
+            _tile_status[i] = "nosignal"
             if SHOW_NO_SIGNAL:
                 _statuses.append((i, "nosignal", "", None))
             continue
@@ -3474,6 +3959,7 @@ while True:
                     got = _gt
             if got is None:        # flux ouvert mais aucun grain lisible (vide OU Reader périmé)
                 canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
+                _tile_status[i] = "nosignal"
                 if SHOW_NO_SIGNAL:
                     _statuses.append((i, "nosignal", "", None))
                 # Reconnexion : si le « No Signal » persiste au-delà de REOPEN_STALE_S, le Reader
@@ -3498,6 +3984,7 @@ while True:
             elif fi != tr["fi"]:
                 tr["fi"] = fi; tr["t"] = now_m
             _st = "freeze" if (FREEZE_DETECT_S > 0 and now_m - tr["t"] > FREEZE_DETECT_S) else ""
+            _tile_status[i] = _st
             _chip = _fmt_chip_txt(cfg, src) if SHOW_FORMAT else ""
             if _st or _chip or _proxy_chip:
                 _statuses.append((i, _st, _chip, _proxy_chip))
@@ -3535,8 +4022,21 @@ while True:
             _gpu_batch.append((src_y, src_u, src_v, vy, vh, video_x, video_w))
         except Exception:
             canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
+            _tile_status[i] = "nosignal"
             if SHOW_NO_SIGNAL:
                 _statuses.append((i, "nosignal", "", None))
+
+    # Conditions des modèles de PiP liées au SIGNAL (no_signal/freeze/signal_ok) : une transition
+    # d'état re-bake le chrome via tally_dirty (même mécanique que le tally — coût payé à la
+    # transition seulement, jamais per-frame).
+    if _tile_status != _tpl_status_prev:
+        _tpl_status_prev = dict(_tile_status)
+        for _cfgc in _fc:
+            _cc = _tpl_comps(_cfgc)
+            if _cc and any(isinstance(_c, dict) and (_c.get("when") or "always") in _TPL_SIGNAL_CONDS
+                           for _c in _cc):
+                tally_dirty.set()
+                break
 
     # Placement des tuiles vidéo collectées : 1 upload GPU groupé épinglé (ou resize numpy direct en CPU).
     _place_batch(canvas_y, canvas_u, canvas_v, _gpu_batch)

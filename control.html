@@ -115,10 +115,11 @@
         <p class="mw-hint" data-i18n="plugin.multiview.hint">Maj + clic pour multi-sélectionner. Référence = dernière sélectionnée (cadre blanc).</p>
         <div id="ed_entry_panel" class="mw-entry-panel" hidden>
             <div class="mw-editor-row">
+                <div class="field"><label for="ed_pip_template" data-i18n="plugin.multiview.pip_template" title="Remplace l'habillage de la fenêtre (nom/tally/VU/ANC) par un modèle composé dans Réglages → PiP. « habillage classique » = réglages historiques ci-dessous." data-i18n-title="plugin.multiview.pip_template_title">Modèle de PiP</label><select id="ed_pip_template" onchange="onEntryChange()"></select></div>
                 <div class="field"><label for="ed_label_source" data-i18n="plugin.multiview.label_source">Nom affiché</label><select id="ed_label_source" onchange="onEntryChange()"><option value="hostname" data-i18n="plugin.multiview.ls_hostname">Nom de la source</option><option value="mxl_path" data-i18n="plugin.multiview.ls_mxl_path">Chemin MXL</option><option value="protocol" data-i18n="plugin.multiview.ls_protocol">Protocole (TSL 5.0)</option></select></div>
                 <div class="field field-grow"><label for="ed_path" data-i18n="plugin.multiview.source">Source</label><select id="ed_path" onchange="onEntryChange()"></select></div>
-                <label class="field field-inline" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.show_label">Afficher le nom</span></label>
-                <label class="field field-inline" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite." data-i18n-title="plugin.multiview.label_proportional_title"><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.label_proportional">Taille proportionnelle</span></label>
+                <label class="field field-inline" id="ed_show_label_row" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.show_label">Afficher le nom</span></label>
+                <label class="field field-inline" id="ed_label_proportional_row" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite." data-i18n-title="plugin.multiview.label_proportional_title"><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.label_proportional">Taille proportionnelle</span></label>
                 <div class="field field-narrow" id="ed_tsl_index_row"><label for="ed_tsl_index" data-i18n="plugin.multiview.tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
                 <div class="field field-narrow"><label for="ed_label_col" data-i18n="plugin.multiview.label_col">Colonne label</label><select id="ed_label_col" onchange="onEntryChange()"></select></div>
                 <div class="field field-narrow"><label for="ed_tally_level" data-i18n="plugin.multiview.tally_level">Niveau de Tally</label><select id="ed_tally_level" onchange="onEntryChange()"></select></div>
@@ -136,7 +137,7 @@
                 <div class="field field-narrow"><label for="ed_w" data-i18n="plugin.multiview.width">Largeur</label><input type="number" id="ed_w" onchange="onEntryGeomChange()"></div>
                 <div class="field field-narrow"><label for="ed_h" data-i18n="plugin.multiview.height">Hauteur</label><input type="number" id="ed_h" onchange="onEntryGeomChange()"></div>
             </div>
-            <div class="mw-editor-row mw-editor-row-divider">
+            <div class="mw-editor-row mw-editor-row-divider" id="ed_row_meters">
                 <div class="field"><label for="ed_meter_channels" data-i18n="plugin.multiview.meter">Peak meter</label><select id="ed_meter_channels" onchange="onEntryChange()"><option value="0" data-i18n="plugin.multiview.meter_off">Désactivé</option><option value="2">2 ch</option><option value="4">4 ch</option><option value="6">6 ch</option><option value="8">8 ch</option></select></div>
                 <div class="field"><label for="ed_meter_position" data-i18n="plugin.multiview.position">Position</label><select id="ed_meter_position" onchange="onEntryChange()"><option value="right" data-i18n="plugin.multiview.right">Droite</option><option value="left" data-i18n="plugin.multiview.left">Gauche</option></select></div>
                 <div class="field"><label for="ed_meter_inside" data-i18n="plugin.multiview.placement">Placement</label><select id="ed_meter_inside" onchange="onEntryChange()"><option value="0" data-i18n="plugin.multiview.outside">Hors image</option><option value="1" data-i18n="plugin.multiview.inside">Dans l'image</option></select></div>
@@ -146,7 +147,7 @@
             <!-- Métadonnées ANC incrustées SUR L'IMAGE de la cellule. Tout est décoché par
                  défaut : rien ne s'affiche tant que l'utilisateur ne choisit pas. Nécessite que
                  le port « ANC » de cette entrée soit câblé (page Câbles) — sinon « ANC -- ». -->
-            <div class="mw-editor-row mw-editor-row-divider">
+            <div class="mw-editor-row mw-editor-row-divider" id="ed_row_anc">
                 <div class="field field-wide"><label data-i18n="plugin.multiview.anc">Métadonnées ANC (sur l'image)</label>
                     <div class="mw-anc-flags">
                         <label class="ios-toggle"><input type="checkbox" id="ed_anc_types" onchange="onEntryChange()"><span></span><em data-i18n="plugin.multiview.anc_types">Types présents</em></label>
@@ -261,6 +262,9 @@
         <div class="row">
             <div class="field"><label for="ed_border_w" data-i18n="plugin.multiview.border_px">Bordure (px)</label><input type="number" id="ed_border_w" min="0" max="30" onchange="onGlobalChange()"></div>
             <div class="field field-color"><label for="ed_border_color" data-i18n="plugin.multiview.border_color">Couleur bordure</label><input type="color" id="ed_border_color" onchange="onGlobalChange()"></div>
+        </div>
+        <div class="row">
+            <div class="field"><label for="ed_default_template" title="Modèle de PiP appliqué par défaut à TOUTES les fenêtres du mur (héritage). Chaque fenêtre peut le surcharger (autre modèle ou habillage classique) dans son panneau." data-i18n="plugin.multiview.pip_default_template" data-i18n-title="plugin.multiview.pip_default_template_title">Modèle de PiP par défaut</label><select id="ed_default_template" onchange="onDefaultTemplateChange()"></select></div>
         </div>
         <div class="row">
             <div class="field"><label for="ed_frame_style" data-i18n="plugin.multiview.frame_style">Style de cadre</label><select id="ed_frame_style" onchange="onGlobalChange()"><option value="none" data-i18n="plugin.multiview.fs_none">Aucun (bordure simple)</option><option value="stylized" data-i18n="plugin.multiview.fs_stylized">Moniteur (bezel)</option><option value="classic" data-i18n="plugin.multiview.fs_classic">UMD broadcast</option><option value="tally_border" data-i18n="plugin.multiview.fs_tally">Cadre tally</option><option value="viewfinder" data-i18n="plugin.multiview.fs_viewfinder">Viseur (coins)</option><option value="flat" data-i18n="plugin.multiview.fs_flat">Flat (soulignement)</option></select></div>

@@ -29,6 +29,20 @@ globaux du composer : un badge apparaît en haut-gauche de chaque vignette — `
 `952×536 ✓` (taille sur-mesure, copie pure) ou `plein ↯` (source pleine, pas encore de proxy). La
 bascule est **à chaud**. Détail complet dans l'aide du plugin **Pyramide**.
 
+## Modèles de PiP
+
+L'habillage d'une fenêtre (nom/UMD, tally, VU-mètres, métadonnées ANC, horloge, texte, badge
+format) peut être remplacé par un **modèle de PiP** composé librement dans **Réglages → PiP** :
+chaque composant se place et se dimensionne par drag & drop, en coordonnées relatives — un même
+modèle sert à une tuile plein écran comme à une vignette. Les composants peuvent être
+**conditionnels** (visibles seulement sur tally rouge/vert, perte de signal, image figée…) et
+porter un seuil « masquer sous N px » pour rester lisibles sur les petites tuiles.
+
+L'affectation se fait fenêtre par fenêtre via le champ **Modèle de PiP** du panneau d'entrée
+(application à chaud, sans coupure). « Habillage classique » = comportement historique,
+strictement inchangé. Trois modèles d'usine (Production, Ingénierie, Minimal) servent de point
+de départ ; dupliquez-les pour les adapter.
+
 ## Layouts enregistrés
 
 Enregistrer une disposition (bouton « Enregistrer le layout ») pour la rappeler instantanément plus tard. Les layouts sont globaux (partagés entre instances).
