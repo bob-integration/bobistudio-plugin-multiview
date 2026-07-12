@@ -77,6 +77,12 @@ if CONFIG.get("force_cpu"):
 # OpenMP posés par bobimxl au chargement (env BOBI_MVK_THREADS, sinon cœurs physiques du
 # cpuset HT-aware). getattr : un bobimxl d'ancienne image n'a pas mvk_available.
 _MVK = (not GPU) and bool(getattr(bobimxl, "mvk_available", lambda: False)())
+# Gate HÔTE (par-appel) : certaines passes restent du numpy CPU MÊME sur un mur GPU — le
+# re-bake du chrome (rgba_to_yuv sur l'image PIL pleine trame, à chaque tally/statut) en tête.
+# Le gate global `not GPU` de _MVK les privait du kernel C (observé sur le 163 : ov_render
+# 5-7 ms de re-bakes en numpy pur). Les call-sites qui l'utilisent vérifient eux-mêmes que le
+# tableau est bien hôte (isinstance cupy) — le chemin VRAM garde ses kernels cupy.
+_MVK_HOST = bool(getattr(bobimxl, "mvk_available", lambda: False)())
 
 FLUX_CONFIG   = CONFIG.get("flux_config") or []
 SHM_OUT_NAME  = CONFIG.get("shm_out") or "mxl_mix"
@@ -658,7 +664,7 @@ def _rgba_to_yuv_xp(arr):
     """rgba_to_yuv pour un RGBA backend (xp) float32 — réplique rgba_to_yuv sans PIL (xp=np en CPU).
     Chemin CPU : conversion Y/U/V fusionnée en C (mvk ABI 2, image ≥ 0.12) quand disponible —
     bit-exact (mêmes expressions float32, .so compilé -ffp-contract=off) ; alpha reste numpy."""
-    if _MVK and not (GPU and isinstance(arr, cp.ndarray)):
+    if _MVK_HOST and not (GPU and isinstance(arr, cp.ndarray)):
         _got = getattr(bobimxl, "mvk_rgba2yuv", lambda *a: None)(
             np.ascontiguousarray(arr, dtype=np.float32), _NP_DT, _SCALE, _MAXV, _CW, _CH)
         if _got is not None:
@@ -949,7 +955,7 @@ def rgba_to_yuv(img):
     (mêmes expressions float32, -ffp-contract=off) ; l'alpha (uint8 brut) reste numpy.
     Gros bénéficiaire : le re-bake du chrome PLEINE TRAME à chaque bascule tally."""
     arr = np.array(img)
-    if _MVK:
+    if _MVK_HOST:   # gate HÔTE : arr vient de PIL, toujours numpy — mur GPU compris
         _got = getattr(bobimxl, "mvk_rgba2yuv", lambda *a: None)(
             arr, _NP_DT, _SCALE, _MAXV, _CW, _CH)
         if _got is not None:

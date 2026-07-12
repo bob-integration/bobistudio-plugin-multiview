@@ -1,7 +1,10 @@
 {
-  "version": "0.32.1",
+  "version": "0.32.2",
   "date": "2026-07-12",
   "changes": {
+    "Gate mvk HÔTE : le re-bake du chrome des murs GPU profite du kernel C (0.32.2)": [
+      "Le gate global _MVK (not GPU) privait les passes RESTÉES numpy hôte — le re-bake du chrome pleine trame (rgba_to_yuv sur l'image PIL, à chaque tally/statut) en tête — du kernel C sur les murs GPU (observé sur un mur T4 : ov_render 5-7 ms de re-bakes en numpy pur). Nouveau gate par-appel _MVK_HOST : rgba_to_yuv (toujours numpy hôte) et _rgba_to_yuv_xp (avec garde isinstance cupy) utilisent mvk_rgba2yuv dès que la lib est là, GPU ou pas ; le chemin VRAM garde ses kernels cupy."
+    ],
     "FIX redéploiement : les ports audio/ANC câblés survivent (0.32.1)": [
       "Un redéploiement depuis l'ÉDITEUR multiview perdait les ports suiveurs audio_path/anc_path posés par la page Câbles (liste blanche de sérialisation multiview.js — même classe de bug que les flags ANC d'avant 0.29.0, corrigée pour les flags mais pas pour les ports) → VU-mètres en ABSENCE et ANC vide dès que la dérivation _N était impossible (source sans suffixe, ex. avsync). Fix double : (1) multiview.js sérialise audio_path/anc_path verbatim (undefined = clé omise) ; (2) filet serveur hooks.before_deploy — ré-hydratation depuis la config persistée STRICTEMENT bornée : clé ABSENTE de l'entrée postée uniquement (une valeur posée, y compris \"\" = décâblage volontaire ou un autre flux choisi exprès, n'est JAMAIS remplacée) et path vidéo inchangé uniquement. Sémantique vérifiée par test (4 cas)."
     ],
