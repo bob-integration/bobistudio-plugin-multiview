@@ -1,7 +1,10 @@
 {
-  "version": "0.30.0",
+  "version": "0.30.1",
   "date": "2026-07-12",
   "changes": {
+    "Threads mvk = cœurs physiques réels (0.30.1)": [
+      "L'heuristique de threads OpenMP du kernel mvk (« affinité // 2 ») supposait un cpuset en paires HT ; un cpuset core_pool de logiques SANS sibling (ex. 19-21) tombait à 1 thread au lieu de 3 (gain multi-thread du placement perdu — observé sur le premier mur redéployé). bobimxl compte désormais les cœurs physiques réels de l'affinité via la topologie sysfs (physical_package_id + core_id), repli //2 si /sys illisible. Nouveau champ mvk_threads dans les métriques :8080."
+    ],
     "Compose CPU fusionné en C — kernel libbobi_mvk (0.30.0)": [
       "Le chemin CPU du compositing (placement des tuiles, blend du chrome, tuiles VU/horloges/ANC, placement de bande en mode tranche) passe par le kernel C fusionné libbobi_mvk de l'image bobi-compute ≥ 0.11 (bobimxl.mvk_*) : chaque opération = UNE passe mémoire au lieu des passes numpy chaînées (le compose est memory-bound — banc 2026-07-11 : 22,6 ms numpy soigné → 3,1 ms C mono-thread sur le kernel représentatif 3×3 1080p). OpenMP borné aux cœurs physiques du cpuset (BOBI_MVK_THREADS pour forcer).",
       "BIT-EXACT : mêmes formules d'indices nearest (calculées côté Python, passées au C) et même arithmétique entière que le numpy (selftest script_templates/mvk_selftest.py tout vert, déterminisme multi-thread inclus). Lib absente (vieille image) ou tableau non conforme → repli automatique sur le code numpy d'origine, inchangé. Le chemin GPU (ElementwiseKernel cupy) est intact ; force_cpu sur image GPU ≥ 0.3 profite aussi du kernel.",

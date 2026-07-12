@@ -731,6 +731,7 @@ TSL_SLOT_TTL_FACTOR = 2.5   # TTL = factor × intervalle keepalive mesuré
 TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
            "mvk": _MVK,                          # kernel compose fusionné C actif (chemin CPU)
+           "mvk_threads": (getattr(bobimxl, "mvk_threads", lambda: 0)() if _MVK else 0),
            "gpu": GPU, "gpu_name": _GPU_NAME,    # GPU = compositing accéléré cupy (sinon numpy CPU)
            "gpu_slice": GPU_SLICE,               # tranche VRAM active (opt-in gpu_slice, banc gate)
            "gpu_batch_bands": GPU_BATCH_BANDS if GPU_SLICE else None}}   # bandes/lot GPU (micro-batch)
