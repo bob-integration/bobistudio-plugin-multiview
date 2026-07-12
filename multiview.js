@@ -2304,6 +2304,14 @@ async function deployerEditor() {
 
     const flux_config = editorParams.flux_config.map(f => ({
         path: f.path,
+        // Ports SUIVEURS posés par la page Câbles (audio des VU / flux ANC) : sérialisés
+        // VERBATIM — même bug de liste blanche que les flags ANC d'avant 0.29.0, un
+        // redéploiement depuis l'éditeur les perdait (VU en ABSENCE, ANC vide, si la
+        // dérivation _N est impossible). `undefined` disparaît du JSON → une entrée qui
+        // n'a jamais eu la clé reste sans la clé (le hook serveur peut ré-hydrater) ;
+        // une valeur posée, Y COMPRIS "" (décâblage volontaire), est préservée telle quelle.
+        audio_path: f.audio_path,
+        anc_path: f.anc_path,
         hidden: !!f.hidden,
         label_source: f.label_source || 'hostname',
         name: computeDisplayName(f),

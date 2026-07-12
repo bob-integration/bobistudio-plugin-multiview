@@ -137,6 +137,38 @@ def before_deploy(params, context):
                 params["fps"]        = fmt["fps"]
                 params["scan"]       = fmt.get("scan", "p")
 
+    # 2bis. FILET ports suiveurs (audio_path/anc_path, posés par la page Câbles) : un front
+    #    qui reconstruit flux_config sans ces clés (classe de bug déjà vue : flags ANC avant
+    #    0.29.0, puis les PORTS eux-mêmes jusqu'à multiview.js 0.32.1) les perdait au
+    #    redéploiement → VU en ABSENCE / ANC vide dès que la dérivation _N est impossible.
+    #    Ré-hydratation depuis la config PERSISTÉE, STRICTEMENT bornée : uniquement si la clé
+    #    est ABSENTE de l'entrée postée (une valeur posée — y compris "" = décâblage
+    #    VOLONTAIRE, ou un autre flux choisi exprès — n'est JAMAIS remplacée), et uniquement
+    #    si le path VIDÉO de l'entrée n'a pas changé (nouvelle source = suiveurs re-dérivés
+    #    par le câblage, pas par ce filet).
+    try:
+        _vmid = context.get("vmid")
+        if _vmid:
+            import json as _json
+            from app.database import db_get_container as _dgc
+            _row = _dgc(_vmid) or {}
+            _dc = _row.get("deploy_config")
+            _dc = _json.loads(_dc) if isinstance(_dc, str) else (_dc or {})
+            if _dc.get("type") == "multiview":
+                _old = (_dc.get("params") or {}).get("flux_config") or []
+                _new = params.get("flux_config") or []
+                for _i, _e in enumerate(_new):
+                    if not isinstance(_e, dict) or _i >= len(_old):
+                        continue
+                    _o = _old[_i] if isinstance(_old[_i], dict) else {}
+                    if (_e.get("path") or "") != (_o.get("path") or ""):
+                        continue
+                    for _k in ("audio_path", "anc_path"):
+                        if _k not in _e and _k in _o:
+                            _e[_k] = _o[_k]
+    except Exception:
+        pass   # filet best-effort : ne jamais bloquer un déploiement
+
     # 3. Banque d'entrées : flux_config paddée à max_inputs entrées à indices STABLES
     #    (slot de câblage = tally = Ember). Les entrées au-delà des PiP affichés sont
     #    masquées (hidden) mais restent câblables — supprimer un PiP ne coupe plus la

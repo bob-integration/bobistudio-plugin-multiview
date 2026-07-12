@@ -1,7 +1,10 @@
 {
-  "version": "0.32.0",
+  "version": "0.32.1",
   "date": "2026-07-12",
   "changes": {
+    "FIX redéploiement : les ports audio/ANC câblés survivent (0.32.1)": [
+      "Un redéploiement depuis l'ÉDITEUR multiview perdait les ports suiveurs audio_path/anc_path posés par la page Câbles (liste blanche de sérialisation multiview.js — même classe de bug que les flags ANC d'avant 0.29.0, corrigée pour les flags mais pas pour les ports) → VU-mètres en ABSENCE et ANC vide dès que la dérivation _N était impossible (source sans suffixe, ex. avsync). Fix double : (1) multiview.js sérialise audio_path/anc_path verbatim (undefined = clé omise) ; (2) filet serveur hooks.before_deploy — ré-hydratation depuis la config persistée STRICTEMENT bornée : clé ABSENTE de l'entrée postée uniquement (une valeur posée, y compris \"\" = décâblage volontaire ou un autre flux choisi exprès, n'est JAMAIS remplacée) et path vidéo inchangé uniquement. Sémantique vérifiée par test (4 cas)."
+    ],
     "Conversion RGBA→YUV fusionnée en C (0.32.0, image ≥ 0.12)": [
       "rgba_to_yuv (chemin PIL : bake du chrome pleine trame à chaque tally, tuiles horloges/ANC) et _rgba_to_yuv_xp (tuiles VU, chemin CPU) délèguent les plans Y/U/V à mvk_rgba2yuv (ABI 2) : 1 passe C au lieu de ~15 passes numpy. Alpha inchangé (numpy). Bit-exact prouvé (36 combinaisons u8/f32 × 8/10 bits × chromas × tailles, threads 1≡4) ; image 0.11 ou lib absente → repli numpy verbatim."
     ],
