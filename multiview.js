@@ -648,8 +648,24 @@ async function loadPipTemplates() {
 
 function mwResolveTemplate(ref) {
     const tp = mwPipTemplates.find(x => String(x.id) === String(ref));
-    return tp ? { name: tp.name,
-                  components: JSON.parse(JSON.stringify((tp.config || {}).components || [])) } : null;
+    if (!tp) return null;
+    const out = { name: tp.name,
+                  components: JSON.parse(JSON.stringify((tp.config || {}).components || [])) };
+    // Format LIBRE du modèle (éditeur PiP) : ratio L/H de la cellule cible. Absent = 16:9
+    // implicite (modèles historiques). Embarqué avec le modèle → suit dans deploy_config
+    // (le moteur l'ignore : les composants restent relatifs au rect de la tuile).
+    const a = parseFloat((tp.config || {}).aspect);
+    if (a > 0.1 && a < 10) out.aspect = a;
+    return out;
+}
+
+// Aspect du MODÈLE EFFECTIF d'une fenêtre (explicite sinon défaut du mur), ou 0 si le modèle
+// n'en déclare pas (16:9 implicite / habillage Classique) — le tuilage (remplir) et le snap
+// d'affectation s'en servent pour donner à la tuile le ratio natif de son habillage.
+function mwTemplateAspect(f) {
+    const t = mwEffectiveTemplate(f);
+    const a = t ? parseFloat(t.aspect) : 0;
+    return (a > 0.1 && a < 10) ? a : 0;
 }
 
 // HÉRITAGE : modèle EFFECTIF d'une fenêtre = son modèle explicite, sinon le modèle PAR DÉFAUT
@@ -858,6 +874,21 @@ function onEntryChange() {
             // '' = hériter du mur (défaut, sinon « Classique » généré) ; sinon id bibliothèque.
             f.template_ref = ref;
             f.template = ref ? (mwResolveTemplate(ref) || f.template) : null;
+            // Modèle à format LIBRE : la tuile prend le ratio natif de l'habillage (hauteur
+            // recalculée depuis la largeur, paire, clampée) — sinon la vidéo 16:9 interne
+            // serait déformée/letterboxée. Uniquement à l'AFFECTATION explicite : on ne touche
+            // jamais la géométrie des autres tuiles.
+            const _ta = mwTemplateAspect(f);
+            if (_ta && f.w > 0) {
+                const out_h = editorParams.out_height;
+                let nh = Math.max(2, Math.round(f.w / _ta) & ~1);
+                if (f.y + nh > out_h) {
+                    nh = Math.max(2, (out_h - f.y) & ~1);
+                    f.w = Math.max(2, Math.round(nh * _ta) & ~1);   // déborde → réduit à ratio constant
+                }
+                f.h = nh;
+                f.ratio = _ta;   // le resize à la poignée conserve ce ratio
+            }
             refreshEntryPanel();   // re-masque/affiche les réglages du repli Classique
         }
     }
@@ -2241,9 +2272,12 @@ function remplir(axis) {
     const n = items.length;
     const evDim = v => Math.max(2, Math.round(v) & ~1);   // dimension paire ≥ 2
     const evPos = v => Math.max(0, Math.round(v) & ~1);   // position paire ≥ 0
-    const ratioOf = f => (f.ratio && f.ratio > 0) ? f.ratio
+    // Ratio d'une tuile : aspect du modèle de PiP effectif (format libre) prioritaire,
+    // sinon ratio source / géométrie courante (historique).
+    const ratioOf = f => mwTemplateAspect(f)
+                       || ((f.ratio && f.ratio > 0) ? f.ratio
                        : (f.in_w && f.in_h) ? f.in_w / f.in_h
-                       : (f.h ? f.w / f.h : 16 / 9);
+                       : (f.h ? f.w / f.h : 16 / 9));
     if (axis === 'h') {
         items.sort((a, b) => a.x - b.x);
         const colW = Math.max(2, Math.floor(out_w / n) & ~1);

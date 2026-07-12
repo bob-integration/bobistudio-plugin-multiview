@@ -1,7 +1,11 @@
 {
-  "version": "0.33.0",
+  "version": "0.34.0",
   "date": "2026-07-13",
   "changes": {
+    "Modèles de PiP à FORMAT LIBRE (0.34.0)": [
+      "Un modèle peut déclarer son propre ratio L:H (`config.aspect`, absent = 16:9 historique) : l'éditeur PiP (Réglages → PiP) gagne un champ « Format du modèle » + un bouton « Rogner l'espace inutilisé » qui supprime le vide sur les 4 côtés (bbox des composants → renormalisation + nouvel aspect). La fenêtre vidéo reste verrouillée 16:9 en PIXELS quel que soit le format (couplage W/H = aspect/(16:9)).",
+      "Composer : affecter un modèle à format libre à une tuile SNAPE sa hauteur au ratio natif de l'habillage (à l'affectation explicite uniquement — les autres tuiles ne bougent pas) ; « Remplir » utilise l'aspect du modèle effectif en priorité. Moteur INCHANGÉ : les composants restent relatifs au rect de la tuile (l'aspect embarqué dans template est ignoré au rendu)."
+    ],
     "L'habillage de mur vit dans les MODÈLES DE PIP — chrome legacy SUPPRIMÉ (0.33.0)": [
       "Le cadre est une propriété `border` du composant video du modèle : fixed | tally | classic (cadre fin neutre) | stylized (bezel moniteur) | viewfinder (équerres) | flat (soulignement) — dessiné sur le rectangle IMAGE réel (letterbox compris), vers l'intérieur.",
       "Les réglages GLOBAUX de mur border_w/border_color/overlay_below/label_size/frame_style/show_format sont retirés (script, /style, deploy_defaults, config_schema) : « texte sous l'image » = un layout de modèle (video réduite + umd dessous), le chip format = le composant `format`.",
