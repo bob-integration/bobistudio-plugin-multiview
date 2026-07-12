@@ -3201,6 +3201,10 @@ while True:
             time.sleep(wait)
 
     ts_cycle_start = time.time_ns()   # début du compositing (après l'attente de grille) → own_latency
+    # Diagnostic grain tardif (chantier tissu slice) : retard du TICK lui-même (la boucle a raté
+    # sa grille — la pause est ARRIVÉE AVANT le cycle) vs frame LENTE (le cycle a coûté trop cher
+    # — la pause est DANS le cycle). Journalisé plus bas (FRAME LENTE, throttlé).
+    _tick_late_ms = (ts_cycle_start / 1e9 - next_frame_time) * 1000.0 if GENLOCK else 0.0
     # FLOW : index d'epoch CIBLE de cette trame (grille TAI) — les tuiles visent le grain fi_out
     # de LEUR source et la sortie est écrite à ce même index (alignement inter-étages du tissu).
     # _next_index en mode tai = lecture pure de la grille (aucun effet de bord).
@@ -3537,6 +3541,23 @@ while True:
     # EXCLUES — le tissu (décisions de sharding) et le monitoring y lisent la saturation du
     # worker, pas la période de la source (même contrat que la pyramide / cap réactif).
     own_lat.push((ts_out - ts_cycle_start - _sl_waited) / 1e6)
+    # Diagnostic FRAME LENTE (grain tardif) : attribue une pause > seuil au bon SEGMENT du cycle
+    # (tick raté avant le cycle / gather des entrées / habillage / écriture sortie / attentes
+    # get_slice). Throttlé à 1 ligne/s pour ne pas inonder le log docker.
+    _own_ms_dbg = (ts_out - ts_cycle_start - _sl_waited) / 1e6
+    if _own_ms_dbg > 15.0 or _tick_late_ms > 10.0:
+        _nowd = time.time()
+        if _nowd - globals().get('_last_slow_log', 0.0) > 1.0:
+            globals()['_last_slow_log'] = _nowd
+            try:
+                _seg_in = (_t_after_inputs - ts_cycle_start) / 1e6
+                _seg_ov = (_t_after_overlays - _t_after_inputs) / 1e6
+                _seg_out = (ts_out - _t_after_overlays) / 1e6
+            except Exception:
+                _seg_in = _seg_ov = _seg_out = -1.0
+            print(f"multiview: FRAME LENTE own={{_own_ms_dbg:.1f}}ms tick_late={{_tick_late_ms:.1f}}ms "
+                  f"inputs={{_seg_in:.1f}} overlays={{_seg_ov:.1f}} output={{_seg_out:.1f}} "
+                  f"waited={{_sl_waited / 1e6:.1f}} fi={{out_frame_index}}")
     out_frame_index += 1
     if GENLOCK:
         next_frame_time += FRAME_INTERVAL
