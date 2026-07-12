@@ -219,6 +219,9 @@ SLICE_LINES = int(CONFIG.get("slice_lines") or 36)
 # — le banc Phase 0 a montré que des transferts fins mal faits font RÉGRESSER le GPU. Sans le flag,
 # comportement inchangé : GPU ⇒ whole-frame (upload groupé), le repli documenté TISSU_SLICE.md §4.
 GPU_SLICE_REQ = _as_bool(CONFIG.get("gpu_slice", False))
+# Repli lot PIL (0.31.0) : `meters_pil=true` restaure le rendu PIL par-trame HISTORIQUE des
+# VU-mètres (avant 0.31.0 le chemin tuile — statique caché + barres peintes — était GPU-only).
+METERS_PIL = _as_bool(CONFIG.get("meters_pil", False))
 SLICE_ON = (SLICE_MODE and (not GPU or GPU_SLICE_REQ) and not _PORTRAIT
             and SLICE_LINES > 0 and OUT_HEIGHT % SLICE_LINES == 0 and SLICE_LINES % _CH == 0)
 GPU_SLICE = GPU and SLICE_ON      # chemin tranche VRAM actif (exige GPU + flag + éligibilité)
@@ -1758,12 +1761,16 @@ def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status,
     if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - (by1 - by0) % _CH))
     if bx1 <= bx0 or by1 <= by0:
         return
-    if GPU:
-        # Chemin GPU : statique caché en VRAM + barres composées en RGBA (xp), aucune PIL par trame.
+    if not METERS_PIL:
+        # Chemin TUILE (défaut CPU **ET** GPU depuis 0.31.0 — lot PIL) : statique (fond/
+        # graduations/labels) rendu PIL UNE fois puis caché résident backend, barres+peak-hold
+        # PEINTS par trame en RGBA (xp), conversion _rgba_to_yuv_xp — AUCUNE PIL par trame.
+        # Prouvé pixel-identique au chemin PIL (max|Δ|=0, validation 0.20.0 re-jouée en 0.31.0).
         oy, ou, ov, oa, oa2 = _meter_tile_gpu(bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, n,
                                               peaks, holds, scale, opacity_pct, ch0)
     else:
-        # Chemin CPU ÉPROUVÉ — INCHANGÉ (PIL par trame). Ne pas modifier (garantie 'sans GPU identique').
+        # Repli `meters_pil` : chemin PIL historique VERBATIM (redéployer avec meters_pil=true
+        # restaure le comportement d'avant 0.31.0 à l'identique en cas de doute sur un mur).
         tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
         _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds, scale, opacity_pct, ch0)
         oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)

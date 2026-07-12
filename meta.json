@@ -1,7 +1,12 @@
 {
-  "version": "0.30.1",
+  "version": "0.31.0",
   "date": "2026-07-12",
   "changes": {
+    "Lot PIL : VU-mètres CPU sans PIL par-trame (0.31.0)": [
+      "Le chemin CPU des VU-mètres passe sur la machinerie tuile introduite en 0.20.0 pour le GPU (backend-agnostique) : statique (fond/graduations dB/nos de canaux) rendu PIL UNE fois et caché, barres + peak-hold PEINTS par trame en opérations tableau, conversion _rgba_to_yuv_xp. Plus aucune rastérisation PIL par trame (~1-2 ms/meter économisés).",
+      "Équivalence pixel RE-PROUVÉE avant bascule : max|Δ|=0 sur Y/U/V/alpha, 24 cas (8 bits 4:2:0 et 10 bits 4:2:2 × n=2/4/8 canaux × échelles dbfs/ppm × opacités 60/100).",
+      "Repli : redéployer avec meters_pil=true restaure le chemin PIL historique verbatim (l'exigence « CPU verbatim » de 0.20.0 est levée par cette validation + ce repli)."
+    ],
     "Threads mvk = cœurs physiques réels (0.30.1)": [
       "L'heuristique de threads OpenMP du kernel mvk (« affinité // 2 ») supposait un cpuset en paires HT ; un cpuset core_pool de logiques SANS sibling (ex. 19-21) tombait à 1 thread au lieu de 3 (gain multi-thread du placement perdu — observé sur le premier mur redéployé). bobimxl compte désormais les cœurs physiques réels de l'affinité via la topologie sysfs (physical_package_id + core_id), repli //2 si /sys illisible. Nouveau champ mvk_threads dans les métriques :8080."
     ],
