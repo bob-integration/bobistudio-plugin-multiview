@@ -1,7 +1,10 @@
 {
-  "version": "0.27.2",
+  "version": "0.27.3",
   "date": "2026-07-12",
   "changes": {
+    "Masquage UI mode tranche (0.27.3)": [
+      "Clés du mode tranche (cadence, slice_mode, slice_lines, gpu_slice, gpu_batch_bands) marquées hidden:true dans le config_schema : plus rendues dans la palette ni le panneau ⚙ — pilotage par le réglage global Réglages → Vidéo « Mode tranche » (slice_mode_global). Les clés restent dans le schéma : coercion, déploiement et API inchangés."
+    ],
     "Réglages mode tranche (0.27.1)": [
       "Exposition des réglages du mode tranche dans le panneau ⚙ Réglages et la palette (config_schema, scope system) : cadence, slice_mode, slice_lines, gpu_slice, gpu_batch_bands. Schéma/UI seulement — aucun changement de comportement du script."
     ],
