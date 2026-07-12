@@ -143,6 +143,24 @@
                 <div class="field field-narrow"><label for="ed_meter_opacity" data-i18n="plugin.multiview.opacity">Opacité</label><input type="number" id="ed_meter_opacity" min="10" max="100" onchange="onEntryChange()"></div>
                 <div class="field"><label for="ed_meter_scale" data-i18n="plugin.multiview.scale">Graduation</label><select id="ed_meter_scale" onchange="onEntryChange()"><option value="dbfs">dBFS</option><option value="ppm">EBU PPM</option></select></div>
             </div>
+            <!-- Métadonnées ANC incrustées SUR L'IMAGE de la cellule. Tout est décoché par
+                 défaut : rien ne s'affiche tant que l'utilisateur ne choisit pas. Nécessite que
+                 le port « ANC » de cette entrée soit câblé (page Câbles) — sinon « ANC -- ». -->
+            <div class="mw-editor-row mw-editor-row-divider">
+                <div class="field field-wide"><label data-i18n="plugin.multiview.anc">Métadonnées ANC (sur l'image)</label>
+                    <div class="mw-anc-flags">
+                        <label class="ios-toggle"><input type="checkbox" id="ed_anc_types" onchange="onEntryChange()"><span></span><em data-i18n="plugin.multiview.anc_types">Types présents</em></label>
+                        <label class="ios-toggle"><input type="checkbox" id="ed_anc_tc" onchange="onEntryChange()"><span></span><em data-i18n="plugin.multiview.anc_tc">Timecode</em></label>
+                        <label class="ios-toggle"><input type="checkbox" id="ed_anc_cc" onchange="onEntryChange()"><span></span><em data-i18n="plugin.multiview.anc_cc">Sous-titres</em></label>
+                        <label class="ios-toggle"><input type="checkbox" id="ed_anc_afd" onchange="onEntryChange()"><span></span><em data-i18n="plugin.multiview.anc_afd">AFD</em></label>
+                        <label class="ios-toggle"><input type="checkbox" id="ed_anc_st352" onchange="onEntryChange()"><span></span><em data-i18n="plugin.multiview.anc_st352">Format signalé</em></label>
+                        <label class="ios-toggle"><input type="checkbox" id="ed_anc_scte" onchange="onEntryChange()"><span></span><em data-i18n="plugin.multiview.anc_scte">SCTE-104</em></label>
+                        <label class="ios-toggle"><input type="checkbox" id="ed_anc_crc" onchange="onEntryChange()"><span></span><em data-i18n="plugin.multiview.anc_crc">Erreurs checksum</em></label>
+                    </div>
+                </div>
+                <div class="field"><label for="ed_anc_position" data-i18n="plugin.multiview.position">Position</label><select id="ed_anc_position" onchange="onEntryChange()"><option value="bottom" data-i18n="plugin.multiview.bottom">Bas</option><option value="top" data-i18n="plugin.multiview.top">Haut</option></select></div>
+                <div class="field field-narrow"><label for="ed_anc_opacity" data-i18n="plugin.multiview.opacity">Opacité</label><input type="number" id="ed_anc_opacity" min="0" max="100" onchange="onEntryChange()"></div>
+            </div>
         </div>
         <div id="ed_overlay_panel" class="mw-entry-panel" hidden>
             <div class="mw-overlay-head">

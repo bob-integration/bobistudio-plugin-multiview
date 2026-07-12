@@ -1,7 +1,13 @@
 {
-  "version": "0.27.5",
+  "version": "0.28.0",
   "date": "2026-07-12",
   "changes": {
+    "Métadonnées ANC dans la cellule + port ANC par entrée (0.28.0)": [
+      "Chaque entrée vidéo a désormais SON port ANC câblable (page Câbles, essence data, libellé « ANC N ») au lieu d'une dérivation implicite du nom du shm vidéo. Repli automatique sur l'ancienne dérivation si rien n'est câblé → les murs existants continuent de marcher sans rien changer.",
+      "Nouvelles informations ANC incrustables SUR L'IMAGE de chaque cellule, à la manière des VU-mètres — TOUT EST OPT-IN, case par case et fenêtre par fenêtre (rien n'est affiché par défaut, une cellule sans case cochée ne coûte rien) : types de métadonnées réellement portés (ATC, CC/708, AFD, ST 352, SCTE-104…), timecode embarqué, sous-titres (texte CEA-608 si décodable, sinon présence), AFD (format d'image actif), format DÉCLARÉ par le signal (ST 352 — à confronter au SDP), déclencheur SCTE-104, et nombre de paquets au CHECKSUM INVALIDE (métadonnée corrompue en transit, affiché en rouge). Position (haut/bas) et opacité réglables.",
+      "GET :8080/anc : inventaire ANC par entrée (types portés, erreurs de checksum, timecode) — diagnostic pur, n'incruste rien à l'image.",
+      "Le décodage d'un grain est mis en cache par index de grain : plusieurs informations affichées sur la même cellule ne le paient qu'une fois par trame. Le bandeau réutilise le cache par signature des horloges (rendu PIL/YUV seulement au changement de valeur, blend par petite bbox)."
+    ],
     "ANC RFC 8331 (0.27.5)": [
       "Le décodage du timecode ANC (horloge source RP188) passe par bobimxl.anc_unpack, aiguillé sur le bobi_anc_format du producteur (lu une fois à l'ouverture du flux) → flotte mixte gérée."
     ],

@@ -610,6 +610,9 @@ function resizeCanvas() {
 // tally = Ember). Un PiP est une entrée non masquée (hidden) ; retirer un PiP de
 // l'image NE COUPE PAS sa source. Miroir de hooks.pad_input_bank côté orchestrateur.
 
+// Métadonnées ANC affichables sur l'image d'une cellule (miroir de ANC_FIELDS, script.py).
+const ANC_FLAGS = ['anc_types', 'anc_tc', 'anc_cc', 'anc_afd', 'anc_st352', 'anc_scte', 'anc_crc'];
+
 function newEntry(idx, hidden) {
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
@@ -636,6 +639,17 @@ function newEntry(idx, hidden) {
         meter_inside: false,         // false = à côté (réduit la vidéo), true = overlay
         meter_opacity: 70,           // 10..100 (utilisé si inside=true)
         meter_scale: 'dbfs',         // dbfs | ppm (EBU)
+        // Métadonnées ANC incrustées sur l'image de la cellule — TOUT À FALSE par défaut :
+        // rien ne s'affiche tant que l'utilisateur n'a rien coché (port ANC à câbler par ailleurs).
+        anc_types: false,            // inventaire des métadonnées portées (ATC, CC/708, AFD…)
+        anc_tc: false,               // timecode embarqué (ATC RP 188)
+        anc_cc: false,               // sous-titres (texte CEA-608 si décodable, sinon présence)
+        anc_afd: false,              // format d'image actif (ST 2016-3)
+        anc_st352: false,            // format DÉCLARÉ par le signal (ST 352)
+        anc_scte: false,             // déclencheur SCTE-104
+        anc_crc: false,              // paquets au checksum invalide (métadonnée corrompue)
+        anc_position: 'bottom',      // bottom | top
+        anc_opacity: 60,             // 0..100 (fond du bandeau)
     };
 }
 
@@ -753,6 +767,10 @@ function refreshEntryPanel() {
     document.getElementById('ed_meter_inside').value   = (f.meter_inside ? '1' : '0');
     document.getElementById('ed_meter_opacity').value  = f.meter_opacity ?? 70;
     document.getElementById('ed_meter_scale').value    = f.meter_scale || 'dbfs';
+    // Métadonnées ANC (par fenêtre)
+    ANC_FLAGS.forEach(k => { document.getElementById('ed_' + k).checked = !!f[k]; });
+    document.getElementById('ed_anc_position').value = f.anc_position || 'bottom';
+    document.getElementById('ed_anc_opacity').value  = f.anc_opacity ?? 60;
 
     // Re-peuple la dropdown source pour cette entrée
     const pathSel = document.getElementById('ed_path');
@@ -792,6 +810,9 @@ function onEntryChange() {
     f.meter_inside   = document.getElementById('ed_meter_inside').value === '1';
     f.meter_opacity  = Math.max(10, Math.min(100, parseInt(document.getElementById('ed_meter_opacity').value) || 70));
     f.meter_scale    = document.getElementById('ed_meter_scale').value || 'dbfs';
+    ANC_FLAGS.forEach(k => { f[k] = document.getElementById('ed_' + k).checked; });
+    f.anc_position   = document.getElementById('ed_anc_position').value || 'bottom';
+    f.anc_opacity    = Math.max(0, Math.min(100, parseInt(document.getElementById('ed_anc_opacity').value) || 60));
     dessiner();
     hotApplyWindow(primary);
 }
@@ -819,7 +840,8 @@ function onEntryGeomChange() {
 // sélectionnées en une fois.
 const COPY_FIELDS = ['w', 'h', 'label_source', 'show_label', 'show_tally', 'label_proportional', 'tsl_index',
     'label_col', 'tally_level', 'tally_red', 'tally_green',
-    'meter_channels', 'meter_position', 'meter_inside', 'meter_opacity', 'meter_scale'];
+    'meter_channels', 'meter_position', 'meter_inside', 'meter_opacity', 'meter_scale',
+    ...ANC_FLAGS, 'anc_position', 'anc_opacity'];
 let reglagesClipboard = null;
 
 function mwFlash(msg) {

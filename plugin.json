@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.27.5",
+  "version": "0.28.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -297,6 +297,16 @@
         ],
         "existing_only": true,
         "input_key": "idx"
+      },
+      {
+        "from_list": "flux_config",
+        "essence": "data",
+        "shm_field": "anc_path",
+        "shm_prefix": "/dev/shm/",
+        "existing_only": true,
+        "input_key": "idx",
+        "optional": true,
+        "label": "ANC {i1}"
       }
     ],
     "mode": "hot-wire",

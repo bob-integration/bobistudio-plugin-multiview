@@ -748,6 +748,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/tally":
             self._send_json(tally_state)
+        elif self.path == "/anc":
+            # Inventaire ANC par entrée (DIAGNOSTIC — n'incruste RIEN à l'image) : ce que chaque
+            # source transporte réellement, ses erreurs de checksum, son timecode.
+            try:
+                self._send_json(_anc_report())
+            except Exception as e:
+                self._send_json({{"error": str(e)}})
         elif self.path == "/tsl_debug":
             self._send_json({{**tsl_debug,
                               "tally_state": dict(tally_state),
@@ -1656,6 +1663,54 @@ def render_meters(now):
     return tiles or None
 
 
+# ─── Bandeau ANC dans la cellule (opt-in par fenêtre, comme les VU-mètres) ───
+# Rien n'est dessiné tant que l'utilisateur n'a coché aucune information ANC sur la fenêtre.
+# Le texte change rarement (types/AFD/ST352) ou à la trame (timecode/sous-titres) → le rendu
+# PIL+YUV est gaté par SIGNATURE (comme les horloges) ; seul le blend par petite bbox est
+# per-frame. Défini APRÈS _format_anc_cell (qui vit avec les helpers ANC, plus bas) : appelé
+# depuis la boucle, jamais à l'import.
+def render_anc_tiles(now):
+    """Une tuile YUV par cellule ayant au moins une information ANC cochée, ou None."""
+    tiles = []
+    for i, cfg in enumerate(FLUX_CONFIG):
+        if cfg.get("hidden") or not _anc_enabled(cfg):
+            continue
+        txt = _format_anc_cell(i, cfg)
+        if not txt:
+            continue
+        g = _video_rect(cfg)
+        vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]     # DANS l'image, pas l'habillage
+        size = max(10, min(28, vh // 18))
+        fnt = _font(size)
+        pad = 4
+        bh = size + 2 * pad
+        # Position : « bottom » (défaut) = bas de l'image, « top » = haut.
+        by = (vy + vh - bh) if (cfg.get("anc_position") or "bottom") != "top" else vy
+        bx0, by0 = max(0, vx), max(0, by)
+        bx1, by1 = min(OUT_WIDTH, vx + vw), min(OUT_HEIGHT, by + bh)
+        bx0 -= bx0 % _CW; by0 -= by0 % _CH
+        if (bx1 - bx0) % _CW: bx1 = min(OUT_WIDTH, bx1 + (_CW - (bx1 - bx0) % _CW))
+        if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - (by1 - by0) % _CH))
+        if bx1 <= bx0 or by1 <= by0:
+            continue
+        a_bg = max(0, min(100, int(cfg.get("anc_opacity") or 60))) * 255 // 100
+        tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
+        d = ImageDraw.Draw(tile, "RGBA")
+        d.rectangle([0, 0, bx1 - bx0 - 1, by1 - by0 - 1], fill=(0, 0, 0, a_bg))
+        # Un checksum invalide = métadonnée corrompue → texte en rouge (signal d'alarme).
+        bad = "CRC!" in txt
+        d.text((pad, pad), txt, font=fnt,
+               fill=(255, 90, 90, 255) if bad else (235, 235, 235, 255))
+        oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
+        tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
+    return tiles or None
+
+def _anc_sig():
+    """Signature des bandeaux ANC (gate du re-rendu PIL/YUV) — vide si aucune cellule n'en veut."""
+    return tuple(_format_anc_cell(i, cfg) for i, cfg in enumerate(FLUX_CONFIG)
+                 if (not cfg.get("hidden")) and _anc_enabled(cfg))
+
+
 # ─── Couche « info » : NO SIGNAL / FREEZE / format source ────────────────────
 # Cachée par signature (statuts + textes) : le coût PIL n'est payé qu'aux
 # transitions d'état, pas par frame. Posée SOUS l'habillage (bordure, labels et
@@ -2102,13 +2157,17 @@ def _countdown_color(ov, now):
         return _overlay_get(ov, "cd_color_orange", "#ff9000") or "#ff9000"
     return None
 
-# ── Horloge source ANC : timecode embarqué (RP188/ATC) lu du flux ANC (2110-40) ──
+# ── ANC par entrée : timecode ET métadonnées (sous-titres, AFD, ST 352, SCTE-104) ──
 # MXL-aligné : l'ANC est un FLUX DE DONNÉES séparé (futur ST 2038), pas un champ de l'en-tête
-# vidéo. On dérive le shm ANC de l'entrée vidéo (miroir des VU-mètres) et on décode le RP188
-# côté consommateur. Le CODAGE du grain est celui annoncé par le producteur dans son flowDef
-# (`bobi_anc_format`) : RFC 8331 (normatif) ou l'ancien format maison → `bobimxl.anc_unpack`
-# aiguille seul, donc un producteur pas encore migré reste lisible (flotte MIXTE).
-anc_states = {{}}   # flux_idx → {{"for_path", "state": {{shm_f, shm, path}}|None}}
+# vidéo. Chaque entrée vidéo a SON port ANC câblable (`anc_path` de flux_config, essence `data`
+# de la page Câbles). REPLI historique : si rien n'est câblé, on dérive le shm ANC du chemin
+# vidéo (`/dev/shm/mtl_0` → `/dev/shm/mtl_anc_0`) — les murs existants continuent de marcher.
+# Le CODAGE du grain est celui annoncé par le producteur (`bobi_anc_format` du flowDef) :
+# RFC 8331 (normatif) ou l'ancien format maison → `bobimxl.anc_unpack` aiguille seul (flotte MIXTE).
+#
+# TOUT AFFICHAGE EST OPT-IN : rien n'apparaît tant que l'utilisateur n'a pas ajouté une
+# incrustation de type « anc » et coché les informations qu'il veut voir (cf. _format_anc).
+anc_states = {{}}   # flux_idx → {{"for_path", "state": {{reader, path, flow_def}}|None}}
 
 def _derive_anc_shm_path(video_path):
     """`/dev/shm/mtl_0` → `/dev/shm/mtl_anc_0` (miroir 2110_io hooks._derive_anc_shm)."""
@@ -2117,49 +2176,142 @@ def _derive_anc_shm_path(video_path):
         return f"{{m.group(1)}}_anc_{{m.group(2)}}"
     return None
 
-def _open_anc_state(video_path):
-    p = _derive_anc_shm_path(video_path)
-    if not p:
-        return None
-    try:
-        name = p.removeprefix("/dev/shm/")
-        rd = bobimxl.Reader(inst, name)         # flux ANC data MXL (lève si absent)
-        # Codage annoncé par le producteur — lu UNE fois à l'ouverture (le flowDef est immuable).
-        return {{"reader": rd, "path": p, "flow_def": inst.flow_def(name)}}
-    except Exception:
-        return None
-
-def _decode_anc_tc(reader, flow_def=None):
-    """Dernier grain ANC (flux MXL data) → ATC RP188 (DID/SDID 0x60) → (hh,mm,ss,ff,df).
-    Le décodeur est choisi d'après le `bobi_anc_format` du producteur (RFC 8331 ou legacy)."""
-    try:
-        got = reader.get_latest()
-        if got is None:
-            return None
-        return bobimxl.anc_atc_decode(bobimxl.anc_unpack(bytes(got[2]), flow_def))
-    except Exception:
-        return None
-
-def _anc_tc_for(ov):
-    """(hh,mm,ss,ff,df) de l'entrée vidéo référencée par l'horloge ANC (tc_source), ou None."""
-    try:
-        idx = int(ov.get("tc_source") or 0)
-    except (TypeError, ValueError):
-        return None
+def _anc_path_for(idx):
+    """Chemin du flux ANC de l'entrée `idx` : le port CÂBLÉ (`anc_path`) sinon la dérivation
+    historique depuis la vidéo. Renvoie ("" si aucun)."""
     with state_lock:
         cfg = FLUX_CONFIG[idx] if 0 <= idx < len(FLUX_CONFIG) else None
-        vpath = (cfg.get("path") or "") if cfg else ""
+        if not cfg:
+            return ""
+        wired = (cfg.get("anc_path") or "").strip()
+        vpath = cfg.get("path") or ""
+    return wired or (_derive_anc_shm_path(vpath) or "") if (wired or vpath) else ""
+
+def _open_anc_state(anc_path):
+    if not anc_path:
+        return None
+    try:
+        name = anc_path.removeprefix("/dev/shm/")
+        rd = bobimxl.Reader(inst, name)         # flux ANC data MXL (lève si absent)
+        # Codage annoncé par le producteur — lu UNE fois à l'ouverture (le flowDef est immuable).
+        return {{"reader": rd, "path": anc_path, "flow_def": inst.flow_def(name),
+                 "gidx": None, "packets": []}}
+    except Exception:
+        return None
+
+def _anc_packets(idx):
+    """Paquets ANC du DERNIER grain de l'entrée `idx` (liste, éventuellement vide). Le décodage
+    est MIS EN CACHE par index de grain : plusieurs incrustations (timecode + sous-titres + AFD…)
+    sur la même entrée ne le paient qu'une fois par trame."""
+    path = _anc_path_for(idx)
     rec = anc_states.get(idx)
     # (ré)ouvre si l'entrée a changé de source, ou tant que le flux ANC n'est pas encore là.
-    if rec is None or rec["for_path"] != vpath or rec["state"] is None:
+    if rec is None or rec["for_path"] != path or rec["state"] is None:
         if rec and rec["state"]:
             try: rec["state"]["reader"].close()
             except Exception: pass
-        rec = {{"for_path": vpath, "state": _open_anc_state(vpath) if vpath else None}}
+        rec = {{"for_path": path, "state": _open_anc_state(path)}}
         anc_states[idx] = rec
-    if not rec["state"]:
-        return None
-    return _decode_anc_tc(rec["state"]["reader"], rec["state"].get("flow_def"))
+    st = rec["state"]
+    if not st:
+        return []
+    try:
+        got = st["reader"].get_latest()
+        if got is None:
+            return []
+        if got[0] != st["gidx"]:                # nouveau grain → décoder une fois
+            st["gidx"] = got[0]
+            st["packets"] = bobimxl.anc_unpack(bytes(got[2]), st.get("flow_def"))
+        return st["packets"]
+    except Exception:
+        return []
+
+def _anc_idx_of(ov, key="anc_source"):
+    try:
+        return int(ov.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+def _anc_tc_for(ov):
+    """(hh,mm,ss,ff,df) de l'entrée référencée par l'horloge ANC (tc_source), ou None."""
+    return bobimxl.anc_atc_decode(_anc_packets(_anc_idx_of(ov, "tc_source"))) or None
+
+# Informations ANC affichables SUR L'IMAGE d'une cellule (comme les VU-mètres : un réglage
+# PAR FENÊTRE, tout à false par défaut). L'utilisateur coche ce qu'il veut voir, cellule par
+# cellule ; une cellule sans case cochée ne dessine RIEN et ne coûte RIEN.
+ANC_FIELDS = ("anc_types", "anc_tc", "anc_cc", "anc_afd", "anc_st352", "anc_scte", "anc_crc")
+
+def _anc_enabled(cfg):
+    return any(_as_bool(cfg.get(k), False) for k in ANC_FIELDS)
+
+def _format_anc_cell(i, cfg):
+    """Ligne ANC d'une cellule : UNIQUEMENT les informations cochées sur CETTE fenêtre.
+      anc_types : inventaire des métadonnées réellement portées (ATC, CC/708, AFD…)
+      anc_tc    : timecode embarqué (ATC RP 188)
+      anc_cc    : sous-titres — texte CEA-608 si décodable, sinon présence
+      anc_afd   : format d'image actif (ST 2016-3)
+      anc_st352 : format DÉCLARÉ PAR LE SIGNAL (ST 352) — à confronter au SDP
+      anc_scte  : déclencheur SCTE-104 (« SPLICE » + opID)
+      anc_crc   : nombre de paquets au CHECKSUM INVALIDE (métadonnée corrompue en transit)
+    Renvoie "" si rien à afficher (aucune case, ou source sans ANC → « ANC -- » si l'inventaire
+    est demandé, pour distinguer « pas d'ANC » de « pas d'affichage »)."""
+    pkts = _anc_packets(i)
+    if not pkts:
+        return "ANC --" if _as_bool(cfg.get("anc_types"), False) else ""
+    inv = bobimxl.anc_inventory(pkts)
+    parts = []
+    if _as_bool(cfg.get("anc_types"), False):
+        names = []
+        for it in inv:
+            if it["name"] not in names:
+                names.append(it["name"])
+        parts.append(" ".join(names))
+    if _as_bool(cfg.get("anc_tc"), False):
+        tc = bobimxl.anc_atc_decode(pkts)
+        if tc:
+            parts.append("%02d:%02d:%02d%s%02d" % (tc[0], tc[1], tc[2], ";" if tc[4] else ":", tc[3]))
+    if _as_bool(cfg.get("anc_st352"), False):
+        s = bobimxl.anc_decode_st352(pkts)
+        if s:
+            parts.append(s["label"])
+    if _as_bool(cfg.get("anc_afd"), False):
+        a = bobimxl.anc_decode_afd(pkts)
+        if a:
+            parts.append("%s %s" % (a["aspect"], a["label"]))
+    if _as_bool(cfg.get("anc_scte"), False):
+        sc = bobimxl.anc_scte104(pkts)
+        if sc:
+            parts.append("SPLICE %d" % sc["op_id"])
+    if _as_bool(cfg.get("anc_cc"), False):
+        cc = bobimxl.anc_captions(pkts)
+        if cc:
+            parts.append(cc["cc608"] or ("%s ●" % cc["kind"]))
+    if _as_bool(cfg.get("anc_crc"), False):
+        bad = sum(1 for it in inv if it["checksum_ok"] is False)
+        if bad:
+            parts.append("CRC!%d" % bad)
+    return "  ".join(p for p in parts if p)
+
+def _anc_report():
+    """Inventaire ANC de TOUTES les entrées, pour :8080 et :8082/state (diagnostic — l'UI
+    affiche « cette source porte un ATC, des sous-titres… » sans rien incruster à l'image)."""
+    out = {{}}
+    with state_lock:
+        n = len(FLUX_CONFIG)
+    for i in range(n):
+        pkts = _anc_packets(i)
+        if not pkts:
+            continue
+        inv = bobimxl.anc_inventory(pkts)
+        tc = bobimxl.anc_atc_decode(pkts)
+        out[str(i)] = {{
+            "path": _anc_path_for(i),
+            "types": [it["name"] for it in inv],
+            "crc_errors": sum(1 for it in inv if it["checksum_ok"] is False),
+            "timecode": ("%02d:%02d:%02d%s%02d" % (tc[0], tc[1], tc[2], ";" if tc[4] else ":", tc[3]))
+                        if tc else None,
+        }}
+    return out
 
 def _fmt_clock_fields(ov, hh, mm, ss, ff, df=False, dash=False):
     """Met en forme HH/MM/SS/II selon les cases activées ; séparateur images ';' si drop-frame.
@@ -2267,16 +2419,22 @@ def render_overlays_fg_static():
             _draw_image_overlay(img, ov)
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
+def _dyn_overlays():
+    return [ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") == "clock"]
+
+def _dyn_text(ov, now):
+    return _format_clock(ov, now)
+
 def render_overlays_fg(now):
     """PER-FRAME : uniquement les horloges (valeur qui change à chaque trame). Le texte/les images
     fixes sont dans le chrome caché (render_overlays_fg_static)."""
-    clk = [ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") == "clock"]
+    clk = _dyn_overlays()
     if not clk:
         return None
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
     d = ImageDraw.Draw(img, "RGBA")
     for ov in clk:
-        _draw_text_overlay(d, ov, _format_clock(ov, now), color_override=_countdown_color(ov, now))
+        _draw_text_overlay(d, ov, _dyn_text(ov, now), color_override=_countdown_color(ov, now))
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 def render_clock_tiles(now):
@@ -2286,7 +2444,7 @@ def render_clock_tiles(now):
     alors que chaque horloge fait ~60 k px). Le rendu PIL + conversion YUV ne sont payés qu'au
     changement de valeur (gate appelant) ; seul le blend par petite bbox reste per-frame. Renvoie
     [(bx0, by0, bx1, by1, y, u, v, a, a2), ...] ou None."""
-    clk = [ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") == "clock"]
+    clk = _dyn_overlays()
     if not clk:
         return None
     tiles = []
@@ -2302,8 +2460,8 @@ def render_clock_tiles(now):
             continue
         tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
         dd = ImageDraw.Draw(tile, "RGBA")
-        ovs = dict(ov); ovs["x"] = x - bx0; ovs["y"] = y - by0   # même horloge, coords LOCALES à la tuile
-        _draw_text_overlay(dd, ovs, _format_clock(ov, now), color_override=_countdown_color(ov, now))
+        ovs = dict(ov); ovs["x"] = x - bx0; ovs["y"] = y - by0   # même overlay, coords LOCALES à la tuile
+        _draw_text_overlay(dd, ovs, _dyn_text(ov, now), color_override=_countdown_color(ov, now))
         oy, ou, ovv, oa, oa2 = rgba_to_yuv(tile)
         tiles.append((bx0, by0, bx1, by1, oy, ou, ovv, oa, oa2))
     return tiles or None
@@ -2542,9 +2700,16 @@ class MvControlHandler(BaseHTTPRequestHandler):
         shm = (b.get("shm") or "").strip()
         path = ("/dev/shm/" + shm) if shm else ""
         ok = False
-        with state_lock:
-            if 0 <= idx < len(mv_state["inputs"]):
-                mv_state["inputs"][idx] = path; ok = True
+        # essence `data` = port ANC de l'entrée (un flux ANC par entrée vidéo). Le lecteur ANC
+        # est rouvert tout seul au prochain accès (_anc_packets compare `for_path`).
+        if (b.get("essence") or "video") == "data":
+            with state_lock:
+                if 0 <= idx < len(FLUX_CONFIG):
+                    FLUX_CONFIG[idx]["anc_path"] = path; ok = True
+        else:
+            with state_lock:
+                if 0 <= idx < len(mv_state["inputs"]):
+                    mv_state["inputs"][idx] = path; ok = True
         self.send_response(200 if ok else 400)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": ok}}).encode())
@@ -2558,7 +2723,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
         with state_lock:
             if 0 <= idx < len(FLUX_CONFIG):
                 cfg = FLUX_CONFIG[idx]
-                for k in ("x", "y", "w", "h", "tsl_index", "meter_channels", "meter_opacity"):
+                for k in ("x", "y", "w", "h", "tsl_index", "meter_channels", "meter_opacity",
+                          "anc_position", "anc_opacity") + ANC_FIELDS:
                     if k in b and b[k] is not None:
                         try: cfg[k] = int(b[k])
                         except (TypeError, ValueError): pass
@@ -3439,11 +3605,13 @@ while True:
         # changement de VALEUR (signature = chaînes formatées, déterministe → 1×/s sans le champ images
         # FF) ; le blend, lui, se fait par PETITE bbox d'horloge à chaque trame (au lieu de la bbox-UNION
         # quasi plein écran quand les horloges sont dispersées → gros gain de blend per-frame).
-        _pf_sig = tuple((_format_clock(ov, now), _countdown_color(ov, now)) for ov in OVERLAYS
-                        if (not ov.get("hidden")) and ov.get("kind") == "clock")
+        # Les bandeaux ANC des cellules (opt-in) partagent cette machinerie : même cache par
+        # signature, même blend par petite bbox. Aucune cellule cochée → coût strictement nul.
+        _pf_sig = (tuple((_dyn_text(ov, now), _countdown_color(ov, now))
+                         for ov in _dyn_overlays()), _anc_sig())
         if _pf_sig != _pf_cache_sig:
             _pf_cache_sig = _pf_sig
-            _pf_tiles = render_clock_tiles(now)
+            _pf_tiles = (render_clock_tiles(now) or []) + (render_anc_tiles(now) or []) or None
         _ts_ov1 = time.time_ns()   # fin rendu PIL + conversion YUV (tuiles VU + horloges AU CHANGEMENT)
         # 1) Chrome statique : blendé via opérandes pré-calculés sur sa BBOX (SANS conversion). Borné à
         # la zone réellement habillée → un assembleur sans chrome (bbox None) ne paie RIEN ici.
