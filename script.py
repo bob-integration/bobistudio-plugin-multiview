@@ -3,7 +3,7 @@
 # Auteur : Cyril Mazouer, pour le compte de BOBI SAS
 # Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
-import mmap, socket, struct, time, numpy as np, threading, json, os, re, base64, io, signal
+import mmap, socket, struct, time, numpy as np, threading, json, os, re, base64, io, signal, gc
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
@@ -3117,6 +3117,25 @@ _last_emit_m = time.monotonic()   # mode input-locked : instant (monotone) de la
 _stale_since = {{}}   # i → instant monotone où l'entrée est devenue stale (None tant qu'elle lit)
 REOPEN_STALE_S = 2.0
 
+# GC CPython DISCIPLINÉ (chantier tissu slice — grain tardif de l'assembleur) : le collect gen2
+# AUTOMATIQUE tombe N'IMPORTE OÙ dans le cycle (mesuré au banc dl360-1 : pause strictement
+# périodique ~34 s → le grain de sortie sort +1 epoch en retard, phase +25 ms, le TX aval rate
+# sa fenêtre → compteur late / trou d'1 trame quand le rejeu ne couvre pas). Remède standard :
+# on COUPE le déclenchement automatique et on collecte MANUELLEMENT au point sûr (fin de cycle,
+# dernière bande committée, temps mort avant le tick suivant) : gen0/gen1 chaque trame (sub-ms),
+# gen2 cadencé (~5 s, durée mesurée → métrique gc_full_ms). gc.freeze() sort le tas de démarrage
+# (modules, fonts, config…) du scan gen2 → collect court ; les objets gelés ne sont plus jamais
+# collectés (OK : quasi tout est pérenne ; les Readers rouverts au churn ne sont pas cycliques,
+# libérés par refcount). NB : RIEN À VOIR avec inst.garbage_collect() = GC du ring MXL (flux
+# orphelins), qu'on ne touche pas.
+gc.collect(2)
+gc.freeze()
+gc.disable()
+_gc_frames = 0
+_gc_full_every = max(1, int(round(5.0 / FRAME_INTERVAL)))   # gen2 ~toutes les 5 s
+_gc_last_full_ms = 0.0
+_gc_max_full_ms = 0.0
+
 while True:
     now = time.time()
     now_m = time.monotonic()   # horloge MONOTONE pour les durées (détection freeze) — insensible aux sauts de CLOCK_REALTIME (genlock garde time.time())
@@ -3549,3 +3568,18 @@ while True:
                                "backoff": len(_sl_backoff)}}
         print(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} fps"
               + (f" [slice: tuiles={{_sd[0]}} valid0={{_sd[1]}} waits={{_sd[2]}} replis={{_sd[3]}} dorm={{_sd[4]}}]" if _sd else ""))
+    # Point sûr GC (cf. bloc gc.disable() avant la boucle) : la dernière bande de la trame est
+    # committée (l'aval a déjà tout), on est dans le temps mort avant le tick suivant. gen0+gen1
+    # chaque trame ; gen2 cadencé et MESURÉ (gc_full_ms sur :8080 — recette : doit rester à
+    # quelques ms grâce au freeze, sinon investiguer la croissance du tas).
+    _gc_frames += 1
+    if _gc_frames % _gc_full_every == 0:
+        _t_gc = time.monotonic_ns()
+        gc.collect(2)
+        _gc_last_full_ms = (time.monotonic_ns() - _t_gc) / 1e6
+        if _gc_last_full_ms > _gc_max_full_ms:
+            _gc_max_full_ms = _gc_last_full_ms
+        metrics["gc_full_ms"] = {{"last": round(_gc_last_full_ms, 2),
+                                 "max": round(_gc_max_full_ms, 2)}}
+    else:
+        gc.collect(1)
