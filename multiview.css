@@ -211,6 +211,10 @@
 .field-color input[type="color"] { width: 60px; padding: 2px; }
 .field-narrow input { width: 88px; }
 
+/* Bouton « Recharger » sous le sélecteur de modèle de PiP : re-fetch la bibliothèque
+   (contourne le cache mwPipTemplates) et repousse à chaud — cf. reloadPipTemplate(). */
+.mw-pip-tpl-reload { align-self: flex-start; margin-top: 2px; }
+
 /* Steppers numériques : flèches natives (minuscules) masquées, remplacées par des boutons −/+
    confortables de part et d'autre du champ. */
 input[type="number"].mw-num::-webkit-inner-spin-button,

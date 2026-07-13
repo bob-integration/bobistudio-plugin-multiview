@@ -863,6 +863,40 @@ function refreshEntryPanel() {
     pathSel.value = f.path || '';
 }
 
+// Bouton « Recharger » (sous ed_pip_template) : re-fetch la bibliothèque de modèles en
+// contournant tout cache (mwPipTemplates n'est chargé QU'UNE FOIS au chargement du composer,
+// cf. loadPipTemplates() plus haut — éditer un modèle dans Réglages → PiP pendant que ce mur
+// reste ouvert ne le rafraîchit jamais tout seul), puis RE-RÉSOUT le modèle effectif de la
+// fenêtre courante (direct, ou hérité du mur) et le repousse à chaud au conteneur en cours
+// d'exécution. Aucun redéploiement requis : le moteur applique le modèle reçu tel quel via
+// les endpoints /plugin/window et /plugin/style (script.py ne relit jamais la bibliothèque
+// lui-même — il n'y a pas d'accès réseau depuis le container vers l'orchestrateur pour ça).
+async function reloadPipTemplate() {
+    const primary = primaryIdx();
+    if (!editorParams || primary < 0) return;
+    try {
+        const r = await fetch('/api/pip_templates', { cache: 'no-store' });
+        if (r.ok) mwPipTemplates = await r.json();
+    } catch (e) { /* échec réseau : on retente la résolution avec la liste déjà en mémoire */ }
+    populateDefaultTemplateSelect();
+    const f = editorParams.flux_config[primary];
+    if (f.template_ref) {
+        // Modèle affecté directement à cette fenêtre : re-résout depuis la bibliothèque
+        // fraîche et pousse à chaud (endpoint /plugin/window, cf. hotApplyWindow).
+        f.template = mwResolveTemplate(f.template_ref) || f.template;
+        hotApplyWindow(primary);
+    } else if (editorParams.default_template_ref) {
+        // Fenêtre en HÉRITAGE (template_ref vide) : c'est le modèle PAR DÉFAUT du mur qui est
+        // périmé. Le re-résoudre et le repousser (endpoint /plugin/style) rafraîchit d'un coup
+        // toutes les fenêtres qui héritent — comportement cohérent avec onDefaultTemplateChange.
+        editorParams.default_template = mwResolveTemplate(editorParams.default_template_ref) || editorParams.default_template;
+        hotApplyStyle();
+    }
+    refreshEntryPanel();
+    dessiner();
+    mwFlash(T('plugin.multiview.flash_pip_template_reloaded'));
+}
+
 function onEntryChange() {
     const primary = primaryIdx();
     if (primary < 0) return;
