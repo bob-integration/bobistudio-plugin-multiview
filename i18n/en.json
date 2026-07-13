@@ -1,5 +1,7 @@
 {
   "plugin.multiview.add_aria": "Add an element",
+  "plugin.multiview.add_audio": "+ Audio",
+  "plugin.multiview.add_audio_title": "Adds an AUDIO-ONLY cell (VU meters, no video) — pre-assigns the dedicated factory template (portrait format). Assign it an audio source in the panel below or via the Cables page.",
   "plugin.multiview.add_clock": "+ Clock",
   "plugin.multiview.add_clock_title": "Add a clock / timecode (PTP, stopwatch or countdown)",
   "plugin.multiview.add_image": "+ Image",
@@ -16,6 +18,10 @@
   "plugin.multiview.align_right": "Align right",
   "plugin.multiview.align_top": "Align top",
   "plugin.multiview.align_vcenter": "Center vertically",
+  "plugin.multiview.audio_auto_option": "— auto (derived from video) —",
+  "plugin.multiview.audio_none_option": "— none (VU meters off) —",
+  "plugin.multiview.audio_source": "Audio source (VU meters)",
+  "plugin.multiview.audio_source_title": "Source feeding the VU meters (`meters` components of the PiP template, including the Classic fallback). Defaults to automatically following the audio stream paired with the video source above; can be forced to a different audio stream, or explicitly turned off (audio-only cell without video → no meter).",
   "plugin.multiview.anc": "ANC metadata (on image)",
   "plugin.multiview.anc_afd": "AFD",
   "plugin.multiview.anc_cc": "Captions",

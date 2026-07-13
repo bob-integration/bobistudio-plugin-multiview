@@ -343,11 +343,20 @@ def _derive_audio_name(video_path, flow=0):
     m = re.match(r"(.+?)_(\d+)$", name)
     return f"{{m.group(1)}}_audio_{{int(m.group(2)) + flow}}" if m else None
 
+# Sentinel `audio_path` (composer/multiview.js, sélecteur « Source audio ») : distingue
+# EXPLICITEMENT « aucune » (VU-mètres coupés) de la valeur vide historique (= auto, dérivée de
+# la vidéo). Convention purement UI/config — jamais un vrai nom de shm.
+AUDIO_PATH_NONE = "__none__"
+
 def _audio_name_for(cfg, flow=0):
-    """Nom du flux audio de la fenêtre : le port CÂBLÉ (`audio_path`, page Câbles) sinon la
-    dérivation historique depuis la vidéo. `flow`=1 : flux SUIVANT (canaux 9-16) — dérivé en
-    bumpant l'index final du nom du flux 0 (câblé ou dérivé)."""
+    """Nom du flux audio de la fenêtre : le port CÂBLÉ (`audio_path`, page Câbles OU sélecteur
+    du composer) sinon la dérivation historique depuis la vidéo. Trois états `audio_path` :
+    absent/vide = auto (dérivé) ; `AUDIO_PATH_NONE` = explicitement aucun (renvoie None, pas de
+    repli sur la dérivation) ; toute autre valeur = flux explicite. `flow`=1 : flux SUIVANT
+    (canaux 9-16) — dérivé en bumpant l'index final du nom du flux 0 (câblé ou dérivé)."""
     wired = (cfg.get("audio_path") or "").strip() if isinstance(cfg.get("audio_path"), str) else ""
+    if wired == AUDIO_PATH_NONE:
+        return None
     wired = wired.removeprefix("/dev/shm/")
     if wired:
         if flow == 0:
@@ -2165,7 +2174,8 @@ def _tpl_dict_comps(t):
 # builtin:classic (version statique sélectionnable). Cache par cellule invalidé sur les
 # flags (les /window à chaud mutent cfg en place → la clé change, on regénère).
 _CLASSIC_KEYS = ("show_label", "show_tally", "label_source", "meter_channels",
-                 "meter_position", "meter_inside", "meter_opacity", "meter_scale", "w", "h")
+                 "meter_position", "meter_inside", "meter_opacity", "meter_scale", "w", "h",
+                 "path", "audio_path")
 
 def _classic_comps(cfg):
     key = tuple(str(cfg.get(k)) for k in _CLASSIC_KEYS)
@@ -2175,10 +2185,37 @@ def _classic_comps(cfg):
     w = max(2, int(cfg.get("w") or 0)); h = max(2, int(cfg.get("h") or 0))
     bar_px = min(28, max(14, int(h * 0.18)))          # bandeau ~ historique (label_size 14)
     bh = min(0.40, bar_px / float(h))
-    comps = [{{"id": "video", "type": "video", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0,
-              "fit": "fill", "border": "none"}}]
     show_label = _as_bool(cfg.get("show_label"))
     show_tally = _as_bool(cfg.get("show_tally"))
+    # Fenêtre SANS source vidéo configurée (path vide) mais avec une source audio résolue
+    # (câblée explicitement OU dérivée, cf. _audio_name_for) : repli en cellule AUDIO SEULE
+    # (VU-mètres pleine largeur + label), plutôt que forcer un composant vidéo qui ne
+    # rendrait jamais qu'un NO SIGNAL. Miroir : app/pip_library.py builtin:audio-only
+    # (version sélectionnable dans la bibliothèque). Une fenêtre sans vidéo NI audio garde
+    # l'ancien repli vidéo ci-dessous (NO SIGNAL).
+    if not (cfg.get("path") or "").strip() and _audio_name_for(cfg):
+        comps = []
+        if show_label:
+            comps.append({{"id": "umd", "type": "umd", "x": 0.0, "y": 1.0 - bh, "w": 1.0, "h": bh,
+                          "text_source": ("tsl" if cfg.get("label_source") == "protocol" else "name"),
+                          "tally_bg": False, "bg_color": "#000000", "bg_opacity": 70}})
+        try:
+            n = int(cfg.get("meter_channels") or 0) or 2   # jamais une cellule audio muette
+        except (TypeError, ValueError):
+            n = 2
+        try:
+            op = int(cfg.get("meter_opacity") or 100)
+        except (TypeError, ValueError):
+            op = 100
+        comps.append({{"id": "vu", "type": "meters", "channels": n, "ch_start": 1,
+                      "scale": cfg.get("meter_scale") or "dbfs", "opacity": op,
+                      "align": "center", "width_mode": "fit",
+                      "x": 0.04, "y": 0.03, "w": 0.92,
+                      "h": max(0.1, 0.94 - (bh if show_label else 0.0))}})
+        cfg["_classic_gen"] = (key, comps)
+        return comps
+    comps = [{{"id": "video", "type": "video", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0,
+              "fit": "fill", "border": "none"}}]
     if show_label:
         comps.append({{"id": "umd", "type": "umd", "x": 0.0, "y": 1.0 - bh, "w": 1.0, "h": bh,
                       "text_source": ("tsl" if cfg.get("label_source") == "protocol" else "name"),
@@ -2901,6 +2938,19 @@ class MvControlHandler(BaseHTTPRequestHandler):
                 for k in ("name", "meter_position", "meter_scale", "anc_position"):
                     if k in b and b[k] is not None:
                         cfg[k] = str(b[k])
+                # audio_path : sélecteur de source audio du composer (3 états, cf. _audio_name_for
+                # / AUDIO_PATH_NONE) — même effet que le câblage page Câbles (essence=audio sur
+                # /input), donc même purge des états audio ouverts (le nom résolu peut changer).
+                if "audio_path" in b and b["audio_path"] is not None:
+                    cfg["audio_path"] = str(b["audio_path"])
+                    for k in list(audio_states):
+                        if k == idx or (isinstance(k, tuple) and k and k[0] == idx):
+                            st = audio_states.pop(k, None)
+                            try:
+                                if st and st.get("ar"):
+                                    st["ar"].close()
+                            except Exception:
+                                pass
                 for k in ("show_label", "show_tally", "meter_inside", "hidden", "label_proportional"):
                     if k in b and b[k] is not None:
                         cfg[k] = _as_bool(b[k])

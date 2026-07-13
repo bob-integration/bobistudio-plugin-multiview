@@ -17,6 +17,7 @@ function mwApplyI18n(root) {
 
 let allContainers = [];
 let videoSources = [];   // sorties vidéo individuelles de la flotte (cf. loadVideoSources)
+let audioSources = [];   // sorties audio individuelles de la flotte (cf. loadAudioSources)
 let editorVmid    = null;
 let editorParams  = null;   // {flux_config, shm_out, out_width, out_height, max_inputs, default_template…}
 let selectedIdxs  = [];     // multi-select : le dernier est le primary (référence pour align/match-size)
@@ -175,6 +176,22 @@ async function loadVideoSources() {
     } catch(e) { videoSources = []; }
 }
 
+// Sorties AUDIO individuelles de la flotte, pour le sélecteur « Source audio » du panneau
+// d'entrée (cf. refreshEntryPanel) — même dérivation DB-only que loadVideoSources.
+async function loadAudioSources() {
+    try {
+        const srcs = await (await fetch('/api/sources?kind=audio')).json();
+        audioSources = (srcs || []).map(s => ({
+            vmid: s.vmid, hostname: s.hostname || ('mxl' + s.vmid),
+            shm: s.shm, label: s.label || '' }));
+    } catch(e) { audioSources = []; }
+}
+
+// Sentinel `audio_path` = « explicitement aucune source audio » (VU-mètres coupés), à
+// distinguer de '' = auto (dérivé de la source vidéo). Miroir de AUDIO_PATH_NONE,
+// plugins/multiview/script.py (_audio_name_for) — NE JAMAIS confondre avec un vrai nom de shm.
+const AUDIO_PATH_NONE = '__none__';
+
 // ─── Noms de colonnes labels + connexions TSL (= niveaux de Tally) ───────────
 let _tslLabelNames = ["Hostname", "MXL", "Label 2", "Label 3", "Label 4",
                       "Label 5", "Label 6", "Label 7", "Label 8", "Label 9"];
@@ -285,8 +302,8 @@ function _tslSetSelects(labelCol, tallyLevel, tallyColors) {
 async function chargerMw(vmid) {
     let c;
     try {
-        await Promise.all([loadAllContainers(), loadVideoSources(), _loadTslLabelNames(),
-                           loadPipTemplates()]);
+        await Promise.all([loadAllContainers(), loadVideoSources(), loadAudioSources(),
+                           _loadTslLabelNames(), loadPipTemplates()]);
         const r = await fetch('/api/containers/' + vmid + '/config');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         c = await r.json();
@@ -595,6 +612,9 @@ function newEntry(idx, hidden) {
     const out_h = editorParams.out_height;
     return {
         path: '', hidden: !!hidden, name: '',
+        // '' = auto (dérivé de `path`, cf. _audio_name_for côté moteur) ; AUDIO_PATH_NONE =
+        // explicitement aucune (VU-mètres coupés) ; sinon nom de shm audio explicite.
+        audio_path: '',
         label_source: 'hostname',
         in_w: 0, in_h: 0,
         x: 0, y: 0,
@@ -751,7 +771,7 @@ function placerNouveauPip(f) {
     f.y = Math.min(maxY, (k + 1) * step) & ~1;
 }
 
-function ajouterEntree() {
+function ajouterEntree(asAudio) {
     padBank();
     // « Ajouter un PiP » = réafficher la première entrée masquée de la banque
     // (sa source câblée éventuelle est conservée et réapparaît).
@@ -770,6 +790,27 @@ function ajouterEntree() {
     if (!f.x && !f.y && f.w === win_w && f.h === win_h) {
         placerNouveauPip(f);
     }
+    if (asAudio) {
+        // Cellule AUDIO SEULE : pré-affecte le modèle d'usine dédié (VU-mètres pleine largeur
+        // en mode `fit`, format portrait étroit — builtin:audio-only, app/pip_library.py) et vide
+        // la source vidéo (rien à câbler côté vidéo pour cette cellule). La source audio se
+        // câble ensuite via le sélecteur « Source audio » du panneau (ou la page Câbles).
+        f.path = '';
+        f.template_ref = 'builtin:audio-only';
+        f.template = mwResolveTemplate('builtin:audio-only') || null;
+        // Format LIBRE du modèle (portrait) : recalcule la hauteur depuis la largeur courante,
+        // comme onEntryChange() le fait pour une affectation manuelle de modèle.
+        const _ta = mwTemplateAspect(f);
+        if (_ta && f.w > 0) {
+            let nh = Math.max(2, Math.round(f.w / _ta) & ~1);
+            if (f.y + nh > out_h) {
+                nh = Math.max(2, (out_h - f.y) & ~1);
+                f.w = Math.max(2, Math.round(nh * _ta) & ~1);
+            }
+            f.h = nh;
+            f.ratio = _ta;
+        }
+    }
     // Jamais hors zone (y compris une géométrie mémorisée d'un ancien PiP)
     f.w = Math.min(f.w, out_w); f.h = Math.min(f.h, out_h);
     f.x = Math.max(0, Math.min(out_w - f.w, f.x));
@@ -777,6 +818,12 @@ function ajouterEntree() {
     selectedIdxs = [idx];
     dessiner();
     hotApplyFull();
+}
+
+// Bouton « + Audio » (à côté de « + PiP ») : raccourci direct pour une cellule audio seule,
+// cf. ajouterEntree(asAudio=true) ci-dessus.
+function ajouterEntreeAudio() {
+    ajouterEntree(true);
 }
 
 function supprimerEntreeSelectionnee() {
@@ -861,6 +908,28 @@ function refreshEntryPanel() {
     }
     pathSel.innerHTML = opts.join('');
     pathSel.value = f.path || '';
+
+    // Re-peuple la dropdown SOURCE AUDIO (VU-mètres) : 3 états — auto (dérivé de la vidéo,
+    // '' ) / aucune (AUDIO_PATH_NONE, VU-mètres coupés) / flux explicite (page Câbles ou
+    // choisi ici). cf. _audio_name_for, plugins/multiview/script.py.
+    const audioSel = document.getElementById('ed_audio_path');
+    if (audioSel) {
+        const audioOpts = audioSources.map(s => {
+            const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
+                                : `${s.hostname} → ${s.shm}`;
+            return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
+        });
+        audioOpts.unshift('<option value="' + escapeHtml(AUDIO_PATH_NONE) + '">'
+            + escapeHtml(T('plugin.multiview.audio_none_option')) + '</option>');
+        audioOpts.unshift('<option value="">' + escapeHtml(T('plugin.multiview.audio_auto_option')) + '</option>');
+        const curAudio = f.audio_path || '';
+        if (curAudio && curAudio !== AUDIO_PATH_NONE
+                && !audioSources.some(s => '/dev/shm/' + s.shm === curAudio)) {
+            audioOpts.splice(2, 0, `<option value="${escapeHtml(curAudio)}">${escapeHtml(curAudio)}</option>`);
+        }
+        audioSel.innerHTML = audioOpts.join('');
+        audioSel.value = curAudio;
+    }
 }
 
 // Bouton « Recharger » (sous ed_pip_template) : re-fetch la bibliothèque de modèles en
@@ -871,27 +940,31 @@ function refreshEntryPanel() {
 // d'exécution. Aucun redéploiement requis : le moteur applique le modèle reçu tel quel via
 // les endpoints /plugin/window et /plugin/style (script.py ne relit jamais la bibliothèque
 // lui-même — il n'y a pas d'accès réseau depuis le container vers l'orchestrateur pour ça).
+// Rafraîchit le MUR ENTIER : le modèle par défaut (héritage) ET chaque fenêtre qui porte un
+// modèle propre. Ne dépend d'AUCUNE sélection — appelable depuis « Sortie & habillage » (bouton
+// sous ed_default_template) comme depuis le panneau d'une fenêtre (bouton sous ed_pip_template).
 async function reloadPipTemplate() {
-    const primary = primaryIdx();
-    if (!editorParams || primary < 0) return;
+    if (!editorParams) return;
     try {
         const r = await fetch('/api/pip_templates', { cache: 'no-store' });
         if (r.ok) mwPipTemplates = await r.json();
     } catch (e) { /* échec réseau : on retente la résolution avec la liste déjà en mémoire */ }
     populateDefaultTemplateSelect();
-    const f = editorParams.flux_config[primary];
-    if (f.template_ref) {
-        // Modèle affecté directement à cette fenêtre : re-résout depuis la bibliothèque
-        // fraîche et pousse à chaud (endpoint /plugin/window, cf. hotApplyWindow).
-        f.template = mwResolveTemplate(f.template_ref) || f.template;
-        hotApplyWindow(primary);
-    } else if (editorParams.default_template_ref) {
-        // Fenêtre en HÉRITAGE (template_ref vide) : c'est le modèle PAR DÉFAUT du mur qui est
-        // périmé. Le re-résoudre et le repousser (endpoint /plugin/style) rafraîchit d'un coup
-        // toutes les fenêtres qui héritent — comportement cohérent avec onDefaultTemplateChange.
+
+    // 1. Modèle PAR DÉFAUT du mur → /plugin/style : rafraîchit d'un coup toutes les fenêtres
+    //    qui en héritent (template_ref vide).
+    if (editorParams.default_template_ref) {
         editorParams.default_template = mwResolveTemplate(editorParams.default_template_ref) || editorParams.default_template;
         hotApplyStyle();
     }
+    // 2. Fenêtres portant un modèle PROPRE → /plugin/window, une par une (elles n'héritent pas,
+    //    le push de style ci-dessus ne les touche pas).
+    (editorParams.flux_config || []).forEach((f, i) => {
+        if (!f.template_ref) return;
+        f.template = mwResolveTemplate(f.template_ref) || f.template;
+        hotApplyWindow(i);
+    });
+
     refreshEntryPanel();
     dessiner();
     mwFlash(T('plugin.multiview.flash_pip_template_reloaded'));
@@ -928,6 +1001,7 @@ function onEntryChange() {
     }
     f.label_source = document.getElementById('ed_label_source').value || 'hostname';
     f.path         = document.getElementById('ed_path').value;
+    { const _as = document.getElementById('ed_audio_path'); if (_as) f.audio_path = _as.value; }
     f.show_label   = document.getElementById('ed_show_label').checked;
     f.label_proportional = document.getElementById('ed_label_proportional').checked;
     f.tsl_index      = parseInt(document.getElementById('ed_tsl_index').value) || 0;
@@ -1540,6 +1614,10 @@ function hotApplyWindow(idx) {
             h: f.h % 2 === 0 ? f.h : f.h - 1,
             hidden:         !!f.hidden,
             name:           computeDisplayName(f),
+            // Source des VU-mètres (cf. sélecteur Source audio) : '' = auto (dérivé de path),
+            // AUDIO_PATH_NONE = explicitement aucune, sinon flux explicite. Serveur : purge les
+            // états audio ouverts sur un changement (même effet que le câblage page Câbles).
+            audio_path:     f.audio_path ?? '',
             show_label:     !!f.show_label,
             show_tally:     !!f.show_tally,
             label_proportional: !!f.label_proportional,

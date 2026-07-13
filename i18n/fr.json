@@ -1,5 +1,7 @@
 {
   "plugin.multiview.add_aria": "Ajouter un élément",
+  "plugin.multiview.add_audio": "+ Audio",
+  "plugin.multiview.add_audio_title": "Ajoute une cellule AUDIO SEULE (VU-mètres, sans vidéo) — pré-affecte le modèle d'usine dédié (format portrait). Affectez-lui une source audio dans le panneau ci-dessous ou via la page Câbles.",
   "plugin.multiview.add_clock": "+ Horloge",
   "plugin.multiview.add_clock_title": "Ajouter une horloge / timecode (PTP, chrono ou décompte)",
   "plugin.multiview.add_image": "+ Image",
@@ -16,6 +18,10 @@
   "plugin.multiview.align_right": "Aligner à droite",
   "plugin.multiview.align_top": "Aligner en haut",
   "plugin.multiview.align_vcenter": "Centrer verticalement",
+  "plugin.multiview.audio_auto_option": "— auto (dérivé de la vidéo) —",
+  "plugin.multiview.audio_none_option": "— aucune (VU-mètres coupés) —",
+  "plugin.multiview.audio_source": "Source audio (VU-mètres)",
+  "plugin.multiview.audio_source_title": "Source des VU-mètres (composants meters du modèle de PiP, y compris le repli Classique). Par défaut suit automatiquement le flux audio associé à la source vidéo ; peut être forcée sur un autre flux audio, ou explicitement coupée (cellule audio seule sans vidéo → aucun meter).",
   "plugin.multiview.anc": "Métadonnées ANC (sur l'image)",
   "plugin.multiview.anc_afd": "AFD",
   "plugin.multiview.anc_cc": "Sous-titres",
