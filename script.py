@@ -1595,12 +1595,29 @@ def _anc_sig():
 HIST_DURATIONS = (10, 30, 60, 120)     # durées offertes (s) — défaut 30
 HIST_MAX_S     = 120                   # profondeur des rings (= plus longue durée offerte)
 VH_TICK_S      = 0.2                   # période d'échantillonnage vidéo (5 Hz) → ruban à 200 ms près
-VH_THUMB_W     = 96                    # vignette : 96×54 RGB = 15,5 ko → 120 s = 1,9 Mo par SOURCE
-VH_THUMB_H     = 54                    # (les composants/blocs d'une MÊME source partagent le ring)
+# ★ CADENCE DES VIGNETTES = DÉDUITE DE LA PLACE (0.39.0 — plus de « une par seconde » figée, qui
+# donnait des vignettes-timbres illisibles et 1 gather/s pour rien). On calcule combien de vignettes
+# tiennent dans la bande SANS DÉFORMATION (largeur d'une vignette = hauteur de bande × ratio de la
+# SOURCE) ni chevauchement ; l'intervalle en découle : step = durée / nb_vignettes (≥ 1 s). Une
+# frise 30 s de 1720×190 sur du 16:9 → ~5 vignettes à ~6 s d'intervalle. Un bloc plus étroit, plus
+# haut, ou une durée de 120 s s'adaptent tout seuls. Le prélèvement suit la MÊME cadence (30× moins
+# de gathers qu'en 0.37.0) ; seules la détection d'événement et la sonde de noir restent à 5 Hz.
+VH_CELL_MIN_W  = 48                    # plancher : sous ~48 px de large une vignette n'apprend plus rien
+VH_CELL_GAP    = 2                     # garde entre deux vignettes (px)
+VH_THUMB_H     = 54                    # hauteur de vignette STOCKÉE ; la largeur suit le RATIO SOURCE
+VH_THUMB_W_MAX = 160                   # (bornes de largeur : anamorphoses/portrait restent sains)
+VH_THUMB_W_MIN = 24
+VH_PROBE_W     = 32                    # sonde de LUMA (noir) — prélevée à 5 Hz, plan Y seul : 576
+VH_PROBE_H     = 18                    # points, ~10× moins cher qu'une vignette complète
 VH_BLACK_MEAN  = 16.0                  # luma moyenne (échelle 8 bits) sous laquelle l'image est « noire »
 VH_BLACK_MAX   = 48.0                  # …et pic de luma sous lequel on ne voit RIEN (ni mire, ni logo)
 VH_RESCAN_S    = 5.0                   # re-scan des proxies pyramide de la source
 AH_TICK_S      = 0.02                  # période d'échantillonnage audio (50 Hz, = cadence trame)
+AH_COL_PX      = 1                     # ENVELOPPE : une colonne PAR PIXEL (finesse d'origine). La
+                                       # finesse ne coûte RIEN (les crêtes sont déjà calculées ; le
+                                       # coût était dans les écritures numpy stridées, cf. _hist_fill).
+                                       # Cran de repli si un jour on veut épaissir le trait.
+AH_RECOMPOSE_S = 0.2                   # …redessinée au changement de colonne, 5 Hz max (~2,3 ms/passe)
 AH_MAX         = int(HIST_MAX_S / AH_TICK_S)   # 6000 relevés (120 s) par flux audio
 # SATURATION (critère retenu, défendable et documenté) : un échantillon est « pleine échelle » si
 # |x| ≥ AH_CLIP_LEVEL (≈ −0,009 dBFS, soit le dernier LSB en 20 bits) ; une colonne est marquée
@@ -1700,14 +1717,19 @@ def _hist_units(kind):
     return out
 
 # ─── Historique VIDÉO : échantillonnage ──────────────────────────────────────
-# COÛT (question tranchée en 0.39.0) : une frise ne fait AUCUN gather dans la boucle de mix. Elle
-# lit sa source dans SON thread, à 5 Hz, et n'y prélève que VH_THUMB_W×VH_THUMB_H = 5 184 POINTS
-# par plan (np.ix_ sur une vue zéro-copie) — pas un resize de trame. Elle prend d'office le plus
-# PETIT proxy pyramide qui couvre la vignette (_vh_pick_path) quand la pyramide en produit ; elle
-# ne RÉCLAME (proxy_needs) aucune taille sur-mesure : faire produire un proxy 96×54 à 50 Hz pour
-# servir 5 relevés/s coûterait au nœud BIEN plus cher que le gather qu'il économise. En revanche
-# le proxy qu'elle lit est publié dans `proxy_read` (cf. _vh_read_proxies) — sans quoi il serait
-# vu ORPHELIN par l'orchestrateur et supprimé.
+# COÛT (tranché en 0.39.0 — « rapide et visuel, la qualité n'a aucune importance ») :
+#   • AUCUN prélèvement dans la boucle de mix : tout se passe dans le thread _vhist_loop ;
+#   • la vignette n'est capturée qu'à la cadence des CASES (≈ 6 s sur une frise 30 s de 1720 px —
+#     cf. _vh_slots), plus une capture hors-cadence à chaque ÉVÉNEMENT (épinglage) : ~30× moins de
+#     prélèvements qu'en 0.37.0 (qui capturait 5×/s) ;
+#   • le prélèvement lit le PLUS PETIT proxy pyramide disponible (_vh_pick_path) — jamais la pleine
+#     résolution si un proxy existe, même mal dimensionné (crénelage assumé) ;
+#   • un prélèvement = un gather de tw×th POINTS (nearest, ~60×54) sur une vue zéro-copie — pas un
+#     resize de trame. Mesuré (numpy, plan 1920×1080 8 bits, cf. rapport) : ≈ 0,25 ms la vignette,
+#     ≈ 0,04 ms la sonde de luma → à une vignette / 6 s + 5 sondes/s, < 0,03 % d'un cœur ;
+#   • aucune taille sur-mesure n'est réclamée à la pyramide (proxy_needs) : un proxy dédié tournerait
+#     à 50 Hz pour servir un relevé toutes les 6 s. En revanche le proxy LU est publié dans
+#     `proxy_read` (cf. _vh_read_proxies) — sans quoi l'orchestrateur le croirait orphelin.
 
 def _vh_read_proxies():
     """Proxies pyramide RÉELLEMENT lus par l'échantillonneur des frises vidéo (≠ flux pleins)."""
@@ -1719,11 +1741,26 @@ def _vh_read_proxies():
     return {{p for p in paths if p and "__" in p}}
 
 def _vh_new():
+    # `cells` = ring de vignettes DATÉES (t absolu) — plus de case « une par seconde » : chaque
+    # frise range ces vignettes dans SES propres cases temporelles (nb déduit de sa géométrie).
     return {{"src": None, "path": "", "scan_t": 0.0,
-             "cells": deque(maxlen=HIST_MAX_S + 2),   # {{sec, img (RGB uint8), pinned, evt}}
+             "cells": deque(maxlen=HIST_MAX_S + 32),  # {{t, img (RGB uint8), pinned, evt}}
              "evt": deque(maxlen=int(HIST_MAX_S / VH_TICK_S) + 8),   # (t, code) — ruban
              "last_fi": None, "last_fi_t": 0.0, "status": "",
-             "thumb": None, "good": None, "ver": 0}}
+             "tw": VH_THUMB_W_MAX, "th": VH_THUMB_H, "aspect": 16.0 / 9.0,
+             "cell_t": 0.0, "thumb": None, "good": None, "ver": 0}}
+
+def _vh_thumb_dims(src):
+    """Dimensions de STOCKAGE d'une vignette : hauteur fixe, largeur au RATIO DE LA SOURCE (une
+    vignette n'est JAMAIS anamorphosée — ni au stockage ni au rendu). Entrelacé natif : un grain =
+    un CHAMP (½ hauteur) → le ratio de l'IMAGE est in_w / (2·in_h)."""
+    in_w = max(1, int(src.get("in_w") or 1)); in_h = max(1, int(src.get("in_h") or 1))
+    if src.get("interlaced"):
+        in_h *= 2
+    ar = float(in_w) / float(in_h)
+    th = max(8, min(VH_THUMB_H, in_h))          # jamais d'UPSCALE : un proxy minuscule est pris tel quel
+    tw = max(VH_THUMB_W_MIN, min(VH_THUMB_W_MAX, in_w, int(round(th * ar))))
+    return tw, th, float(tw) / float(th)
 
 def _vh_close(st):
     src = st.get("src")
@@ -1735,39 +1772,60 @@ def _vh_close(st):
     except Exception: pass
 
 def _vh_pick_path(name):
-    """Source la MOINS CHÈRE pour une vignette : le plus PETIT proxy pyramide qui couvre encore
-    96×54, sinon le flux plein. On ne redimensionne jamais une trame : on prélève 96×54 points."""
+    """Source la MOINS CHÈRE pour une vignette : le PLUS PETIT proxy pyramide disponible, POINT.
+    Une vignette d'historique fait ~60 px de large et répond à « c'était quoi, à ce moment-là ? » :
+    sa QUALITÉ N'A AUCUNE IMPORTANCE (cadrage utilisateur). On préfère donc systématiquement un
+    proxy trop petit (crénelé, tant pis) au flux PLEIN — jamais l'inverse. Le flux plein n'est lu
+    que si la pyramide ne produit rien pour cette source. Aucune taille sur-mesure n'est réclamée
+    (proxy_needs) : faire produire un proxy dédié à 50 Hz pour servir un relevé toutes les ~6 s
+    coûterait au nœud bien plus cher que le prélèvement qu'il économise."""
     best = name; ba = None
     for p in (_scan_proxies_for({{"path": "/dev/shm/" + name}}) or ()):
         w = int(p.get("w") or 0); h = int(p.get("h") or 0)
-        if w >= VH_THUMB_W and h >= VH_THUMB_H and (ba is None or w * h < ba):
+        if w >= VH_THUMB_W_MIN and h >= 16 and (ba is None or w * h < ba):
             ba = w * h; best = (p.get("path") or "").removeprefix("/dev/shm/")
     return best or name
 
-def _vh_thumb(src, view):
-    """Vignette RGB (VH_THUMB_H×VH_THUMB_W×3) + (luma moyenne, luma max) sur l'échelle 8 bits.
-    Gather de 96×54 POINTS sur les plans du grain (vue zéro-copie) — pas un resize de trame."""
+def _vh_planes(src, view):
+    """Vues (zéro-copie) des plans Y/U/V d'un grain."""
     in_w, in_h = src["in_w"], src["in_h"]
     yb  = in_w * in_h * _BPS
     uvb = (in_w // _CW) * (in_h // _CH) * _BPS
     y = view[:yb].view(_NP_DT).reshape(in_h, in_w)
     u = view[yb:yb + uvb].view(_NP_DT).reshape(in_h // _CH, in_w // _CW)
     v = view[yb + uvb:yb + 2 * uvb].view(_NP_DT).reshape(in_h // _CH, in_w // _CW)
-    ry = (np.arange(VH_THUMB_H) * in_h) // VH_THUMB_H
-    rx = (np.arange(VH_THUMB_W) * in_w) // VH_THUMB_W
-    cy = (np.arange(VH_THUMB_H) * (in_h // _CH)) // VH_THUMB_H
-    cx = (np.arange(VH_THUMB_W) * (in_w // _CW)) // VH_THUMB_W
+    return y, u, v, in_w, in_h
+
+def _vh_luma(src, view):
+    """Sonde de LUMA (moyenne, max) sur l'échelle 8 bits — plan Y SEUL, VH_PROBE_W×VH_PROBE_H
+    points (576). Prélevée à CHAQUE tick (5 Hz) pour la détection de NOIR : ~10× moins chère
+    qu'une vignette complète, qui n'est capturée qu'à la cadence des cases (cf. _vh_sample)."""
+    y, _u, _v, in_w, in_h = _vh_planes(src, view)
+    ry = (np.arange(VH_PROBE_H) * in_h) // VH_PROBE_H
+    rx = (np.arange(VH_PROBE_W) * in_w) // VH_PROBE_W
+    ty = y[np.ix_(ry, rx)].astype(np.float32) / _SCALE
+    return float(ty.mean()), float(ty.max())
+
+def _vh_thumb(src, view, tw, th):
+    """Vignette RGB (th×tw×3), au RATIO DE LA SOURCE (cf. _vh_thumb_dims) — jamais anamorphosée.
+    Gather de tw×th POINTS sur les plans du grain (vue zéro-copie) — pas un resize de trame."""
+    y, u, v, in_w, in_h = _vh_planes(src, view)
+    ry = (np.arange(th) * in_h) // th
+    rx = (np.arange(tw) * in_w) // tw
+    cy = (np.arange(th) * (in_h // _CH)) // th
+    cx = (np.arange(tw) * (in_w // _CW)) // tw
     ty = y[np.ix_(ry, rx)].astype(np.float32) / _SCALE          # échelle 8 bits (10/12 bits ramenés)
     tu = u[np.ix_(cy, cx)].astype(np.float32) / _SCALE - 128.0
     tv = v[np.ix_(cy, cx)].astype(np.float32) / _SCALE - 128.0
     r = ty + 1.402 * tv
     g = ty - 0.344136 * tu - 0.714136 * tv
     b = ty + 1.772 * tu
-    rgb = np.clip(np.stack([r, g, b], axis=-1), 0, 255).astype(np.uint8)
-    return rgb, float(ty.mean()), float(ty.max())
+    return np.clip(np.stack([r, g, b], axis=-1), 0, 255).astype(np.uint8)
 
-def _vh_sample(name, win, now):
-    """Un relevé (VH_TICK_S) d'une source vidéo suivie : vignette + statut + épinglage d'événement."""
+def _vh_sample(name, win, now, step):
+    """Un relevé (VH_TICK_S) d'une source vidéo suivie : statut (5 Hz) + vignette (à la cadence
+    des cases, `step` — cf. VH_CELL_MIN_W) + ★ ÉPINGLAGE À L'INSTANT DE L'ÉVÉNEMENT (préservé :
+    une transition capture la vignette IMMÉDIATEMENT, hors cadence)."""
     with _hist_lock:
         st = _vh.get(name)
         if st is None:
@@ -1778,6 +1836,8 @@ def _vh_sample(name, win, now):
             _vh_close(st)
             st["src"] = open_source({{"path": want}})
             st["path"] = want if st["src"] is not None else ""
+            if st["src"] is not None:
+                st["tw"], st["th"], st["aspect"] = _vh_thumb_dims(st["src"])
         st["scan_t"] = now
     got = None
     if st["src"] is not None:
@@ -1786,7 +1846,6 @@ def _vh_sample(name, win, now):
         except Exception:
             got = None
     status = ""
-    thumb = None
     if got is None:
         status = "nosignal"
         st["thumb"] = None
@@ -1796,42 +1855,48 @@ def _vh_sample(name, win, now):
         fi = got[0]
         if fi != st.get("last_fi"):
             st["last_fi"] = fi; st["last_fi_t"] = now
-        mean_y = max_y = 0.0
+        mean_y = max_y = 0.0; lum_ok = False
         try:
-            thumb, mean_y, max_y = _vh_thumb(st["src"], got[2])
-            st["thumb"] = thumb; st["good"] = thumb
+            mean_y, max_y = _vh_luma(st["src"], got[2])   # sonde 32×18 (plan Y) — à CHAQUE tick
+            lum_ok = True
         except Exception:
-            thumb = None
+            lum_ok = False
         # Statut : celui DÉJÀ calculé par la boucle de mix si la source alimente une fenêtre
         # (aucune seconde détection) ; sinon MÊME règle appliquée à notre reader. Le noir n'est
-        # pas un statut du moteur → mesuré sur la vignette.
+        # pas un statut du moteur → mesuré sur la sonde de luma (toujours à 200 ms près).
         ws = _tile_status.get(win) if win is not None else None
         if ws in ("nosignal", "freeze"):
             status = ws
         elif FREEZE_DETECT_S > 0 and (now - st["last_fi_t"]) > FREEZE_DETECT_S:
             status = "freeze"
-        elif thumb is not None and mean_y <= VH_BLACK_MEAN and max_y <= VH_BLACK_MAX:
+        elif lum_ok and mean_y <= VH_BLACK_MEAN and max_y <= VH_BLACK_MAX:
             status = "black"
     st["evt"].append((now, status))
     prev = st.get("status") or ""
     st["status"] = status
-    sec = int(now)
-    cells = st["cells"]
-    cur = cells[-1] if cells else None
-    if cur is None or cur["sec"] != sec:
-        cur = {{"sec": sec, "img": st.get("thumb"), "pinned": False, "evt": ""}}
-        cells.append(cur)
-        st["ver"] += 1                       # nouvelle case → la bande est recomposée (1 Hz)
-    elif not cur["pinned"]:
-        cur["img"] = st.get("thumb")         # dernière image de la seconde en cours (sans re-bake)
-    if status != prev:
-        if status:
-            # ★ TRANSITION : on ÉPINGLE l'image de l'instant — celle sur laquelle ça s'est figé
-            # (gel/noir) ou la dernière VALIDE (perte de signal) — dans la case de cette seconde.
-            img = st.get("good") if status == "nosignal" else st.get("thumb")
-            if img is not None:
-                cur["img"] = img; cur["pinned"] = True; cur["evt"] = status
-        st["ver"] += 1                       # transition → ruban + liseré rafraîchis tout de suite
+    trans = (status != prev and status != "")
+    periodic = (now - float(st.get("cell_t") or 0.0)) >= step
+    # Vignette prélevée SEULEMENT quand elle sert : nouvelle case, ou transition à épingler.
+    if got is not None and (periodic or trans):
+        try:
+            img = _vh_thumb(st["src"], got[2], st["tw"], st["th"])
+        except Exception:
+            img = None
+        if img is not None:
+            st["thumb"] = img; st["good"] = img
+    if trans:
+        # ★ TRANSITION : on ÉPINGLE l'image de l'instant — celle sur laquelle ça s'est figé
+        # (gel/noir) ou la dernière VALIDE (perte de signal). Case DATÉE : elle tombera dans la
+        # case temporelle de l'événement quelle que soit la cadence de base de la frise.
+        img = st.get("good") if status == "nosignal" else st.get("thumb")
+        st["cells"].append({{"t": now, "img": img, "pinned": True, "evt": status}})
+        st["cell_t"] = now
+    elif periodic:
+        st["cells"].append({{"t": now, "img": st.get("thumb") if got is not None else None,
+                            "pinned": False, "evt": ""}})
+        st["cell_t"] = now
+    if trans or periodic or status != prev:
+        st["ver"] += 1                       # nouvelle case / transition → bande + ruban recomposés
 
 def _vhist_loop():
     """Thread d'échantillonnage vidéo (VH_TICK_S). Aucune trame prélevée dans la boucle de mix."""
@@ -1840,10 +1905,19 @@ def _vhist_loop():
         try:
             units = _hist_units("video")
             wanted = {{}}
-            for _k, _u, _r, cfg_src, wi in units:
+            steps = {{}}
+            for _k, unit, rect, cfg_src, wi in units:
                 nm = (cfg_src.get("path") or "").removeprefix("/dev/shm/")
-                if nm:
-                    wanted.setdefault(nm, wi)
+                if not nm:
+                    continue
+                wanted.setdefault(nm, wi)
+                # Cadence de prélèvement = pas de case de la frise la plus EXIGEANTE de cette
+                # source (plusieurs frises peuvent partager le ring : la plus fine gagne).
+                with _hist_lock:
+                    _stv = _vh.get(nm)
+                    _ar = float(_stv["aspect"]) if _stv else 16.0 / 9.0
+                _st = _vh_slots(rect, _hist_dur(unit), _as_bool(unit.get("events", True), True), _ar)[1]
+                steps[nm] = min(steps.get(nm, 1e9), _st)
             with _hist_lock:
                 dead = [nm for nm in _vh if nm not in wanted]
                 for nm in dead:
@@ -1860,7 +1934,7 @@ def _vhist_loop():
             now = time.time()
             for nm, wi in wanted.items():
                 try:
-                    _vh_sample(nm, wmap.get(nm, wi), now)
+                    _vh_sample(nm, wmap.get(nm, wi), now, max(1.0, steps.get(nm, 1.0)))
                 except Exception:
                     pass
         except Exception:
@@ -2015,54 +2089,164 @@ def _hist_evt_at(evts, t):
             break
     return code or ""
 
+def _vh_slots(rect, dur, show_evt, aspect):
+    """★ Nombre de vignettes DÉDUIT DE LA PLACE, et intervalle qui en découle.
+    Une vignette occupe `sh × (sh·ratio_source)` — donc autant de cases que la bande peut en
+    aligner SANS DÉFORMATION ni chevauchement (plancher VH_CELL_MIN_W : sous ~48 px de large une
+    vignette n'apprend plus rien). step = durée / nb ≥ 1 s. Renvoie (n, step, rb, sh)."""
+    rw, rh = rect[2], rect[3]
+    sc = _hist_scale_h(rh)                               # bandes de graduations (haut + bas)
+    usable = max(8, rh - 2 * sc)
+    rb = max(4, min(10, usable // 8)) if show_evt else 0  # hauteur du ruban d'événements
+    sh = max(4, usable - rb - (2 if rb else 0))          # hauteur de la bande de vignettes
+    cw_min = max(VH_CELL_MIN_W, int(round(sh * max(0.2, aspect))) + VH_CELL_GAP)
+    n = max(1, min(int(rw // cw_min), int(dur)))
+    return n, dur / float(n), rb, sh, sc
+
+def _hist_fill(arr, y0, y1, rgb, a):
+    """Remplit les lignes [y0:y1) d'un RGBA avec une couleur unie — via un GABARIT DE LIGNE
+    contigu (arr[y0:y1] = row). ⚠ PERF : `arr[..., 0:3] = (r, g, b)` écrit une vue STRIDÉE et
+    coûte ~35× plus cher (3,7 ms vs 0,11 ms sur une frise 1720×200 — mesuré) ; c'est ce motif,
+    répété à chaque recomposition, qui faisait tomber le mur sous 50 fps."""
+    if y1 <= y0:
+        return
+    row = np.empty((arr.shape[1], 4), dtype=np.uint8)
+    row[:] = (rgb[0], rgb[1], rgb[2], a)
+    arr[y0:y1] = row
+
+# ─── Échelle temporelle des frises (graduations) ─────────────────────────────────────────
+# DEUX règles, identiques sur les deux frises (elles se lisent l'une SOUS l'autre : mêmes pas,
+# mêmes abscisses → une saturation audio se corrèle à l'œil avec un gel image) :
+#   • EN HAUT : décompte RELATIF (−30 s … −10 s … 0), 0 = maintenant, tout à droite ;
+#   • EN BAS  : HORODATAGE ABSOLU (heure civile, MÊME horloge que les overlays « ptp » :
+#     temps du nœud − TAI_UTC_OFFSET_S, fuseau injecté).
+# COÛT : les deux bandes sont CACHÉES (motif du fond statique des VU-mètres) — la bande relative ne
+# change JAMAIS pour une géométrie donnée, la bande absolue une fois par SECONDE. La clé de cache
+# porte tout ce qui la fait varier (rw, h, durée, opacité, pas, seconde) : jamais d'échelle périmée.
+_hist_scale_cache = {{}}
+_HIST_SCALE_STEPS = (1, 2, 5, 10, 15, 30, 60, 120)
+_HIST_SCALE_MINPX = 140                # espacement minimal entre deux graduations (libellé AÉRÉ)
+
+def _hist_scale_h(rh):
+    """Hauteur d'une bande de graduations (0 = frise trop basse pour en porter)."""
+    return 11 if rh >= 64 else 0
+
+def _hist_scale_step(rw, dur):
+    """Pas de graduation DÉDUIT DE LA PLACE (comme le nombre de vignettes) : le plus fin des pas
+    offerts qui laisse au moins _HIST_SCALE_MINPX entre deux graduations."""
+    for s in _HIST_SCALE_STEPS:
+        if rw * s / float(dur) >= _HIST_SCALE_MINPX:
+            return s
+    return _HIST_SCALE_STEPS[-1]
+
+def _hist_civil(t):
+    """Heure civile locale d'un instant du mur — MÊME conversion que l'horloge « ptp » des overlays."""
+    lt = time.localtime(t - TAI_UTC_OFFSET_S)
+    return "%02d:%02d:%02d" % (lt.tm_hour, lt.tm_min, lt.tm_sec)
+
+def _hist_scale_band(rw, h, dur, a_bg, absolute, now):
+    """Bande RGBA (h, rw, 4) de graduations — CACHÉE (rendu PIL payé 1×, ou 1×/s en absolu)."""
+    key = (rw, h, dur, a_bg, absolute, int(now) if absolute else 0)
+    hit = _hist_scale_cache.get(key)
+    if hit is not None:
+        return hit
+    step = _hist_scale_step(rw, dur)
+    img = Image.new("RGBA", (rw, h), (_HIST_BG[0], _HIST_BG[1], _HIST_BG[2], a_bg))
+    d = ImageDraw.Draw(img, "RGBA")
+    f = ImageFont.load_default()
+    k = 0
+    while k * step <= dur:
+        x = rw - 1 - int(round(k * step * rw / float(dur)))
+        if x < 0:
+            break
+        d.line([x, 0 if absolute else h - 4, x, 3 if absolute else h - 1],
+               fill=(150, 156, 168, 255))
+        txt = _hist_civil(now - k * step) if absolute else ("0" if k == 0 else "-%ds" % (k * step))
+        tw = int(d.textlength(txt, font=f))
+        tx = min(rw - tw - 1, max(1, x - tw // 2))
+        d.text((tx, 1 if absolute else 0), txt, font=f, fill=(196, 202, 214, 255))
+        k += 1
+    band = np.asarray(img).copy()          # contigu → blit direct dans la frise
+    if len(_hist_scale_cache) > 12:
+        _hist_scale_cache.clear()          # (borné : quelques géométries × la seconde courante)
+    _hist_scale_cache[key] = band
+    return band
+
+def _hist_scales(arr, rw, rh, dur, a_bg, now):
+    """Pose les deux bandes de graduations (haut = relatif, bas = absolu) et renvoie leur hauteur."""
+    h = _hist_scale_h(rh)
+    if h:
+        arr[0:h] = _hist_scale_band(rw, h, dur, a_bg, False, now)
+        arr[rh - h:rh] = _hist_scale_band(rw, h, dur, a_bg, True, now)
+    return h
+
 def _vh_render(unit, rect, name, now):
     """Bande de vignettes + ruban d'événements → RGBA numpy (rh, rw, 4).
-    100 % numpy (aucun PIL par colonne/vignette) : la recomposition n'a lieu qu'à l'arrivée
-    d'une vignette (1 Hz) ou à une transition d'événement, mais elle tombe DANS une trame du
-    mur (budget 20 ms à 50 fps) → elle doit rester à quelques ms, pas quelques dizaines."""
+    La recomposition n'a lieu qu'à l'arrivée d'une vignette (tous les `step` s ≈ 6 s) ou à une
+    transition d'événement, mais elle tombe DANS une trame du mur (budget 20 ms à 50 fps) → elle
+    doit rester à quelques ms. Primitives choisies AU CHRONO (cf. _hist_fill / vignettes PIL).
+    Chaque vignette est posée à son RATIO (letterbox/pillarbox dans sa case) : une frise de
+    diagnostic qui déforme l'image ment sur ce qu'elle montre."""
     _rx, _ry, rw, rh = rect
     dur = _hist_dur(unit)
     show_evt = _as_bool(unit.get("events", True), True)
     a_bg = max(10, min(100, int(unit.get("opacity") or 85))) * 255 // 100
-    rb = max(4, min(10, rh // 8)) if show_evt else 0     # hauteur du ruban
-    sh = max(4, rh - rb - (2 if rb else 0))              # hauteur de la bande de vignettes
-    arr = np.empty((rh, rw, 4), dtype=np.uint8)
-    arr[..., 0:3] = _HIST_BG
-    arr[..., 3] = a_bg
     with _hist_lock:
         st = _vh.get(name)
         cells = list(st["cells"]) if st else []
         evts = list(st["evt"]) if st else []
+        aspect = float(st["aspect"]) if st else 16.0 / 9.0
+    n, step, rb, sh, sc = _vh_slots(rect, dur, show_evt, aspect)
+    arr = np.empty((rh, rw, 4), dtype=np.uint8)
+    _hist_fill(arr, sc, sc + sh, (30, 32, 38), a_bg)    # cases encore vides (avant le 1ᵉʳ relevé)
+    _hist_fill(arr, sc + sh, rh - sc, _HIST_BG, a_bg)   # gouttière + fond du ruban
+    _hist_scales(arr, rw, rh, dur, a_bg, now)           # graduations (cachées : coût ~nul)
     t0 = now - dur
-    by_sec = {{c["sec"]: c for c in cells}}
-    cw = rw / float(dur)
-    strip = arr[:sh, :, 0:3]
-    strip[:] = (30, 32, 38)                             # cases sans vignette (avant la 1ʳᵉ seconde)
-    _rows = None; _rows_h = -1
-    for k in range(dur):
-        c = by_sec.get(int(t0) + k + 1)
-        if c is None or c.get("img") is None:
+    cw = rw / float(n)
+    strip = arr[sc:sc + sh, :, 0:3]
+    # Rangement des vignettes DATÉES dans les cases temporelles de CETTE frise. Une vignette
+    # ÉPINGLÉE (capturée à l'instant d'un événement) l'emporte toujours sur un relevé de routine
+    # tombé dans la même case — c'est l'image sur laquelle ça s'est figé qu'on veut voir.
+    slots = {{}}
+    for c in cells:                       # ring DÉJÀ trié par temps → « le dernier gagne »
+        k = int((float(c.get("t") or 0.0) - t0) / step)
+        if k < 0 or k >= n or c.get("img") is None:
             continue
-        x0 = int(round(k * cw)); x1 = max(x0 + 1, int(round((k + 1) * cw))) - 1
-        x1 = min(x1, rw)
-        cwid = x1 - x0
-        if cwid < 1:
+        prev = slots.get(k)
+        if prev is not None and prev.get("pinned") and not c.get("pinned"):
+            continue                      # l'ÉPINGLÉE (instant de l'événement) l'emporte
+        slots[k] = c
+    for k, c in slots.items():
+        img = c["img"]
+        ih, iw = img.shape[0], img.shape[1]
+        x0 = int(round(k * cw)); x1 = min(rw, int(round((k + 1) * cw)) - VH_CELL_GAP)
+        box_w = x1 - x0
+        if box_w < 4 or ih < 1 or iw < 1:
             continue
-        if _rows_h != sh:                               # mapping vertical partagé par toutes les cases
-            _rows = (np.arange(sh) * VH_THUMB_H) // sh
-            _rows_h = sh
-        cols = (np.arange(cwid) * VH_THUMB_W) // cwid
-        strip[:, x0:x1] = c["img"][np.ix_(_rows, cols)]  # nearest (gather) — pas de resize PIL
+        # LETTERBOX / PILLARBOX : la vignette garde SON ratio dans la case (jamais étirée).
+        zf = min(box_w / float(iw), sh / float(ih))
+        tw = max(2, min(box_w, int(round(iw * zf))))
+        th = max(2, min(sh, int(round(ih * zf))))
+        ox = x0 + (box_w - tw) // 2
+        oy = (sh - th) // 2
+        # Agrandissement PLUS PROCHE VOISIN (Image.NEAREST, C) + écriture d'un BLOC RGBA CONTIGU :
+        # 0,55 ms contre 1,8 ms pour un gather np.ix_ écrit dans une vue stridée (mesuré). La
+        # qualité n'a aucune importance ici — le crénelage est assumé.
+        up = np.asarray(Image.fromarray(img).resize((tw, th), Image.NEAREST))
+        blk = np.empty((th, tw, 4), dtype=np.uint8)
+        blk[..., 0:3] = up
+        blk[..., 3] = a_bg
+        arr[sc + oy:sc + oy + th, ox:ox + tw] = blk
         if c.get("pinned") and c.get("evt"):
             # Vignette CAPTURÉE À L'INSTANT de l'événement : liseré à la couleur de l'événement.
             col = _HIST_EVT_RGB.get(c["evt"], (255, 255, 255))
-            strip[0, x0:x1] = col; strip[sh - 1, x0:x1] = col
-            strip[:, x0] = col; strip[:, x1 - 1] = col
+            strip[oy, ox:ox + tw] = col; strip[oy + th - 1, ox:ox + tw] = col
+            strip[oy:oy + th, ox] = col; strip[oy:oy + th, ox + tw - 1] = col
     if rb:
         # Ruban : couleur du statut à l'instant de chaque colonne (vide = signal sain). Recherche
         # vectorisée dans le ring d'événements (relevés à VH_TICK_S, donc déjà triés par temps).
-        band = arr[sh + 1:rh, :, 0:3]
-        band[:] = (44, 48, 56)
+        _hist_fill(arr, sc + sh + 1, rh - sc, (44, 48, 56), a_bg)
+        band = arr[sc + sh + 1:rh - sc, :, 0:3]
         if evts:
             ets = np.fromiter((e[0] for e in evts), dtype=np.float64, count=len(evts))
             codes = [e[1] for e in evts]
@@ -2089,9 +2273,16 @@ def _ah_render(unit, rect, cfg_src, now):
     dur = _hist_dur(unit)
     s0, n, names = _ah_names(unit, cfg_src)
     a_bg = max(10, min(100, int(unit.get("opacity") or 85))) * 255 // 100
-    peak = np.full(rw, METER_MIN_DB, dtype=np.float32)
-    clip = np.zeros(rw, dtype=bool)
-    seen = np.zeros(rw, dtype=bool)
+    # RÉSOLUTION DE L'ENVELOPPE : une colonne PAR PIXEL (AH_COL_PX = 1). L'enveloppe fine ne coûte
+    # RIEN — les crêtes sont déjà calculées par l'échantillonneur, on ne fait que les DESSINER ; le
+    # coût de la recomposition était dans les écritures numpy stridées (cf. _hist_fill), pas dans
+    # la finesse. AH_COL_PX reste un cran de repli si un jour on veut épaissir le trait.
+    # L'agrégation est un MAX (jamais une moyenne) sur la tranche de temps de la colonne, et la
+    # saturation un OU logique → une saturation de 3 ms peint TOUTE sa colonne en rouge.
+    ncol = max(8, int(rw // max(1, AH_COL_PX)))
+    peak = np.full(ncol, METER_MIN_DB, dtype=np.float32)
+    clip = np.zeros(ncol, dtype=bool)
+    seen = np.zeros(ncol, dtype=bool)
     t0 = now - dur
     need = min(AH_MAX, int(dur / AH_TICK_S) + 8)        # on ne relit QUE la fenêtre affichée…
     snap = []
@@ -2108,7 +2299,7 @@ def _ah_render(unit, rect, cfg_src, now):
                 cnt = st["n"]
             idx = (np.arange(cnt) + (st["w"] - cnt)) % AH_MAX
             snap.append((flow, st["t"][idx].copy(), st["pk"][idx].copy(), st["clip"][idx].copy()))
-    edges = t0 + np.arange(rw) * (dur / float(rw))
+    edges = t0 + np.arange(ncol) * (dur / float(ncol))
     for flow, ts, pks, cls in snap:
         f0 = flow * A_CHANNELS_MAX
         a = max(s0, f0); b = min(s0 + n, f0 + A_CHANNELS_MAX)     # canaux suivis DANS ce flux
@@ -2128,30 +2319,47 @@ def _ah_render(unit, rect, cfg_src, now):
         peak[keep] = np.maximum(peak[keep], pk_col)
         clip[keep] |= cl_col
         seen[keep] = True
-    arr = np.empty((rh, rw, 4), dtype=np.uint8)
-    arr[..., 0:3] = _HIST_BG
-    arr[..., 3] = a_bg
+    if ncol != rw:      # colonnes → pixels (plus proche voisin, AUCUN lissage : un clip reste PLEIN)
+        _px = (np.arange(rw) * ncol) // rw
+        peak = peak[_px]; clip = clip[_px]; seen = seen[_px]
     silence = seen & (peak <= SILENCE_DB)
+    # FOND = un GABARIT DE LIGNE (rw, 4) qui porte DÉJÀ les plages de silence (grisées) → une seule
+    # écriture contiguë `arr[:] = row` (0,11 ms) au lieu d'une passe stridée + une passe colonnes.
+    arr = np.empty((rh, rw, 4), dtype=np.uint8)
+    row = np.empty((rw, 4), dtype=np.uint8)
+    row[:] = (_HIST_BG[0], _HIST_BG[1], _HIST_BG[2], a_bg)
     if silence.any():
-        arr[:, silence, 0:3] = _HIST_SILENCE                      # plage silencieuse : fond grisé
-    cy = rh // 2
-    half = max(1, cy - 1)
+        row[silence] = (_HIST_SILENCE[0], _HIST_SILENCE[1], _HIST_SILENCE[2], a_bg)
+    arr[:] = row
+    # Graduations : MÊMES pas et MÊMES abscisses que la frise vidéo (elles se lisent l'une sous
+    # l'autre) — cachées, donc gratuites par trame.
+    sc = _hist_scales(arr, rw, rh, dur, a_bg, now)
+    wy0, wy1 = sc, rh - sc                                        # bande utile de l'enveloppe
+    wh = max(2, wy1 - wy0)
+    cy = wy0 + wh // 2
+    half = max(1, wh // 2 - 1)
     frac = np.clip((peak - METER_MIN_DB) / (0.0 - METER_MIN_DB), 0.0, 1.0)   # dBFS → 0..1 (linéaire en dB)
-    hgt = (frac * half).astype(int)
+    hgt = (frac * half).astype(np.int16)
     hgt[~seen] = 0
-    band = np.abs(np.arange(rh)[:, None] - cy) <= hgt[None, :]
-    rgb = arr[..., 0:3]
-    rgb[band] = _HIST_WAVE
+    yy = np.abs(np.arange(wy0, wy1, dtype=np.int16) - cy)
+    band = yy[:, None] <= hgt[None, :]
+    # ⚠ PERF : peindre CANAL PAR CANAL sous le masque (3 écritures uint8 contiguës) au lieu de
+    # `rgb[band] = (r, g, b)` (indexation avancée sur une vue stridée) : 1,3 ms contre 8,8 ms sur
+    # une frise 1720×202 — mesuré. Même résultat au pixel près.
+    wav = arr[wy0:wy1]
+    for _c, _v in enumerate(_HIST_WAVE):
+        wav[..., _c][band] = _v
+    for _c, _v in enumerate((90, 96, 108)):                       # axe zéro
+        np.maximum(arr[cy, :, _c], _v, out=arr[cy, :, _c])
     # SATURATION : colonne ROUGE sur TOUTE la hauteur → le marqueur PERSISTE tant que la colonne
     # est dans la fenêtre de temps (une saturation de 3 ms reste lisible pendant 30 s), et reste
-    # visible même si la crête moyenne de la tranche est basse. Élargie à 2 px : à 120 s de
-    # profondeur une colonne fait moins d'un pixel de temps — un trait de 1 px se rate à l'œil.
+    # visible même si la crête de la tranche est basse. Élargie à 2 px : à 120 s de profondeur une
+    # colonne fait moins d'un pixel de temps — un trait de 1 px se rate à l'œil.
     if clip.any():
         wide = clip.copy()
         wide[1:] |= clip[:-1]
-        rgb[:, wide] = _HIST_CLIP
-    axis = np.maximum(rgb[cy], np.array((90, 96, 108), dtype=np.uint8))
-    rgb[cy] = axis
+        for _c, _v in enumerate(_HIST_CLIP):
+            arr[wy0:wy1, wide, _c] = _v
     return arr
 
 def _hist_tile(rect, arr):
@@ -2205,12 +2413,16 @@ def render_history_tiles(now):
                 with _hist_lock:
                     stv = _vh.get(name)
                     ver = stv["ver"] if stv else -1
+                # `int(now)` : l'HORODATAGE ABSOLU de l'échelle change chaque seconde — sans lui la
+                # frise afficherait une heure périmée entre deux vignettes (une par ~6 s).
                 sig = (rect, dur, ver, int(unit.get("opacity") or 85),
-                       _as_bool(unit.get("events", True), True), name)
+                       _as_bool(unit.get("events", True), True), int(now), name)
             else:
-                # Pas de recomposition = arrivée d'une nouvelle COLONNE, plafonné à 5 Hz : au-delà,
-                # l'enveloppe n'avance que de 1-2 px (invisible) et on paierait le dessin 20×/s.
-                col = int(now / max(0.2, dur / float(rw)))
+                # Pas de recomposition = arrivée d'une nouvelle COLONNE, plafonné à AH_RECOMPOSE_S
+                # (5 Hz) : au-delà, l'enveloppe n'avance que de 1-2 px (invisible) et on paierait le
+                # dessin 20×/s. À 5 Hz, l'horodatage absolu de l'échelle est toujours à jour.
+                _ncol = max(8, int(rw // max(1, AH_COL_PX)))
+                col = int(now / max(AH_RECOMPOSE_S, dur / float(_ncol)))
                 sig = (rect, dur, col, int(unit.get("opacity") or 85),
                        int(unit.get("channels") or 2), int(unit.get("ch_start") or 1),
                        _audio_name_for(cfg_src, 0) or "")
