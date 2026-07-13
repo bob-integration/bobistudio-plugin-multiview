@@ -1537,7 +1537,8 @@ def render_anc_tiles(now):
             if size <= 0:
                 size = max(8, bh - 8)
             pad = max(2, (bh - size) // 2)
-        fnt = _font(size)
+        # Police du composant ANC (modèle de PiP) ou du bandeau de cellule — repli DejaVu Bold.
+        fnt = _overlay_font(flags.get("font") or "dejavu-sans-bold", size)
         bx0, by0 = max(0, vx), max(0, by)
         bx1, by1 = min(OUT_WIDTH, vx + vw), min(OUT_HEIGHT, by + bh)
         bx0 -= bx0 % _CW; by0 -= by0 % _CH
@@ -2455,6 +2456,56 @@ _FONT_FILES = {{
                  "/usr/share/fonts/opentype/firacode/FiraCode-Regular.otf"],
 }}
 _DEFAULT_FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+# ─── Bibliothèque de polices poussée par l'orchestrateur ─────────────────────
+# CONFIG["font_library"] = [{{"key": "lib:<sha16>", "name", "family", "ext", "sha256", "b64"}}]
+# — injecté au DÉPLOIEMENT par app/fonts.resolve_params() (seules les polices RÉELLEMENT
+# référencées par les params voyagent, en base64). Le rootfs du conteneur est ÉPHÉMÈRE : on
+# rematérialise donc les fichiers À CHAQUE DÉMARRAGE du script dans un répertoire de travail
+# recréé (aucun état à maintenir), puis on les enregistre dans _FONT_FILES → _overlay_font()
+# les sert exactement comme une police d'image. Une police illisible est IGNORÉE (log) : la clé
+# reste absente de _FONT_FILES et _overlay_font retombe sur DejaVu — jamais de crash du mur.
+_FONT_LIB_DIR = "/tmp/mv_fonts"
+
+def _materialize_font_library():
+    lib = CONFIG.get("font_library") or []
+    if not lib:
+        return
+    try:
+        os.makedirs(_FONT_LIB_DIR, exist_ok=True)
+    except OSError as e:
+        print("[fonts] répertoire de travail impossible (%s) → repli DejaVu" % e, flush=True)
+        return
+    ok = 0
+    for ent in lib:
+        if not isinstance(ent, dict):
+            continue
+        key = str(ent.get("key") or "")
+        if not key.startswith("lib:"):
+            continue
+        ext = (ent.get("ext") or "ttf").lower()
+        if ext not in ("ttf", "otf", "ttc"):
+            ext = "ttf"
+        try:
+            data = base64.b64decode(ent.get("b64") or "", validate=True)
+            if not data:
+                raise ValueError("charge utile vide")
+            path = os.path.join(_FONT_LIB_DIR, "%s.%s" % (key[4:], ext))
+            tmp = path + ".part"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+            ImageFont.truetype(path, 16)          # chargement RÉEL : une police cassée est écartée ici
+            _FONT_FILES[key] = [path]
+            ok += 1
+        except Exception as e:
+            print("[fonts] police %s (%s) illisible : %s → repli DejaVu"
+                  % (key, ent.get("name") or "?", e), flush=True)
+    print("[fonts] bibliothèque matérialisée : %d/%d police(s) dans %s"
+          % (ok, len(lib), _FONT_LIB_DIR), flush=True)
+
+_materialize_font_library()
+
 _ofont_cache = {{}}
 def _overlay_font(key, size):
     size = max(6, int(size))
@@ -3706,6 +3757,16 @@ class MvControlHandler(BaseHTTPRequestHandler):
         # Remplacement atomique de toute la liste de sources + géométrie.
         # Permet l'ajout/suppression de fenêtres à chaud depuis l'éditeur.
         b = self._json()
+        # Polices de la bibliothèque (clés `lib:*`) : le hot-apply peut introduire une police que
+        # le conteneur n'a pas encore (l'orchestrateur ne repousse le script qu'au déploiement) →
+        # on rematérialise ce que la charge utile embarque AVANT d'appliquer la nouvelle config,
+        # sinon le texte retomberait silencieusement sur DejaVu jusqu'au prochain redéploiement.
+        if b.get("font_library"):
+            CONFIG["font_library"] = b["font_library"]
+            _materialize_font_library()
+            _ofont_cache.clear()
+            tally_dirty.set()
+            overlay_dirty.set()
         new_fc = b.get("flux_config") or []
         # Blocs VU-mètres du MUR : même remplacement atomique (ajout/suppression/réordonnement à
         # chaud depuis le composer). On purge TOUS les états audio de blocs (clé ("mb", j)) —

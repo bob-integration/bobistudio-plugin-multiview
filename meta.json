@@ -1,7 +1,12 @@
 {
-  "version": "0.37.0",
+  "version": "0.38.0",
   "date": "2026-07-14",
   "changes": {
+    "Polices : le mur rend enfin la police choisie (0.38.0)": [
+      "Le mur RENDAIT tout son texte en DejaVu, quelle que soit la police choisie : rien ne lisait la bibliothèque de polices de l'orchestrateur. Le script matérialise désormais `CONFIG[\"font_library\"]` (polices RÉELLEMENT référencées, poussées en base64 au déploiement par app/fonts.resolve_params) dans un répertoire de travail recréé À CHAQUE DÉMARRAGE (`/tmp/mv_fonts`, rootfs de conteneur ÉPHÉMÈRE → aucun état à maintenir : la police voyage avec le script), les valide par un chargement Pillow réel puis les enregistre dans `_FONT_FILES` sous leur clé `lib:<sha16>` — `_overlay_font()` les sert alors exactement comme une police d'image. Police illisible ou clé inconnue (police supprimée de la bibliothèque) → repli DejaVu + log, jamais de crash du mur.",
+      "Sélecteur de police dans le COMPOSER du mur (overlays texte et horloge) : la liste figée des 10 polices d'image est remplacée par le catalogue `/api/fonts` (groupes « Polices système » / « Bibliothèque »), et l'APERÇU canvas rend la police choisie (@font-face posé par le catalogue partagé `window.BobiFonts`) — l'éditeur ne ment plus sur le rendu final. Une clé absente du catalogue reste affichée telle quelle (« police absente »), jamais écrasée en silence.",
+      "Composants ANC des modèles de PiP : le bandeau respecte lui aussi la police du composant (il était câblé en dur sur DejaVu)."
+    ],
     "Historique Vidéo et Historique Audio — « que s'est-il passé sur cette source ? » (0.37.0)": [
       "Deux nouveaux outils, chacun disponible SOUS DEUX FORMES avec le MÊME code de rendu : composant de MODÈLE DE PIP (types `video_history` / `audio_history`, géométrie normalisée à la cellule, source = celle de la fenêtre) et BLOC LIBRE DU MUR (`deploy_config.params.video_history_blocks[]` / `audio_history_blocks[]`, fractions 0..1 du mur, source câblée en propre — même motif que `meter_blocks` en 0.36.0, ports « Hist. vidéo N » / « Hist. audio N » sur la page Câbles, `input_key` `vh_idx`/`ah_idx`).",
       "Historique VIDÉO : une vignette par SECONDE sur la durée choisie (10/30/60/120 s, défaut 30) + un RUBAN D'ÉVÉNEMENTS sous la bande (gel = ambre, noir = indigo, perte de signal = rouge). ★ À l'ENTRÉE d'un événement, la vignette est capturée À CET INSTANT PRÉCIS et ÉPINGLÉE dans sa case (liseré de la couleur de l'événement) : la bande montre l'image SUR LAQUELLE ça s'est figé (et, pour une perte de signal, la dernière image valide), pas une image quelconque de la seconde en cours.",

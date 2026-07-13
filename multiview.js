@@ -324,7 +324,10 @@ async function chargerMw(vmid) {
     let c;
     try {
         await Promise.all([loadAllContainers(), loadVideoSources(), loadAudioSources(),
-                           _loadTslLabelNames(), loadPipTemplates()]);
+                           _loadTslLabelNames(), loadPipTemplates(),
+                           // Catalogue de polices (+ @font-face de la bibliothèque) : chargé dès
+                           // l'ouverture pour que l'APERÇU canvas rende la vraie police.
+                           window.BobiFonts ? window.BobiFonts.load() : Promise.resolve()]);
         const r = await fetch('/api/containers/' + vmid + '/config');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         c = await r.json();
@@ -2255,7 +2258,10 @@ function drawOverlayLayer(ctx, layer) {
                     : (o.text || ''));
             const fs = (o.font_size > 0 ? o.font_size : Math.max(8, Math.round(o.h * 0.7)));
             ctx.fillStyle = o.color || '#ffffff';
-            ctx.font = `bold ${fs}px sans-serif`;
+            // Police RÉELLE de l'overlay (bibliothèque incluse : @font-face posé par BobiFonts) —
+            // sinon l'aperçu mentirait sur le rendu du conteneur.
+            const fam = window.BobiFonts ? window.BobiFonts.cssFamily(o.font) : 'sans-serif';
+            ctx.font = `bold ${fs}px ${fam}`;
             ctx.textBaseline = 'middle';
             ctx.textAlign = o.align === 'left' ? 'left' : o.align === 'right' ? 'right' : 'center';
             const tx = o.align === 'left' ? o.x + 4 : o.align === 'right' ? o.x + o.w - 4 : o.x + o.w / 2;
@@ -2390,11 +2396,37 @@ function onBlockGeomChange() {
 // ── Panneau de propriétés overlay ──
 function _ovSetVal(id, v) { const e = document.getElementById(id); if (e) e.value = v; }
 function _ovSetChk(id, v) { const e = document.getElementById(id); if (e) e.checked = !!v; }
+// Pose la police d'un overlay dans le select. Si la clé n'est pas (encore / plus) au catalogue
+// — police de la bibliothèque supprimée, ou API indisponible — on AJOUTE une option explicite
+// plutôt que de laisser le select vide, qui écraserait silencieusement le choix de l'utilisateur.
+function _ovSetFont(id, key) {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    if (key && !Array.from(sel.options).some(o => o.value === key)) {
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = key + ' — ' + T('plugin.multiview.font_missing');
+        sel.appendChild(opt);
+    }
+    sel.value = key;
+}
+
+// Sélecteur de police des overlays TEXTE et HORLOGE : alimenté par le catalogue
+// /api/fonts (window.BobiFonts) = polices de l'image runtime + bibliothèque téléversée
+// (Réglages → Polices, clés `lib:<sha16>`). Repli sur la liste figée OVERLAY_FONTS si l'API
+// est inaccessible (le contrôle reste utilisable, jamais un select vide).
 function _ovFillFonts() {
     const sel = document.getElementById('ov_font');
     if (!sel || sel.dataset.filled) return;
     sel.innerHTML = OVERLAY_FONTS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
     sel.dataset.filled = '1';
+    if (!window.BobiFonts) return;
+    window.BobiFonts.load().then(({ fonts }) => {
+        if (!fonts.length) return;
+        const o = (editorParams.overlays || [])[selectedOverlay];
+        window.BobiFonts.fillSelect(sel, (o && o.font) || 'dejavu-sans-bold');
+        dessiner();   // l'aperçu doit refléter la police réelle dès que les @font-face sont posées
+    });
 }
 
 function refreshOverlayPanel() {
@@ -2413,7 +2445,7 @@ function refreshOverlayPanel() {
     });
     _ovSetVal('ov_x', o.x); _ovSetVal('ov_y', o.y); _ovSetVal('ov_w', o.w); _ovSetVal('ov_h', o.h);
     _ovFillFonts();
-    _ovSetVal('ov_font', o.font || 'dejavu-sans-bold');
+    _ovSetFont('ov_font', o.font || 'dejavu-sans-bold');
     _ovSetVal('ov_font_size', o.font_size || 0);
     _ovSetVal('ov_align', o.align || 'center');
     _ovSetVal('ov_color', o.color || '#ffffff');

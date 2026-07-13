@@ -269,5 +269,6 @@
   "plugin.multiview.tsl_mode_central": "Centralisé (orchestrateur)",
   "plugin.multiview.tsl_mode_direct": "TSL Direct (serveur local)",
   "plugin.multiview.tsl_port": "Port TSL 5.0 local",
-  "plugin.multiview.width": "Largeur"
+  "plugin.multiview.width": "Largeur",
+  "plugin.multiview.font_missing": "police absente"
 }
