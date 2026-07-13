@@ -2417,16 +2417,23 @@ function _ovSetFont(id, key) {
 // est inaccessible (le contrôle reste utilisable, jamais un select vide).
 function _ovFillFonts() {
     const sel = document.getElementById('ov_font');
-    if (!sel || sel.dataset.filled) return;
-    sel.innerHTML = OVERLAY_FONTS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
-    sel.dataset.filled = '1';
+    if (!sel || sel.dataset.filled) return;       // `filled` = le CATALOGUE est posé (pas le repli)
+    // Repli AFFICHÉ tout de suite (le contrôle reste utilisable si l'API tarde ou échoue) — mais on
+    // ne marque PAS le select comme rempli : sinon, si BobiFonts n'est pas encore défini au premier
+    // appel (ordre de chargement) ou si /api/fonts échoue, on resterait à VIE sur la liste figée des
+    // 10 polices d'image, sans jamais voir les polices de la BIBLIOTHÈQUE — et le garde-fou du haut
+    // interdirait toute nouvelle tentative. On retente donc à chaque ouverture du panneau.
+    if (!sel.options.length) {
+        sel.innerHTML = OVERLAY_FONTS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+    }
     if (!window.BobiFonts) return;
     window.BobiFonts.load().then(({ fonts }) => {
         if (!fonts.length) return;
         const o = (editorParams.overlays || [])[selectedOverlay];
         window.BobiFonts.fillSelect(sel, (o && o.font) || 'dejavu-sans-bold');
+        sel.dataset.filled = '1';                 // catalogue RÉELLEMENT posé → plus rien à faire
         dessiner();   // l'aperçu doit refléter la police réelle dès que les @font-face sont posées
-    });
+    }).catch(() => { /* catalogue indisponible : on garde le repli et on retentera */ });
 }
 
 function refreshOverlayPanel() {
