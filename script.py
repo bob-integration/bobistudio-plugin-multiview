@@ -827,7 +827,10 @@ def _refresh_lat_metrics():
     metrics["own_latency_ms"] = own_lat.avg()
     metrics["proxy_needs"] = _compute_proxy_needs()
     metrics["proxy_usage"] = dict(_proxy_usage_latest)   # idx → {{src,read,cost,kind}}
-    metrics["proxy_read"]  = list(_proxy_read_latest)     # shm proxy réellement lus (orphan-detect)
+    # shm proxy réellement lus (orphan-detect) : boucle de mix (fenêtres) ∪ échantillonneur des
+    # frises VIDÉO (une frise dont la source n'alimente AUCUNE fenêtre lit quand même un proxy —
+    # sans ça l'orchestrateur le croirait ORPHELIN et le supprimerait sous nos pieds).
+    metrics["proxy_read"]  = sorted(set(_proxy_read_latest) | _vh_read_proxies())
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
                                        "output": _t_output.avg(),
@@ -1620,6 +1623,32 @@ _vh         = {{}}   # nom de flux vidéo → état d'historique (ring de vignet
 _ah         = {{}}   # nom de flux audio → état d'historique (rings de crêtes/saturation)
 _hist_cache = {{}}   # clé d'unité → (signature, [tuiles YUV]) — recomposé au changement seulement
 
+_hist_errs = {{}}   # (clé d'unité, signature d'erreur) → {{kind, rect, err, n, t}} — THROTTLÉ
+
+def _hist_warn(key, kind, rect, err, trace=False):
+    """Échec de rendu d'une frise : loggé UNE fois par (unité, signature d'erreur) — pas 50×/s —
+    et exposé sur :8080 (`history_errors`). Une frise qui ne peut pas se rendre doit le DIRE."""
+    k = (key, err)
+    e = _hist_errs.get(k)
+    now = time.time()
+    if e is None:
+        e = {{"kind": kind, "rect": list(rect), "err": err, "n": 0, "t": now}}
+        _hist_errs[k] = e
+        print(f"multiview: HISTORIQUE {{kind}} {{key}} rect={{rect}} — RENDU IMPOSSIBLE : {{err}}",
+              flush=True)
+        if trace:
+            try:
+                import traceback as _tb
+                _tb.print_exc()
+            except Exception:
+                pass
+    e["n"] += 1
+    e["t"] = now
+    metrics["history_errors"] = [
+        {{"unit": "/".join(str(x) for x in kk[0]), "kind": vv["kind"], "rect": vv["rect"],
+          "err": vv["err"], "count": vv["n"]}}
+        for kk, vv in _hist_errs.items()]
+
 def _hist_dur(cfg):
     """Durée (s) d'un composant/bloc d'historique, bornée aux durées offertes (défaut 30)."""
     try:
@@ -1627,6 +1656,18 @@ def _hist_dur(cfg):
     except (TypeError, ValueError):
         return 30
     return d if d in HIST_DURATIONS else min(HIST_DURATIONS, key=lambda v: abs(v - d))
+
+def _hist_rect(cfg, comp):
+    """Rectangle d'une frise, SNAPPÉ sur la grille chroma (origine ET taille multiples de
+    _CW/_CH). La frise est composée dans son propre RGBA local puis blendée telle quelle
+    (cf. _hist_tile) : un rect à coordonnée impaire imposerait un recadrage — et c'est ce
+    recadrage qui, mal borné, rendait la frise invisible. On aligne donc une bonne fois ici."""
+    rx, ry, rw, rh = _comp_rect(cfg, comp)
+    x0 = rx - (rx % _CW); y0 = ry - (ry % _CH)
+    x1 = min(OUT_WIDTH, rx + rw); y1 = min(OUT_HEIGHT, ry + rh)
+    x1 -= (x1 - x0) % _CW
+    y1 -= (y1 - y0) % _CH
+    return x0, y0, max(_CW, x1 - x0), max(_CH, y1 - y0)
 
 def _hist_units(kind):
     """Unités d'historique à rendre : [(key, unit, rect, cfg_source, win_idx|None)].
@@ -1645,7 +1686,7 @@ def _hist_units(kind):
             if not _comp_visible(i, cfg, comp):
                 continue
             try:
-                out.append((("w", i, str(comp.get("id") or ctype)), comp, _comp_rect(cfg, comp), cfg, i))
+                out.append((("w", i, str(comp.get("id") or ctype)), comp, _hist_rect(cfg, comp), cfg, i))
             except Exception:
                 continue
     full_cfg = {{"x": 0, "y": 0, "w": OUT_WIDTH, "h": OUT_HEIGHT}}
@@ -1653,12 +1694,29 @@ def _hist_units(kind):
         if not isinstance(blk, dict) or blk.get("hidden"):
             continue
         try:
-            out.append(((kind[0] + "b", j, ""), blk, _comp_rect(full_cfg, blk), blk, None))
+            out.append(((kind[0] + "b", j, ""), blk, _hist_rect(full_cfg, blk), blk, None))
         except Exception:
             continue
     return out
 
 # ─── Historique VIDÉO : échantillonnage ──────────────────────────────────────
+# COÛT (question tranchée en 0.39.0) : une frise ne fait AUCUN gather dans la boucle de mix. Elle
+# lit sa source dans SON thread, à 5 Hz, et n'y prélève que VH_THUMB_W×VH_THUMB_H = 5 184 POINTS
+# par plan (np.ix_ sur une vue zéro-copie) — pas un resize de trame. Elle prend d'office le plus
+# PETIT proxy pyramide qui couvre la vignette (_vh_pick_path) quand la pyramide en produit ; elle
+# ne RÉCLAME (proxy_needs) aucune taille sur-mesure : faire produire un proxy 96×54 à 50 Hz pour
+# servir 5 relevés/s coûterait au nœud BIEN plus cher que le gather qu'il économise. En revanche
+# le proxy qu'elle lit est publié dans `proxy_read` (cf. _vh_read_proxies) — sans quoi il serait
+# vu ORPHELIN par l'orchestrateur et supprimé.
+
+def _vh_read_proxies():
+    """Proxies pyramide RÉELLEMENT lus par l'échantillonneur des frises vidéo (≠ flux pleins)."""
+    try:
+        with _hist_lock:
+            paths = [st.get("path") or "" for st in _vh.values()]
+    except Exception:
+        return set()
+    return {{p for p in paths if p and "__" in p}}
 
 def _vh_new():
     return {{"src": None, "path": "", "scan_t": 0.0,
@@ -2097,16 +2155,25 @@ def _ah_render(unit, rect, cfg_src, now):
     return arr
 
 def _hist_tile(rect, arr):
-    """RGBA numpy d'une unité → tuile YUV chroma-alignée (contrat de blend des VU-mètres)."""
+    """RGBA numpy d'une unité → tuile YUV chroma-alignée (contrat de blend des VU-mètres).
+    ⚠ `arr` est en coordonnées LOCALES au rect : la bbox chroma-alignée doit rester CONTENUE
+    dans le rect (origine arrondie VERS L'INTÉRIEUR). Arrondir l'origine vers l'extérieur
+    (motif des VU-mètres, dont la tuile RGBA est allouée SUR la bbox) donnait ici un offset
+    NÉGATIF (`bx0 - rx = -1` pour un rect à x impair) → tranche numpy VIDE → tuile de largeur 0,
+    donc frise INVISIBLE (et, selon le backend, exception au blend/conversion). Le rect est
+    déjà chroma-aligné par `_hist_rect` : ce bornage ne rogne plus rien, il reste un filet."""
     rx, ry, rw, rh = rect
     bx0 = max(0, rx); by0 = max(0, ry)
     bx1 = min(OUT_WIDTH, rx + rw); by1 = min(OUT_HEIGHT, ry + rh)
-    bx0 -= bx0 % _CW; by0 -= by0 % _CH
-    if (bx1 - bx0) % _CW: bx1 = min(OUT_WIDTH, bx1 - ((bx1 - bx0) % _CW))
-    if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 - ((by1 - by0) % _CH))
+    if bx0 % _CW: bx0 += _CW - (bx0 % _CW)      # origine : arrondi VERS L'INTÉRIEUR du rect
+    if by0 % _CH: by0 += _CH - (by0 % _CH)
+    bx1 -= (bx1 - bx0) % _CW                    # taille : multiple de la grille chroma
+    by1 -= (by1 - by0) % _CH
     if bx1 <= bx0 or by1 <= by0:
         return None
     sub = arr[by0 - ry:by1 - ry, bx0 - rx:bx1 - rx]
+    if sub.shape[0] < 1 or sub.shape[1] < 1:    # filet : jamais de tuile vide en aval
+        return None
     oy, ou, ov, oa, oa2 = rgba_to_yuv(sub)   # rgba_to_yuv accepte un ndarray RGBA (np.array(img))
     return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
 
@@ -2157,7 +2224,13 @@ def render_history_tiles(now):
                     img = (_vh_render(unit, rect, sig[-1], now) if kind == "video"
                            else _ah_render(unit, rect, cfg_src, now))
                     t = _hist_tile(rect, img)
-                except Exception:
+                    if t is None:
+                        _hist_warn(key, kind, rect, "tuile vide (rect hors canvas ou dégénéré)")
+                except Exception as _e:
+                    # ⛔ JAMAIS d'échec muet : une frise qui ne peut pas se rendre le DIT (c'est
+                    # l'avalage silencieux d'ici qui a masqué le bug de tuile vide de la 0.37.0).
+                    # Loggé UNE fois par (frise, signature d'erreur) — jamais 50×/s.
+                    _hist_warn(key, kind, rect, repr(_e), trace=True)
                     t = None
                 hit = (sig, [t] if t is not None else [])
                 _hist_cache[key] = hit
