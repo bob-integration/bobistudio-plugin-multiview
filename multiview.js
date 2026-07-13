@@ -34,6 +34,13 @@ let selectedOverlay = -1;   // index dans editorParams.overlays, ou -1
 let dragOverlay     = false; // true pendant un drag/resize d'overlay (réutilise dragMode/dragStart)
 const _ovThumbCache = {};   // clé "slug|path" → Image (vignette média pour l'aperçu canvas)
 
+// Blocs VU-mètres de MUR (meter_blocks) : posés en coordonnées ABSOLUES du canvas (comme les
+// overlays), CÂBLÉS (source audio propre, page Câbles) mais indépendants de toute fenêtre —
+// contrairement aux overlays. Édités en PIXELS canvas (comme les overlays) ; converti en
+// fractions 0..1 du mur SEULEMENT à la sérialisation (deployerEditor), cf. spec meter_blocks.
+let selectedBlock = -1;     // index dans editorParams.meter_blocks, ou -1
+let dragBlock      = false; // true pendant un drag/resize de bloc (réutilise dragMode/dragStart)
+
 const OVERLAY_FONTS = [
     ['dejavu-sans-bold',     'DejaVu Sans Bold'],
     ['dejavu-sans',          'DejaVu Sans'],
@@ -329,6 +336,7 @@ async function chargerMw(vmid) {
         tsl_mode: 'central',
         tsl_port: 4801,
         overlays: [],
+        meter_blocks: [],
         default_template: null,
         default_template_ref: ''
     }, dc.params || {});
@@ -354,9 +362,29 @@ async function chargerMw(vmid) {
         ratio: (f.in_w && f.in_h) ? f.in_w / f.in_h : 16/9
     }, f));
     editorParams.overlays = (editorParams.overlays || []);
+    // Blocs VU-mètres de MUR : stockés côté serveur en FRACTIONS 0..1 du mur (meter_blocks) →
+    // convertis en PIXELS canvas pour l'édition (comme les overlays), reconvertis en fractions
+    // à la sérialisation (deployerEditor). out_width/out_height sont résolus juste au-dessus.
+    editorParams.meter_blocks = (editorParams.meter_blocks || []).map((b, i) => ({
+        id: b.id || ('mb' + i + '_' + Date.now().toString(36)),
+        x: Math.round((b.x || 0) * editorParams.out_width),
+        y: Math.round((b.y || 0) * editorParams.out_height),
+        w: Math.max(24, Math.round((b.w || 0.15) * editorParams.out_width)),
+        h: Math.max(24, Math.round((b.h || 0.3) * editorParams.out_height)),
+        channels: b.channels ?? 2,
+        ch_start: b.ch_start ?? 1,
+        scale: b.scale || 'dbfs',
+        opacity: b.opacity ?? 70,
+        align: b.align || 'left',
+        width_mode: b.width_mode || 'auto',
+        audio_path: b.audio_path || '',
+        label: b.label || '',
+        hidden: !!b.hidden,
+    }));
     padBank();   // banque à indices stables : toujours max_inputs entrées
     selectedIdxs = [];
     selectedOverlay = -1;
+    selectedBlock = -1;
     renderEditor(c.hostname);
 }
 
@@ -771,7 +799,7 @@ function placerNouveauPip(f) {
     f.y = Math.min(maxY, (k + 1) * step) & ~1;
 }
 
-function ajouterEntree(asAudio) {
+function ajouterEntree() {
     padBank();
     // « Ajouter un PiP » = réafficher la première entrée masquée de la banque
     // (sa source câblée éventuelle est conservée et réapparaît).
@@ -790,27 +818,6 @@ function ajouterEntree(asAudio) {
     if (!f.x && !f.y && f.w === win_w && f.h === win_h) {
         placerNouveauPip(f);
     }
-    if (asAudio) {
-        // Cellule AUDIO SEULE : pré-affecte le modèle d'usine dédié (VU-mètres pleine largeur
-        // en mode `fit`, format portrait étroit — builtin:audio-only, app/pip_library.py) et vide
-        // la source vidéo (rien à câbler côté vidéo pour cette cellule). La source audio se
-        // câble ensuite via le sélecteur « Source audio » du panneau (ou la page Câbles).
-        f.path = '';
-        f.template_ref = 'builtin:audio-only';
-        f.template = mwResolveTemplate('builtin:audio-only') || null;
-        // Format LIBRE du modèle (portrait) : recalcule la hauteur depuis la largeur courante,
-        // comme onEntryChange() le fait pour une affectation manuelle de modèle.
-        const _ta = mwTemplateAspect(f);
-        if (_ta && f.w > 0) {
-            let nh = Math.max(2, Math.round(f.w / _ta) & ~1);
-            if (f.y + nh > out_h) {
-                nh = Math.max(2, (out_h - f.y) & ~1);
-                f.w = Math.max(2, Math.round(nh * _ta) & ~1);
-            }
-            f.h = nh;
-            f.ratio = _ta;
-        }
-    }
     // Jamais hors zone (y compris une géométrie mémorisée d'un ancien PiP)
     f.w = Math.min(f.w, out_w); f.h = Math.min(f.h, out_h);
     f.x = Math.max(0, Math.min(out_w - f.w, f.x));
@@ -820,10 +827,39 @@ function ajouterEntree(asAudio) {
     hotApplyFull();
 }
 
-// Bouton « + Audio » (à côté de « + PiP ») : raccourci direct pour une cellule audio seule,
-// cf. ajouterEntree(asAudio=true) ci-dessus.
-function ajouterEntreeAudio() {
-    ajouterEntree(true);
+// ─── Blocs VU-mètres de MUR (posés directement sur le layout du mur, indépendants de toute
+// fenêtre — cf. deploy_config.params.meter_blocks, plugins/multiview/script.py render_meters).
+// Édités en PIXELS canvas (comme les overlays) ; convertis en fractions 0..1 du mur à la
+// sérialisation (deployerEditor). ───
+function newMeterBlock() {
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    const w = Math.max(24, Math.round(ow * 0.12) & ~1);
+    const h = Math.max(24, Math.round(oh * 0.30) & ~1);
+    return {
+        id: 'mb' + Date.now().toString(36) + Math.floor(Math.random() * 1000),
+        x: Math.round((ow - w) / 2) & ~1, y: Math.round((oh - h) / 2) & ~1, w, h,
+        channels: 2, ch_start: 1, scale: 'dbfs', opacity: 70, align: 'left',
+        width_mode: 'auto', audio_path: '', label: '', hidden: false,
+    };
+}
+
+function ajouterBlocVU() {
+    if (!editorParams) return;
+    editorParams.meter_blocks = editorParams.meter_blocks || [];
+    editorParams.meter_blocks.push(newMeterBlock());
+    selectedBlock = editorParams.meter_blocks.length - 1;
+    selectedOverlay = -1;
+    selectedIdxs = [];
+    dessiner();
+    hotApplyFull();
+}
+
+function supprimerBlocVU() {
+    if (selectedBlock < 0) return;
+    editorParams.meter_blocks.splice(selectedBlock, 1);
+    selectedBlock = -1;
+    dessiner();
+    hotApplyFull();
 }
 
 function supprimerEntreeSelectionnee() {
@@ -1110,6 +1146,7 @@ function dessiner() {
     renderEntryTable();
     refreshEntryPanel();
     refreshOverlayPanel();
+    refreshBlockPanel();
     updateToolbar();
     _readTokens();
     drawCanvas();
@@ -1312,6 +1349,9 @@ function drawCanvas() {
         }
     });
 
+    // Blocs VU-mètres de mur : par-dessus les fenêtres (toujours manipulables), sous le texte.
+    drawBlocksLayer(ctx, t);
+
     // Overlays texte/horloge/logo (layer=foreground) : par-dessus les fenêtres.
     drawOverlayLayer(ctx, 'foreground');
 
@@ -1382,37 +1422,69 @@ function canvasMouseDown(e) {
     // 1. Overlays de premier plan (au-dessus de la vidéo)
     let hit = hitOverlay(pos, 'foreground');
     if (hit) return beginOverlayDrag(hit, pos);
-    // 2. Fenêtres vidéo
+    // 2. Blocs VU-mètres de mur (au-dessus des fenêtres, pour rester toujours manipulables)
+    const bhit = hitBlock(pos);
+    if (bhit) return beginBlockDrag(bhit, pos);
+    // 3. Fenêtres vidéo
     const primary = primaryIdx();
     for (let i = editorParams.flux_config.length - 1; i >= 0; i--) {
         const f = editorParams.flux_config[i];
         if (f.hidden) continue;   // entrées masquées : pas dans le canvas
         if (i === primary &&
             pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
-            selectedOverlay = -1;
-            dragMode = 'resize'; dragOverlay = false; dragStart = pos; dragOrigRect = {...f};
+            selectedOverlay = -1; selectedBlock = -1;
+            dragMode = 'resize'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...f};
             _setCanvasCursor('nwse-resize');
             return;
         }
         if (pos.x >= f.x && pos.x <= f.x + f.w &&
             pos.y >= f.y && pos.y <= f.y + f.h) {
-            selectedOverlay = -1;
+            selectedOverlay = -1; selectedBlock = -1;
             // Si on commence le drag sur une fenêtre DÉJÀ sélectionnée (sans Maj), on garde la
             // sélection multiple pour la déplacer en groupe ; sinon clic = sélection simple.
             if (!(isSelected(i) && !e.shiftKey)) toggleSelection(i, e.shiftKey);
-            dragMode = 'move'; dragOverlay = false; dragStart = pos; dragOrigRect = {...editorParams.flux_config[primaryIdx()]};
+            dragMode = 'move'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...editorParams.flux_config[primaryIdx()]};
             dragGroupOrig = selectedIdxs.map(j => ({ j, x: editorParams.flux_config[j].x, y: editorParams.flux_config[j].y }));
             _setCanvasCursor('move');
             dessiner();
             return;
         }
     }
-    // 3. Images de fond (sous la vidéo)
+    // 4. Images de fond (sous la vidéo)
     hit = hitOverlay(pos, 'background');
     if (hit) return beginOverlayDrag(hit, pos);
     if (!e.shiftKey) selectedIdxs = [];
     selectedOverlay = -1;
+    selectedBlock = -1;
     dragMode = null;
+    dessiner();
+}
+
+function hitBlock(pos) {
+    const bs = editorParams.meter_blocks || [];
+    for (let i = bs.length - 1; i >= 0; i--) {
+        const b = bs[i];
+        if (b.hidden) continue;
+        if (i === selectedBlock &&
+            pos.x >= b.x + b.w - HANDLE_SIZE && pos.y >= b.y + b.h - HANDLE_SIZE) {
+            return {i, mode: 'resize'};
+        }
+        if (pos.x >= b.x && pos.x <= b.x + b.w && pos.y >= b.y && pos.y <= b.y + b.h) {
+            return {i, mode: 'move'};
+        }
+    }
+    return null;
+}
+
+function beginBlockDrag(hit, pos) {
+    selectedBlock = hit.i;
+    selectedOverlay = -1;
+    selectedIdxs = [];
+    dragBlock = true;
+    dragMode = hit.mode;
+    dragStart = pos;
+    dragOrigRect = {...editorParams.meter_blocks[hit.i]};
+    _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
     dessiner();
 }
 
@@ -1435,6 +1507,7 @@ function hitOverlay(pos, layer) {
 
 function beginOverlayDrag(hit, pos) {
     selectedOverlay = hit.i;
+    selectedBlock = -1;
     selectedIdxs = [];
     dragOverlay = true;
     dragMode = hit.mode;
@@ -1464,6 +1537,8 @@ function toggleSelection(i, additive) {
 function _cursorForPos(pos) {
     let hit = hitOverlay(pos, 'foreground');
     if (hit) return hit.mode === 'resize' ? 'nwse-resize' : 'move';
+    const bhit = hitBlock(pos);
+    if (bhit) return bhit.mode === 'resize' ? 'nwse-resize' : 'move';
     const primary = primaryIdx();
     for (let i = editorParams.flux_config.length - 1; i >= 0; i--) {
         const f = editorParams.flux_config[i];
@@ -1487,6 +1562,7 @@ function canvasMouseMove(e) {
     // Hors drag : retour visuel au survol (déplacement vs redimensionnement) pour lever l'ambiguïté.
     if (!dragMode) { _setCanvasCursor(_cursorForPos(getCanvasPos(e))); return; }
     if (dragOverlay) return overlayMouseMove(e);
+    if (dragBlock) return blockMouseMove(e);
     const primary = primaryIdx();
     if (primary < 0) return;
     const pos = getCanvasPos(e);
@@ -1555,11 +1631,35 @@ function overlayMouseMove(e) {
     syncGeomFields();
 }
 
+function blockMouseMove(e) {
+    if (!dragMode || selectedBlock < 0) return;
+    const pos = getCanvasPos(e);
+    const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
+    const b = editorParams.meter_blocks[selectedBlock];
+    const out_w = editorParams.out_width, out_h = editorParams.out_height;
+    if (dragMode === 'move') {
+        b.x = Math.max(0, Math.min(out_w - b.w, Math.round(dragOrigRect.x + dx)));
+        b.y = Math.max(0, Math.min(out_h - b.h, Math.round(dragOrigRect.y + dy)));
+    } else if (dragMode === 'resize') {
+        let nw = Math.max(24, Math.min(out_w - b.x, Math.round(dragOrigRect.w + dx)));
+        let nh = Math.max(24, Math.min(out_h - b.y, Math.round(dragOrigRect.h + dy)));
+        b.w = nw % 2 === 0 ? nw : nw - 1;
+        b.h = nh % 2 === 0 ? nh : nh - 1;
+    }
+    drawCanvas();
+    syncGeomFields();
+}
+
 function canvasMouseUp() {
     _setCanvasCursor('default');   // le prochain survol réévaluera (move/resize/défaut)
     if (dragOverlay) {
         dragOverlay = false; dragMode = null; dessiner();
         hotApplyFull();   // résout l'image base64 + hot-apply /overlays (pas de coupure)
+        return;
+    }
+    if (dragBlock) {
+        dragBlock = false; dragMode = null; dessiner();
+        hotApplyFull();   // même canal que les overlays : full deploy → hot-apply /reconfigure
         return;
     }
     dragMode = null; snapGuides = []; dessiner();
@@ -1573,6 +1673,13 @@ function syncGeomFields() {
         if (!o) return;
         _ovSetVal('ov_x', o.x); _ovSetVal('ov_y', o.y);
         _ovSetVal('ov_w', o.w); _ovSetVal('ov_h', o.h);
+        return;
+    }
+    if (dragBlock && selectedBlock >= 0) {
+        const b = editorParams.meter_blocks[selectedBlock];
+        if (!b) return;
+        _mbSetVal('mb_x', b.x); _mbSetVal('mb_y', b.y);
+        _mbSetVal('mb_w', b.w); _mbSetVal('mb_h', b.h);
         return;
     }
     const p = primaryIdx();
@@ -1699,7 +1806,7 @@ function ajouterOverlay(kind) {
     editorParams.overlays = editorParams.overlays || [];
     editorParams.overlays.push(newOverlay(kind));
     selectedOverlay = editorParams.overlays.length - 1;
-    selectedIdxs = [];
+    selectedIdxs = []; selectedBlock = -1;
     dessiner();
     hotApplyFull();
 }
@@ -1710,6 +1817,25 @@ function supprimerOverlay() {
     selectedOverlay = -1;
     dessiner();
     hotApplyFull();
+}
+
+// Blocs VU-mètres de mur : édités en PIXELS canvas (comme les overlays), SÉRIALISÉS en fractions
+// 0..1 du mur (contrat serveur, meter_blocks — cf. plugins/multiview/script.py render_meters).
+function serializeMeterBlocks() {
+    const ow = Math.max(1, editorParams.out_width), oh = Math.max(1, editorParams.out_height);
+    const frac = (v, span) => Math.max(0, Math.min(1, +(v / span).toFixed(4)));
+    return (editorParams.meter_blocks || []).map(b => ({
+        x: frac(b.x, ow), y: frac(b.y, oh), w: frac(b.w, ow), h: frac(b.h, oh),
+        channels: parseInt(b.channels) || 2,
+        ch_start: Math.max(1, Math.min(16, parseInt(b.ch_start) || 1)),
+        scale: b.scale || 'dbfs',
+        opacity: Math.max(10, Math.min(100, parseInt(b.opacity) || 70)),
+        align: b.align || 'left',
+        width_mode: b.width_mode || 'auto',
+        audio_path: b.audio_path || '',
+        label: b.label || '',
+        hidden: !!b.hidden,
+    }));
 }
 
 function serializeOverlays() {
@@ -1855,6 +1981,108 @@ function drawOverlayLayer(ctx, layer) {
         }
         ctx.restore();
     });
+}
+
+// ── Rendu des blocs VU-mètres de mur sur le canvas de l'éditeur ──
+// Aperçu schématique (pas les vraies barres — l'éditeur n'a pas de flux audio live) : quelques
+// barres mock à hauteur fixe, juste pour distinguer visuellement un bloc d'une fenêtre.
+function drawBlocksLayer(ctx, t) {
+    (editorParams.meter_blocks || []).forEach((b, i) => {
+        if (b.hidden) return;
+        const sel = (i === selectedBlock);
+        ctx.save();
+        ctx.fillStyle = 'rgba(20,160,180,0.16)';
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        const n = Math.max(1, Math.min(16, parseInt(b.channels) || 2));
+        const pad = 4;
+        const bw = Math.max(2, (b.w - pad * 2) / (n * 1.4));
+        for (let ch = 0; ch < n; ch++) {
+            const bx = b.x + pad + ch * bw * 1.4;
+            const lvl = 0.35 + 0.3 * Math.abs(Math.sin(ch + 1));
+            const bh = Math.max(2, (b.h - pad * 2) * lvl);
+            ctx.fillStyle = 'rgba(90,210,140,0.85)';
+            ctx.fillRect(bx, b.y + b.h - pad - bh, bw, bh);
+        }
+        ctx.strokeStyle = sel ? '#ffffff' : '#20c4d8';
+        ctx.lineWidth = sel ? 2 : 1;
+        ctx.setLineDash(sel ? [6, 4] : [4, 3]);
+        ctx.strokeRect(b.x, b.y, b.w, b.h);
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#20c4d8'; ctx.font = '10px monospace';
+        ctx.fillText('VU ' + (b.label || (i + 1)), b.x + 3, b.y + 11);
+        if (sel) {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(b.x + b.w - HANDLE_SIZE, b.y + b.h - HANDLE_SIZE, HANDLE_SIZE, HANDLE_SIZE);
+        }
+        ctx.restore();
+    });
+}
+
+// ── Panneau de propriétés d'un bloc VU-mètres de mur ──
+function _mbSetVal(id, v) { const e = document.getElementById(id); if (e) e.value = v; }
+
+function refreshBlockPanel() {
+    const panel = document.getElementById('ed_mb_panel');
+    if (!panel) return;
+    if (selectedBlock < 0 || !editorParams.meter_blocks || !editorParams.meter_blocks[selectedBlock]) {
+        panel.hidden = true; return;
+    }
+    const b = editorParams.meter_blocks[selectedBlock];
+    panel.hidden = false;
+    _mbSetVal('mb_x', b.x); _mbSetVal('mb_y', b.y);
+    _mbSetVal('mb_w', b.w); _mbSetVal('mb_h', b.h);
+    _mbSetVal('mb_channels', String(b.channels ?? 2));
+    _mbSetVal('mb_ch_start', b.ch_start ?? 1);
+    _mbSetVal('mb_scale', b.scale || 'dbfs');
+    _mbSetVal('mb_opacity', b.opacity ?? 70);
+    _mbSetVal('mb_align', b.align || 'left');
+    _mbSetVal('mb_width_mode', b.width_mode || 'auto');
+    _mbSetVal('mb_label', b.label || '');
+    // Source audio : flux explicite de la flotte (page Câbles peut aussi câbler ce port) —
+    // pas de dérivation « auto » possible ici (un bloc de mur n'a pas de source vidéo).
+    const sel = document.getElementById('mb_audio_path');
+    if (sel) {
+        const opts = audioSources.map(s => {
+            const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})` : `${s.hostname} → ${s.shm}`;
+            return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
+        });
+        opts.unshift('<option value="">' + escapeHtml(T('plugin.multiview.mb_audio_none_option')) + '</option>');
+        const cur = b.audio_path || '';
+        if (cur && !audioSources.some(s => '/dev/shm/' + s.shm === cur)) {
+            opts.splice(1, 0, `<option value="${escapeHtml(cur)}">${escapeHtml(cur)}</option>`);
+        }
+        sel.innerHTML = opts.join('');
+        sel.value = cur;
+    }
+}
+
+function onBlockChange() {
+    if (selectedBlock < 0) return;
+    const b = editorParams.meter_blocks[selectedBlock];
+    if (!b) return;
+    b.channels = parseInt(document.getElementById('mb_channels').value) || 2;
+    b.ch_start = Math.max(1, Math.min(16, parseInt(document.getElementById('mb_ch_start').value) || 1));
+    b.scale = document.getElementById('mb_scale').value;
+    b.opacity = Math.max(10, Math.min(100, parseInt(document.getElementById('mb_opacity').value) || 70));
+    b.align = document.getElementById('mb_align').value;
+    b.width_mode = document.getElementById('mb_width_mode').value;
+    b.label = document.getElementById('mb_label').value || '';
+    b.audio_path = document.getElementById('mb_audio_path').value || '';
+    dessiner();
+    hotApplyFull();
+}
+
+function onBlockGeomChange() {
+    if (selectedBlock < 0) return;
+    const b = editorParams.meter_blocks[selectedBlock];
+    if (!b) return;
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    b.x = Math.max(0, Math.min(ow - 2, parseInt(document.getElementById('mb_x').value) || 0));
+    b.y = Math.max(0, Math.min(oh - 2, parseInt(document.getElementById('mb_y').value) || 0));
+    b.w = Math.max(24, Math.min(ow - b.x, parseInt(document.getElementById('mb_w').value) || 24));
+    b.h = Math.max(24, Math.min(oh - b.y, parseInt(document.getElementById('mb_h').value) || 24));
+    dessiner();
+    hotApplyFull();
 }
 
 // ── Panneau de propriétés overlay ──
@@ -2243,6 +2471,7 @@ async function deployerEditor() {
     const params = {
         flux_config,
         overlays:      serializeOverlays(),
+        meter_blocks:  serializeMeterBlocks(),
         shm_out:       editorParams.shm_out,
         out_width:     editorParams.out_width,
         out_height:    editorParams.out_height,
@@ -2474,6 +2703,7 @@ function appliquerTemplate(key) {
     }
     selectedIdxs = [];
     selectedOverlay = -1;
+    selectedBlock = -1;
     dessiner();
     hotApplyFull();   // /reconfigure atomique à chaud (géométrie + hidden de toute la banque)
 }
@@ -2553,6 +2783,15 @@ async function enregistrerLayout() {
             // Modèle de PiP : fait partie de l'habillage mémorisé par le layout.
             template: f.template || null,
             template_ref: f.template_ref || ''
+        })),
+        // Blocs VU-mètres de mur : géométrie + style, SOURCE AUDIO OMISE (même convention que
+        // `path` pour les fenêtres, ci-dessus) — restaurée depuis l'éditeur courant à l'apply.
+        meter_blocks: (editorParams.meter_blocks || []).filter(b => !b.hidden).map(b => ({
+            x: b.x, y: b.y, w: b.w, h: b.h,
+            channels: b.channels ?? 2, ch_start: b.ch_start ?? 1,
+            scale: b.scale || 'dbfs', opacity: b.opacity ?? 70,
+            align: b.align || 'left', width_mode: b.width_mode || 'auto',
+            label: b.label || ''
         }))
     };
     let r = null;
@@ -2604,8 +2843,21 @@ function appliquerLayout(lid) {
         applied.push(Object.assign({}, existing[i], {hidden: true}));
     }
     editorParams.flux_config = applied;
+    // Blocs VU-mètres de mur : géométrie/style du layout, source audio PRÉSERVÉE par index
+    // depuis l'éditeur courant (même logique que `path` ci-dessus pour les fenêtres).
+    const existingBlocks = editorParams.meter_blocks || [];
+    editorParams.meter_blocks = (cfg.meter_blocks || []).map((b, i) => {
+        const prev = existingBlocks[i] || {};
+        return Object.assign(newMeterBlock(), b, {
+            id: prev.id || ('mb' + i + '_' + Date.now().toString(36)),
+            audio_path: prev.audio_path || '',
+            hidden: false,
+        });
+    });
     padBank();
     selectedIdxs = [];
+    selectedOverlay = -1;
+    selectedBlock = -1;
     const hostnameEl = document.getElementById('ed_hostname');
     const hostname = hostnameEl ? hostnameEl.textContent.trim() : '';
     renderEditor(hostname);

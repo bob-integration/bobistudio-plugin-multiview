@@ -85,6 +85,13 @@ _MVK = (not GPU) and bool(getattr(bobimxl, "mvk_available", lambda: False)())
 _MVK_HOST = bool(getattr(bobimxl, "mvk_available", lambda: False)())
 
 FLUX_CONFIG   = CONFIG.get("flux_config") or []
+# Blocs VU-mètres posés DIRECTEMENT sur le layout du MUR (indépendants de toute fenêtre) :
+# {{x,y,w,h (fractions 0..1 du MUR ENTIER — pas d'une cellule), channels, ch_start, scale,
+# opacity, align, width_mode, audio_path, label?}}. Même vocabulaire que le composant `meters`
+# des modèles de PiP (cf. section « Modèles de PiP ») — le rendu réutilise EXACTEMENT le même
+# corps de dessin (_comp_rect/_meter_fit_dims/_meter_tiles_at) via un cfg synthétique couvrant
+# tout le canvas (cf. render_meters). Modifiable à chaud via :8082/reconfigure (comme flux_config).
+METER_BLOCKS  = CONFIG.get("meter_blocks") or []
 SHM_OUT_NAME  = CONFIG.get("shm_out") or "mxl_mix"
 SHM_OUT       = "/dev/shm/" + SHM_OUT_NAME   # conservé pour l'audio legacy / dérivations de noms
 inst          = bobimxl.Instance()           # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
@@ -1423,6 +1430,49 @@ def render_meters(now):
                                     ch0=s0, tick_w=tick_w, bar_w=bar_w, gap=gap)
                 except Exception:
                     continue
+    # Blocs VU-mètres du MUR (deploy_config.params.meter_blocks) : posés sur le canevas de
+    # sortie ENTIER, indépendants des fenêtres — PAS une fenêtre déguisée (pas de vidéo, pas de
+    # tally/label/freeze/NO SIGNAL). `full_cfg` couvre tout le canvas → _comp_rect (qui attend un
+    # rect de CELLULE + des fractions de composant) traite le MUR ENTIER comme la « cellule » et
+    # le bloc lui-même comme le « composant » (mêmes clés x/y/w/h fractionnaires que `meters`) :
+    # AUCUNE duplication du calcul de géométrie/peaks/dessin.
+    if METER_BLOCKS:
+        full_cfg = {{"x": 0, "y": 0, "w": OUT_WIDTH, "h": OUT_HEIGHT}}
+        for j, blk in enumerate(METER_BLOCKS):
+            if not isinstance(blk, dict) or blk.get("hidden"):
+                continue
+            try:
+                try:
+                    n = max(1, min(A_CHANNELS_MAX, int(blk.get("channels") or 2)))
+                except (TypeError, ValueError):
+                    n = 2
+                try:
+                    s0 = max(0, min(2 * A_CHANNELS_MAX - 1, int(blk.get("ch_start") or 1) - 1))
+                except (TypeError, ValueError):
+                    s0 = 0
+                n = min(n, 2 * A_CHANNELS_MAX - s0)
+                # Clé d'état audio DISTINCTE des fenêtres (tuple ("mb", j), jamais un int i de
+                # fenêtre) : _tile_peaks_range n'utilise l'index que comme clé de dict, pas
+                # comme indice de liste — cf. audio_states[(i, flow)].
+                peaks, holds, status = _tile_peaks_range(("mb", j), blk, s0, n, now)
+                rx, ry, rw, rh = _comp_rect(full_cfg, blk)
+                mh = max(20, rh - 1)
+                width_mode = blk.get("width_mode") or "auto"
+                if width_mode == "fit":
+                    tick_w, bar_w, gap, mw = _meter_fit_dims(n, rw)
+                    mx = rx
+                else:
+                    tick_w, bar_w, gap = METER_TICK_W, METER_BAR_W, METER_GAP
+                    mw = _meter_layout(n, tick_w, bar_w, gap)
+                    al = blk.get("align") or "left"
+                    mx = rx + ((rw - mw) // 2 if al == "center"
+                               else (rw - mw if al == "right" else 0))
+                opacity_pct = max(10, min(100, int(blk.get("opacity") or 70)))
+                _meter_tiles_at(mx, ry, mw, mh, n, peaks, holds,
+                                 blk.get("scale") or "dbfs", opacity_pct, status, tiles,
+                                 ch0=s0, tick_w=tick_w, bar_w=bar_w, gap=gap)
+            except Exception:
+                continue
     return tiles or None
 
 
@@ -2190,9 +2240,10 @@ def _classic_comps(cfg):
     # Fenêtre SANS source vidéo configurée (path vide) mais avec une source audio résolue
     # (câblée explicitement OU dérivée, cf. _audio_name_for) : repli en cellule AUDIO SEULE
     # (VU-mètres pleine largeur + label), plutôt que forcer un composant vidéo qui ne
-    # rendrait jamais qu'un NO SIGNAL. Miroir : app/pip_library.py builtin:audio-only
-    # (version sélectionnable dans la bibliothèque). Une fenêtre sans vidéo NI audio garde
-    # l'ancien repli vidéo ci-dessous (NO SIGNAL).
+    # rendrait jamais qu'un NO SIGNAL. CONSERVÉ en 0.36.0 (contrairement au modèle d'usine
+    # builtin:audio-only, retiré — cf. app/pip_library.py) : ce repli reste utile pour une
+    # fenêtre individuelle, indépendamment du bloc VU-mètres de MUR (meter_blocks). Une
+    # fenêtre sans vidéo NI audio garde l'ancien repli vidéo ci-dessous (NO SIGNAL).
     if not (cfg.get("path") or "").strip() and _audio_name_for(cfg):
         comps = []
         if show_label:
@@ -2882,6 +2933,32 @@ class MvControlHandler(BaseHTTPRequestHandler):
         if self.path != "/input":
             self.send_response(404); self.end_headers(); return
         b = self._json()
+        # Port AUDIO d'un bloc VU-mètres de MUR (câblage page Câbles, `wiring.consumes`
+        # `from_list: meter_blocks`, `input_key: block_idx` — DISTINCT de `idx` des fenêtres,
+        # sinon un câblage de bloc écraserait l'entrée FLUX_CONFIG du même indice numérique).
+        if "block_idx" in b:
+            try: bidx = int(b.get("block_idx"))
+            except Exception:
+                self.send_response(400); self.end_headers(); return
+            shm = (b.get("shm") or "").strip()
+            path = ("/dev/shm/" + shm) if shm else ""
+            ok = False
+            with state_lock:
+                if 0 <= bidx < len(METER_BLOCKS):
+                    METER_BLOCKS[bidx]["audio_path"] = path; ok = True
+            if ok:
+                for k in list(audio_states):
+                    if isinstance(k, tuple) and len(k) == 2 and k[0] == ("mb", bidx):
+                        st = audio_states.pop(k, None)
+                        try:
+                            if st and st.get("ar"):
+                                st["ar"].close()
+                        except Exception:
+                            pass
+            self.send_response(200 if ok else 400)
+            self.send_header("Content-Type", "application/json"); self.end_headers()
+            self.wfile.write(json.dumps({{"ok": ok}}).encode())
+            return
         try: idx = int(b.get("idx"))
         except Exception:
             self.send_response(400); self.end_headers(); return
@@ -2996,6 +3073,20 @@ class MvControlHandler(BaseHTTPRequestHandler):
         # Permet l'ajout/suppression de fenêtres à chaud depuis l'éditeur.
         b = self._json()
         new_fc = b.get("flux_config") or []
+        # Blocs VU-mètres du MUR : même remplacement atomique (ajout/suppression/réordonnement à
+        # chaud depuis le composer). On purge TOUS les états audio de blocs (clé ("mb", j)) —
+        # les indices peuvent avoir bougé (réordonnement/suppression), les rouvrir est cheap.
+        new_mb = b.get("meter_blocks") or []
+        with state_lock:
+            METER_BLOCKS[:] = new_mb
+            for k in list(audio_states):
+                if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], tuple) and k[0] and k[0][0] == "mb":
+                    st = audio_states.pop(k, None)
+                    try:
+                        if st and st.get("ar"):
+                            st["ar"].close()
+                    except Exception:
+                        pass
         with state_lock:
             # PRÉSERVATION des Readers inchangés : un ajout/déplacement/retrait de PiP ne doit PAS
             # figer les AUTRES tuiles. L'ancien code fermait TOUS les Readers + remettait sources à
