@@ -1,7 +1,17 @@
 {
-  "version": "0.39.0",
+  "version": "0.39.2",
   "date": "2026-07-14",
   "changes": {
+    "★ Fin du re-bake d'habillage en rafale : le mur tenait 28-36 fps au lieu de 50 (0.39.2)": [
+      "CAUSE RACINE d'un mur GPU collé à son budget de trame (mur 333, Horace/Tesla T4 : own_latency 19,9 ms pour un budget de 20,0 ms, GPU à 7 % d'utilisation) : le distributeur TSL central repousse un paquet `tally_bulk` toutes les 100 ms MÊME quand rien ne change (sa boucle tourne sur un timeout). Le mur marquait alors son habillage « sale » à CHAQUE paquet — sans jamais comparer les valeurs — et re-composait PLEIN CADRE ses couches cachées (PIL `Image.new` 1920×1080 + `alpha_composite` + conversion RGBA→YUV + upload GPU) 8 à 10 fois par seconde. Chaque re-bake (~25 ms mesuré au banc) tombe dans UNE trame et lui fait sauter son budget de 20 ms : d'où les images perdues et le fps qui oscille.",
+      "Le mur ne marque désormais son habillage sale que si une valeur CHANGE réellement (couleur de tally, texte de label, texte/état d'un overlay sourcé TSL). Mesuré au banc (nœud 30, même topologie que le 333) : `bakes_per_s` 8,5 → 0 au repos, re-bake immédiat au moindre changement TSL (comportement visuel inchangé).",
+      "Le distributeur TSL de l'orchestrateur ne ré-émet plus non plus un paquet identique (re-synchro de sécurité toutes les 5 s, pour qu'un mur redéployé retrouve son tally) — 10 requêtes HTTP/s et par mur en moins."
+    ],
+    "Instrumentation : on voit enfin les RE-BAKES d'habillage (0.39.1)": [
+      "Les couches d'habillage CACHÉES (chrome consolidé, fond, texte statique) sont re-bakées PLEIN CADRE (PIL + conversion RGBA→YUV + upload GPU) à chaque changement. Ce coût, épisodique mais lourd, tombait dans un angle mort : il était compté dans `overlays` sans apparaître dans aucune de ses sous-lignes (`ov_render`/`ov_convert`/`ov_blend`) — un mur re-bakant son chrome en rafale affichait donc un `overlays` élevé sans cause visible.",
+      "`compose_breakdown_ms` gagne deux lignes : `ov_bake` (re-bake du chrome) et `ov_bg` (re-bake fond/texte statique, qui tombe, lui, dans `inputs`). Nouveau champ `bakes_per_s` : FRÉQUENCE des re-bakes par seconde (chrome / bg / tally / geom / info) + `frames` — c'est la fréquence, pas le coût unitaire, qui trahit un churn. Nouveau champ `mvk_host` : le kernel C est-il disponible pour les conversions hôte (rgba_to_yuv) — vrai même sur un mur GPU, alors que `mvk` (compose fusionné) est CPU-only par construction.",
+      "Instrumentation pure : aucun changement de rendu ni de logique."
+    ],
     "Frises d'historique : elles s'affichent enfin, ne déforment plus, et ne coûtent plus une trame (0.39.0)": [
       "CORRECTIF — les frises Historique Vidéo / Historique Audio (0.37.0) ne rendaient RIEN : la tuile YUV d'une frise était construite en arrondissant l'origine de sa bbox VERS L'EXTÉRIEUR (motif des VU-mètres) alors que l'image de la frise est composée en coordonnées LOCALES à son rectangle. Un bloc posé à une abscisse IMPAIRE (cas courant : x=0,062 → 119 px) produisait donc un décalage NÉGATIF (-1), une tranche numpy VIDE, et une tuile de largeur 0 — frise invisible (et, selon le backend, exception au blend). Le rectangle d'une frise est désormais SNAPPÉ sur la grille chroma (`_hist_rect`) et le bornage de `_hist_tile` arrondit vers l'INTÉRIEUR.",
       "Plus d'échec MUET : une frise qui ne peut pas se rendre le DIT — log throttlé (une fois par frise et par signature d'erreur, avec la trace) et compteur exposé sur `:8080` (`history_errors`). C'est l'`except: pass` du rendu qui avait masqué le bug ci-dessus.",

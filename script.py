@@ -55,6 +55,16 @@ own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start),
 _t_inputs = RollingMs(); _t_overlays = RollingMs(); _t_output = RollingMs()
 # Sous-ventilation de l'habillage (overlays) : rendu PIL meters/fg / conversion RGBA→YUV / blend.
 _t_ov_render = RollingMs(); _t_ov_convert = RollingMs(); _t_ov_blend = RollingMs()
+# Instrumentation des RE-BAKES d'habillage (couches cachées) : ces coûts sont épisodiques mais
+# PLEIN CADRE (PIL + rgba_to_yuv + uploads). Compteurs de FRÉQUENCE (par seconde) + coût moyen :
+# c'est la seule façon de voir un habillage re-baké en rafale (churn TSL/statuts) — invisible dans
+# la ventilation inputs/overlays/output où il se noie.
+# Ventilation FINE de ov_render (banc MULTIVIEW_BENCH.md) : VU-mètres / frises / horloges+ANC.
+_t_ov_meters = RollingMs(); _t_ov_hist = RollingMs(); _t_ov_clock = RollingMs()
+_t_ov_bake = RollingMs()   # re-bake du chrome (Image.new + alpha_composite + rgba_to_yuv bbox)
+_t_ov_bg   = RollingMs()   # re-bake couche fond/fg statique (overlay_dirty) — compté dans `inputs`
+_bake_ctr = {{"chrome": 0, "bg": 0, "tally": 0, "geom": 0, "info": 0, "frames": 0, "t0": time.time()}}
+_bake_rate = {{}}          # dernier instantané par seconde (exposé sur :8080)
 
 # ─── Config injectée (contrat plugin) ───────────────────────
 CONFIG         = {config}
@@ -835,7 +845,23 @@ def _refresh_lat_metrics():
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
                                        "output": _t_output.avg(),
                                        "ov_render": _t_ov_render.avg(), "ov_convert": _t_ov_convert.avg(),
-                                       "ov_blend": _t_ov_blend.avg()}}
+                                       "ov_blend": _t_ov_blend.avg(),
+                                       "ov_bake": _t_ov_bake.avg(), "ov_bg": _t_ov_bg.avg(),
+                                       "ov_meters": _t_ov_meters.avg(), "ov_hist": _t_ov_hist.avg(),
+                                       "ov_clock": _t_ov_clock.avg()}}
+    # Fréquence des RE-BAKES d'habillage (par seconde, fenêtre glissante depuis le dernier appel) :
+    # un chrome re-baké en rafale (churn TSL / statuts) est LE piège perf du multiview — il coûte
+    # plein cadre (PIL + rgba_to_yuv + upload) et se noyait dans la moyenne `overlays`.
+    _now_r = time.time(); _dt_r = _now_r - _bake_ctr["t0"]
+    if _dt_r >= 1.0:
+        _bake_rate.clear()
+        _bake_rate.update({{k: round(_bake_ctr[k] / _dt_r, 1)
+                            for k in ("chrome", "bg", "tally", "geom", "info", "frames")}})
+        for k in ("chrome", "bg", "tally", "geom", "info", "frames"):
+            _bake_ctr[k] = 0
+        _bake_ctr["t0"] = _now_r
+    metrics["bakes_per_s"] = dict(_bake_rate)
+    metrics["mvk_host"] = _MVK_HOST
 # debug TSL : dernier paquet reçu (mis à jour par _handle_tsl_client)
 tsl_debug = {{"last_raw_hex": None, "last_ver": None, "last_index": None,
               "last_control": None, "last_text": None, "last_error": None,
@@ -903,21 +929,31 @@ class Handler(BaseHTTPRequestHandler):
                     color = str(upd.get("color", "off")).lower()
                     if slot not in ("L", "R") or color not in TALLY_COLORS:
                         continue
-                    tally_state[f"{{idx}}_{{slot}}"] = color
-                    changed = True
+                    # ★ PERF : ne marquer « changé » QUE si la valeur change RÉELLEMENT. Le
+                    # distributeur TSL central pousse un tally_bulk toutes les 100 ms MÊME sans
+                    # changement (keepalive) : marquer sale à chaque paquet re-bakait l'habillage
+                    # PLEIN CADRE 10×/s (PIL + RGBA→YUV + upload GPU ≈ 25 ms) — chaque re-bake
+                    # tombant dans une trame, le mur perdait le budget 20 ms (mesuré : mur 333
+                    # Horace, 28-36 fps au lieu de 50, `overlays` 13,7 ms dont ~7 de re-bake).
+                    if tally_state.get(f"{{idx}}_{{slot}}") != color:
+                        tally_state[f"{{idx}}_{{slot}}"] = color
+                        changed = True
                     # Texte label optionnel (label_col depuis l'orchestrateur)
                     text = upd.get("text")
-                    if text is not None and slot == "L":
+                    if text is not None and slot == "L" and tsl_text.get(idx) != str(text):
                         tsl_text[idx] = str(text)
+                        changed = True
                 # Overlays texte central : id → texte + état actif (résolu côté orchestrateur)
                 ov_changed = False
                 for ov in (data.get("overlays") or []):
                     oid = str(ov.get("id") or "")
                     if not oid:
                         continue
-                    overlay_central[oid] = {{"text": str(ov.get("text") or ""),
-                                             "active": bool(ov.get("active"))}}
-                    ov_changed = True
+                    _ovv = {{"text": str(ov.get("text") or ""),
+                             "active": bool(ov.get("active"))}}
+                    if overlay_central.get(oid) != _ovv:   # idem : re-bake SEULEMENT sur changement
+                        overlay_central[oid] = _ovv
+                        ov_changed = True
                 if changed:
                     tally_dirty.set()
                 if ov_changed:
@@ -4708,6 +4744,8 @@ while True:
     # simple COPIE de ce base au lieu de re-blender plein écran 3 plans À CHAQUE trame (≈30 ms → ≈1 ms,
     # le coût dominant des assembleurs/murs avec image de fond). Cf. caching du chrome premier-plan.
     if overlay_dirty.is_set():
+        _ts_bg0 = time.time_ns()
+        _bake_ctr["bg"] += 1
         with state_lock:
             _bg_rgba = render_overlays_bg()
             overlay_fg_rgba = render_overlays_fg_static()
@@ -4723,6 +4761,7 @@ while True:
             _base_v = blend(xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _to_xp(_obv), _to_xp(_oba2))
         else:
             _base_y = _base_u = _base_v = None
+        _t_ov_bg.push((time.time_ns() - _ts_bg0) / 1e6)
 
     # Canvas de la trame (RÉSIDENT BACKEND : VRAM si GPU) : COPIE du base pré-blendé (fond) si présent,
     # sinon neutre (cas sans fond, inchangé/rapide). Une copie d'un buffer existant est ~1 ms vs ~30 ms.
@@ -4907,22 +4946,27 @@ while True:
     try:
         # Re-bake des couches d'habillage CACHÉES (RGBA) sur changement, puis (re)composition du
         # « chrome » consolidé (z-ordre info < bordure < statique < dynamique) en UNE image RGBA cachée.
+        _ts_bake0 = time.time_ns()
         if geom_dirty.is_set():
             geom_dirty.clear(); tally_dirty.set(); _info_sig = None; _chrome_dirty = True
+            _bake_ctr["geom"] += 1
 
         if tally_dirty.is_set():
             with state_lock:
                 dyn_rgba = render_dynamic()   # composants bakés des modèles (géométrie incluse)
             overlay_fg_rgba = render_overlays_fg_static()   # texte tally-réactif (couleur on/off)
             tally_dirty.clear(); _chrome_dirty = True
+            _bake_ctr["tally"] += 1
 
         _sig = tuple(_statuses)
         if _sig != _info_sig:
             with state_lock:
                 _info_layer = render_info(_statuses) if _statuses else None
             _info_sig = _sig; _chrome_dirty = True
+            _bake_ctr["info"] += 1
 
         if _chrome_dirty:
+            _bake_ctr["chrome"] += 1
             _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
             for _lyr in (_info_layer, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé (overlays fixes au-dessus)
                 if _lyr is not None:
@@ -4951,13 +4995,16 @@ while True:
 
         # Habillage = chrome STATIQUE (caché) + VU-mètres (tuiles per-frame) + horloges (cachées).
         _ts_ov0 = time.time_ns()
+        _t_ov_bake.push((_ts_ov0 - _ts_bake0) / 1e6)
         # VU-mètres : rendus + convertis en TUILES locales (une bbox par meter, cf. render_meters).
         # Inhérents per-frame (le niveau change à chaque trame) → jamais cachés, mais chaque tuile ne
         # couvre que la bande VU d'une cellule (≪ bbox-union quasi plein écran de l'ancien chemin).
         _meter_tiles = render_meters(now)
+        _ts_ovm = time.time_ns()   # banc : fin rendu VU-mètres
         # Historiques vidéo/audio : tuiles CACHÉES (recomposées à l'arrivée d'une vignette / au
         # changement de colonne — cf. render_history_tiles) ; par trame, seul le blend est payé.
         _hist_tiles = render_history_tiles(now)
+        _ts_ovh = time.time_ns()   # banc : fin rendu frises d'historique
         # Couche PER-FRAME des overlays fg = HORLOGES, en TUILES (une bbox par horloge, cf. render_meters
         # ; texte/images fixes bakés dans le chrome). Rendu PIL + conversion YUV refaits SEULEMENT au
         # changement de VALEUR (signature = chaînes formatées, déterministe → 1×/s sans le champ images
@@ -4971,6 +5018,12 @@ while True:
             _pf_cache_sig = _pf_sig
             _pf_tiles = (render_clock_tiles(now) or []) + (render_anc_tiles(now) or []) or None
         _ts_ov1 = time.time_ns()   # fin rendu PIL + conversion YUV (tuiles VU + horloges AU CHANGEMENT)
+        # Banc perf (MULTIVIEW_BENCH.md) : ventilation FINE de `ov_render` en ses trois producteurs
+        # de tuiles per-frame — VU-mètres / frises d'historique / horloges+ANC. Sans ça, `ov_render`
+        # est un agrégat opaque et on ne peut pas chiffrer une frise isolément.
+        _t_ov_meters.push((_ts_ovm - _ts_ov0) / 1e6)
+        _t_ov_hist.push((_ts_ovh - _ts_ovm) / 1e6)
+        _t_ov_clock.push((_ts_ov1 - _ts_ovh) / 1e6)
         # 1) Chrome statique : blendé via opérandes pré-calculés sur sa BBOX (SANS conversion). Borné à
         # la zone réellement habillée → un assembleur sans chrome (bbox None) ne paie RIEN ici.
         # MODE TRANCHE : blends + écriture faits BANDE PAR BANDE dans _compose_bands (plus bas).
@@ -5030,6 +5083,7 @@ while True:
         _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)
         _t_overlays.push((_t_after_overlays - _t_after_inputs) / 1e6)
         _t_output.push((ts_out - _t_after_overlays) / 1e6)
+        _bake_ctr["frames"] += 1
     except Exception as _e:
         # Garde-fou : une exception transitoire (rendu overlay/chrome, écriture sortie…) ne doit
         # PAS tuer le process. On saute cette frame (la sortie garde sa dernière image via le ring)
