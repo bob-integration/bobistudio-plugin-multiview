@@ -1,7 +1,11 @@
 {
-  "version": "0.34.1",
+  "version": "0.34.2",
   "date": "2026-07-13",
   "changes": {
+    "Composer : bouton « Recharger » sous le sélecteur de modèle de PiP (0.34.2)": [
+      "Éditer un modèle dans Réglages → PiP n'était pas répercuté sur un composer déjà ouvert : la bibliothèque `mwPipTemplates` n'était chargée QU'UNE FOIS à l'init du composer, et les composants résolus embarqués dans `flux_config[i].template` n'étaient recalculés que si la valeur du sélecteur CHANGEAIT réellement (d'où le contournement : changer de modèle puis revenir).",
+      "Nouveau bouton « Recharger » sous le sélecteur : re-fetch `/api/pip_templates` (cache: no-store), repeuple la bibliothèque, re-résout le modèle de la fenêtre courante et le POUSSE À CHAUD au mur (endpoint `/plugin/window`) ; si la fenêtre hérite du modèle par défaut du mur, la re-résolution passe par `/plugin/style` et rafraîchit d'un coup toutes les fenêtres héritantes. Aucun redéploiement nécessaire (le moteur applique déjà `template` à chaud)."
+    ],
     "Composant meters : VU-mètre pouvant SUIVRE LA LARGEUR du composant (opt-in) (0.34.1)": [
       "Nouveau champ `width_mode` du composant `meters`, libellé UI « Largeur » — « Fixe » (DÉFAUT, absent = auto) : comportement STRICTEMENT inchangé, largeur intrinsèque en dur (METER_TICK_W/BAR_W/GAP), `w` du composant sert seulement de zone d'ancrage pour `align` left/center/right. « Suit la largeur du composant » : SEULES les barres de canaux s'élargissent pour remplir `w` (`_meter_fit_dims`) — la zone de graduations (échelle dBFS/PPM, `tick_w`) et l'espacement inter-canaux (`gap`) restent FIXES (sinon l'échelle et ses repères se déforment), avec un minimum de lisibilité (barre ≥ 2 px) ; sous ce seuil, repli automatique sur la largeur intrinsèque (jamais de barre à 0 px). `align` alors sans effet.",
       "`_meter_layout`/`_draw_meter`/`_draw_meter_static`/`_meter_static_xp`/`_meter_tile_gpu`/`_meter_tiles_at` acceptent désormais (tick_w, bar_w, gap) en paramètres optionnels (défaut = constantes historiques) — les deux chemins de rendu (PIL legacy `meters_pil=true` ET tuile GPU/CPU par défaut) supportent les deux modes, équivalence pixel re-vérifiée (max|Δ|=0). La clé de cache du fond statique GPU/CPU (`_meter_static_xp_cache`) inclut (tick_w, bar_w, gap) : un meter à largeur de barre différente ne réutilise jamais le fond caché d'un autre — tick_w/gap restant fixes, le cache reste bien partagé entre `auto` et `fit` quand la barre effective coïncide.",
