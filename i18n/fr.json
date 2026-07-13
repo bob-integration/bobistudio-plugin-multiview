@@ -39,6 +39,8 @@
   "plugin.multiview.bg_color": "Couleur fond",
   "plugin.multiview.bg_opacity": "Opacité fond",
   "plugin.multiview.bg_tally_on": "Fond (Tally On)",
+  "plugin.multiview.block_hidden": "Masquer",
+  "plugin.multiview.block_hidden_title": "Masque l'élément sans le supprimer : sa configuration et son câblage sont conservés (utile pour comparer le coût du mur avec et sans).",
   "plugin.multiview.border_color": "Couleur bordure",
   "plugin.multiview.border_px": "Bordure (px)",
   "plugin.multiview.bottom": "Bas",
@@ -117,6 +119,7 @@
   "plugin.multiview.flash_select_targets": "Sélectionnez une ou plusieurs fenêtres cibles.",
   "plugin.multiview.flash_template_short": "Modèle {name} : {n} fenêtre(s) seulement dans la banque — augmentez « Max entrées » pour le compléter.",
   "plugin.multiview.font": "Police",
+  "plugin.multiview.font_missing": "police absente",
   "plugin.multiview.font_size": "Taille (0=auto)",
   "plugin.multiview.format_changed_redeploy": "Format de sortie modifié — redéployez pour l'appliquer.",
   "plugin.multiview.frame_style": "Style de cadre",
@@ -269,6 +272,5 @@
   "plugin.multiview.tsl_mode_central": "Centralisé (orchestrateur)",
   "plugin.multiview.tsl_mode_direct": "TSL Direct (serveur local)",
   "plugin.multiview.tsl_port": "Port TSL 5.0 local",
-  "plugin.multiview.width": "Largeur",
-  "plugin.multiview.font_missing": "police absente"
+  "plugin.multiview.width": "Largeur"
 }

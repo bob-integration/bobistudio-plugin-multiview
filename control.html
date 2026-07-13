@@ -248,6 +248,7 @@
         <div id="ed_mb_panel" class="mw-entry-panel" hidden>
             <div class="mw-overlay-head">
                 <span class="mw-overlay-kind" data-i18n="plugin.multiview.mb_title">Bloc VU-mètres</span>
+                <label class="field field-inline" for="mb_hidden" title="Masque le bloc sans le supprimer : sa configuration et son câblage sont conservés." data-i18n-title="plugin.multiview.block_hidden_title"><input type="checkbox" class="ios-toggle" id="mb_hidden" onchange="onBlockChange()"> <span data-i18n="plugin.multiview.block_hidden">Masquer</span></label>
                 <button type="button" class="btn btn-red" onclick="supprimerBlocVU()" title="Supprime ce bloc VU-mètres du mur (source audio décâblée)." data-i18n="plugin.multiview.delete" data-i18n-title="plugin.multiview.delete_mb_title">Supprimer</button>
             </div>
             <div class="mw-editor-row">
@@ -272,6 +273,7 @@
         <div id="ed_hb_panel" class="mw-entry-panel" hidden>
             <div class="mw-overlay-head">
                 <span class="mw-overlay-kind" id="hb_title" data-i18n="plugin.multiview.hb_title_video">Historique vidéo</span>
+                <label class="field field-inline" for="hb_hidden" title="Masque la frise sans la supprimer : sa configuration et son câblage sont conservés (utile pour comparer le coût du mur avec et sans)." data-i18n-title="plugin.multiview.block_hidden_title"><input type="checkbox" class="ios-toggle" id="hb_hidden" onchange="onHistChange()"> <span data-i18n="plugin.multiview.block_hidden">Masquer</span></label>
                 <button type="button" class="btn btn-red" onclick="supprimerBlocHist()" title="Supprime cette frise du mur (source décâblée)." data-i18n="plugin.multiview.delete" data-i18n-title="plugin.multiview.delete_hb_title">Supprimer</button>
             </div>
             <div class="mw-editor-row">

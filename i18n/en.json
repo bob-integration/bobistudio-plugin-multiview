@@ -39,6 +39,8 @@
   "plugin.multiview.bg_color": "Background color",
   "plugin.multiview.bg_opacity": "Background opacity",
   "plugin.multiview.bg_tally_on": "Background (Tally On)",
+  "plugin.multiview.block_hidden": "Hide",
+  "plugin.multiview.block_hidden_title": "Hides the element without deleting it: its settings and cabling are kept (handy to compare the wall's cost with and without).",
   "plugin.multiview.border_color": "Border color",
   "plugin.multiview.border_px": "Border (px)",
   "plugin.multiview.bottom": "Bottom",
@@ -117,6 +119,7 @@
   "plugin.multiview.flash_select_targets": "Select one or more target windows.",
   "plugin.multiview.flash_template_short": "Template {name}: only {n} window(s) in the bank — increase \"Max inputs\" to complete it.",
   "plugin.multiview.font": "Font",
+  "plugin.multiview.font_missing": "missing font",
   "plugin.multiview.font_size": "Size (0=auto)",
   "plugin.multiview.format_changed_redeploy": "Output format changed — redeploy to apply.",
   "plugin.multiview.frame_style": "Frame style",
@@ -269,6 +272,5 @@
   "plugin.multiview.tsl_mode_central": "Centralized (orchestrator)",
   "plugin.multiview.tsl_mode_direct": "Direct TSL (local server)",
   "plugin.multiview.tsl_port": "Local TSL 5.0 port",
-  "plugin.multiview.width": "Width",
-  "plugin.multiview.font_missing": "missing font"
+  "plugin.multiview.width": "Width"
 }

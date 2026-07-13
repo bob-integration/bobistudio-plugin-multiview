@@ -1060,6 +1060,8 @@ function refreshHistPanel() {
     _hbSetVal('hb_duration', String(b.duration ?? 30));
     _hbSetVal('hb_opacity', b.opacity ?? 85);
     _hbSetVal('hb_label', b.label || '');
+    const hbHid = document.getElementById('hb_hidden');
+    if (hbHid) hbHid.checked = !!b.hidden;
     const ev = document.getElementById('hb_events');
     if (ev) ev.checked = b.events !== false;
     if (!isVideo) {
@@ -1092,6 +1094,9 @@ function onHistChange() {
     b.duration = parseInt(document.getElementById('hb_duration').value) || 30;
     b.opacity = Math.max(10, Math.min(100, parseInt(document.getElementById('hb_opacity').value) || 85));
     b.label = document.getElementById('hb_label').value || '';
+    // Masquer SANS supprimer : le moteur saute les blocs `hidden` (script.py, _hist_units) — la
+    // config et le câblage sont conservés. Utile pour comparer le coût du mur avec/sans la frise.
+    b.hidden = !!document.getElementById('hb_hidden').checked;
     const src = document.getElementById('hb_source').value || '';
     if (isVideo) {
         b.path = src;
@@ -2346,6 +2351,8 @@ function refreshBlockPanel() {
     _mbSetVal('mb_align', b.align || 'left');
     _mbSetVal('mb_width_mode', b.width_mode || 'auto');
     _mbSetVal('mb_label', b.label || '');
+    const mbHid = document.getElementById('mb_hidden');
+    if (mbHid) mbHid.checked = !!b.hidden;
     // Source audio : flux explicite de la flotte (page Câbles peut aussi câbler ce port) —
     // pas de dérivation « auto » possible ici (un bloc de mur n'a pas de source vidéo).
     const sel = document.getElementById('mb_audio_path');
@@ -2375,6 +2382,8 @@ function onBlockChange() {
     b.align = document.getElementById('mb_align').value;
     b.width_mode = document.getElementById('mb_width_mode').value;
     b.label = document.getElementById('mb_label').value || '';
+    // Masquer SANS supprimer : le moteur saute les blocs `hidden` (script.py, render_meters).
+    b.hidden = !!document.getElementById('mb_hidden').checked;
     b.audio_path = document.getElementById('mb_audio_path').value || '';
     dessiner();
     hotApplyFull();
