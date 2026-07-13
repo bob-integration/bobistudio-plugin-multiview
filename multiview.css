@@ -213,7 +213,12 @@
 
 /* Bouton « Recharger » sous le sélecteur de modèle de PiP : re-fetch la bibliothèque
    (contourne le cache mwPipTemplates) et repousse à chaud — cf. reloadPipTemplate(). */
-.mw-pip-tpl-reload { align-self: flex-start; margin-top: 2px; }
+/* Sélecteur de modèle de PiP + bouton « Recharger » : SUR UNE MÊME LIGNE, pour que le champ
+   garde exactement la hauteur des champs voisins de la ligne (« Nom affiché », « Source »…).
+   Empiler le bouton SOUS le select rallongeait le champ et décalait l'alignement de la rangée. */
+.mw-tpl-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.mw-tpl-row select { flex: 1 1 auto; min-width: 0; }
+.mw-pip-tpl-reload { flex: 0 0 auto; white-space: nowrap; }
 
 /* Steppers numériques : flèches natives (minuscules) masquées, remplacées par des boutons −/+
    confortables de part et d'autre du champ. */
