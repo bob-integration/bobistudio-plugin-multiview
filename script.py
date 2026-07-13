@@ -92,6 +92,14 @@ FLUX_CONFIG   = CONFIG.get("flux_config") or []
 # corps de dessin (_comp_rect/_meter_fit_dims/_meter_tiles_at) via un cfg synthétique couvrant
 # tout le canvas (cf. render_meters). Modifiable à chaud via :8082/reconfigure (comme flux_config).
 METER_BLOCKS  = CONFIG.get("meter_blocks") or []
+# Blocs d'HISTORIQUE posés sur le MUR (mêmes conventions que meter_blocks : fractions 0..1 du mur,
+# source câblée en propre page Câbles, modifiables à chaud via :8082/reconfigure) :
+#   video_history_blocks : {{x,y,w,h, duration(10|30|60|120), opacity, events, path, label?}}
+#   audio_history_blocks : {{x,y,w,h, duration, channels, ch_start, opacity, audio_path, label?}}
+# Mêmes clés que les composants `video_history`/`audio_history` des modèles de PiP → UN SEUL
+# code de rendu (cf. section « Historique vidéo / audio »).
+VHIST_BLOCKS  = CONFIG.get("video_history_blocks") or []
+AHIST_BLOCKS  = CONFIG.get("audio_history_blocks") or []
 SHM_OUT_NAME  = CONFIG.get("shm_out") or "mxl_mix"
 SHM_OUT       = "/dev/shm/" + SHM_OUT_NAME   # conservé pour l'audio legacy / dérivations de noms
 inst          = bobimxl.Instance()           # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
@@ -1554,6 +1562,610 @@ def _anc_sig():
     return tuple(_format_anc_cell(i, flags) for i, flags, _r in _anc_units())
 
 
+# ─── Historique vidéo / audio (« que s'est-il passé sur cette source ? ») ────────────────
+# DEUX outils, disponibles CHACUN sous deux formes (même code de rendu) :
+#   • composant de MODÈLE DE PIP (type `video_history` / `audio_history`, géométrie normalisée
+#     à la cellule — la source est celle de la fenêtre) ;
+#   • bloc libre du MUR (CONFIG.video_history_blocks[] / audio_history_blocks[], géométrie en
+#     fractions du MUR ENTIER, source CÂBLÉE en propre — même motif que meter_blocks).
+#
+# HISTORIQUE VIDÉO : une vignette par SECONDE (bande) + un RUBAN D'ÉVÉNEMENTS (gel / noir /
+# perte de signal) sous la bande. Échantillonnage dans un THREAD dédié (VH_TICK_S), JAMAIS dans
+# la boucle de mix : 5 relevés/s sur un proxy pyramide déjà réduit, chaque relevé = un gather de
+# 96×54 px (VH_THUMB_*) — pas un resize de trame. La bande n'est RECOMPOSÉE (PIL) qu'à l'arrivée
+# d'une vignette (1 Hz) ou à une transition d'événement (cache `_hist_cache`, motif du cache
+# statique des VU-mètres).
+#   ★ CAPTURE À L'INSTANT DE L'ÉVÉNEMENT : à l'ENTRÉE en gel / noir / perte de signal, la vignette
+#     est capturée IMMÉDIATEMENT et ÉPINGLÉE (`pinned`) dans sa case temporelle — l'échantillonnage
+#     régulier ne l'écrase plus. La bande montre donc l'image SUR LAQUELLE ça s'est figé (pour la
+#     perte de signal : la dernière image VALIDE, cf. `good`), pas une image quelconque de la seconde.
+#   Statuts : RÉUTILISE `_tile_status` (gel/perte détectés par la boucle de mix) dès que la source
+#   est celle d'une fenêtre ; pour un bloc de mur dont la source n'alimente AUCUNE fenêtre, la MÊME
+#   règle (frame_index qui n'avance plus depuis FREEZE_DETECT_S / aucun grain lisible) est appliquée
+#   à notre propre reader. Le NOIR (absent du moteur) est mesuré sur la vignette (déjà réduite) :
+#   luma moyenne ≤ VH_BLACK_MEAN ET max ≤ VH_BLACK_MAX.
+#
+# HISTORIQUE AUDIO : enveloppe des crêtes (une colonne = min/max de sa tranche, symétrique) +
+# SATURATION persistante (colonne rouge) + SILENCE (bande grisée). Échantillonné dans son propre
+# thread à AH_TICK_S, ring de HIST_MAX_S s.
+HIST_DURATIONS = (10, 30, 60, 120)     # durées offertes (s) — défaut 30
+HIST_MAX_S     = 120                   # profondeur des rings (= plus longue durée offerte)
+VH_TICK_S      = 0.2                   # période d'échantillonnage vidéo (5 Hz) → ruban à 200 ms près
+VH_THUMB_W     = 96                    # vignette : 96×54 RGB = 15,5 ko → 120 s = 1,9 Mo par SOURCE
+VH_THUMB_H     = 54                    # (les composants/blocs d'une MÊME source partagent le ring)
+VH_BLACK_MEAN  = 16.0                  # luma moyenne (échelle 8 bits) sous laquelle l'image est « noire »
+VH_BLACK_MAX   = 48.0                  # …et pic de luma sous lequel on ne voit RIEN (ni mire, ni logo)
+VH_RESCAN_S    = 5.0                   # re-scan des proxies pyramide de la source
+AH_TICK_S      = 0.02                  # période d'échantillonnage audio (50 Hz, = cadence trame)
+AH_MAX         = int(HIST_MAX_S / AH_TICK_S)   # 6000 relevés (120 s) par flux audio
+# SATURATION (critère retenu, défendable et documenté) : un échantillon est « pleine échelle » si
+# |x| ≥ AH_CLIP_LEVEL (≈ −0,009 dBFS, soit le dernier LSB en 20 bits) ; une colonne est marquée
+# SATURÉE si un canal suivi présente AH_CLIP_RUN échantillons pleine échelle CONSÉCUTIFS — la
+# règle classique des détecteurs de clip numériques (3 FS d'affilée = écrêtage, contre 1 seul qui
+# peut être un pic légitime). Le marqueur est PERSISTANT : porté par la colonne, il reste à l'écran
+# tant que la colonne est dans la fenêtre de temps (une saturation de 3 ms reste visible 30 s).
+AH_CLIP_LEVEL  = 0.999
+AH_CLIP_RUN    = 3
+# Couleurs des événements (ruban + liseré de la vignette épinglée) — mêmes teintes que les
+# badges de statut du produit (rouge=perte, ambre=gel, indigo=noir).
+_HIST_EVT_RGB  = {{"nosignal": (236, 72, 60), "freeze": (240, 184, 44), "black": (108, 132, 236)}}
+_HIST_BG       = (14, 16, 20)          # fond des deux frises
+_HIST_WAVE     = (96, 210, 140)        # enveloppe audio (vert)
+_HIST_SILENCE  = (58, 60, 68)          # plage silencieuse (gris)
+_HIST_CLIP     = (236, 72, 60)         # colonne saturée (rouge)
+
+_hist_lock  = threading.Lock()
+_vh         = {{}}   # nom de flux vidéo → état d'historique (ring de vignettes + ruban)
+_ah         = {{}}   # nom de flux audio → état d'historique (rings de crêtes/saturation)
+_hist_cache = {{}}   # clé d'unité → (signature, [tuiles YUV]) — recomposé au changement seulement
+
+def _hist_dur(cfg):
+    """Durée (s) d'un composant/bloc d'historique, bornée aux durées offertes (défaut 30)."""
+    try:
+        d = int(cfg.get("duration") or 30)
+    except (TypeError, ValueError):
+        return 30
+    return d if d in HIST_DURATIONS else min(HIST_DURATIONS, key=lambda v: abs(v - d))
+
+def _hist_units(kind):
+    """Unités d'historique à rendre : [(key, unit, rect, cfg_source, win_idx|None)].
+    `unit` = le composant de modèle OU le bloc de mur (mêmes clés) ; `cfg_source` = le dict qui
+    porte la SOURCE (la fenêtre pour un composant, le bloc lui-même pour un bloc de mur) ;
+    `win_idx` = index de fenêtre (réutilisation de `_tile_status`) ou None pour un bloc."""
+    ctype = "video_history" if kind == "video" else "audio_history"
+    blocks = VHIST_BLOCKS if kind == "video" else AHIST_BLOCKS
+    out = []
+    for i, cfg in enumerate(FLUX_CONFIG):
+        if cfg.get("hidden"):
+            continue
+        for comp in (_tpl_comps(cfg) or ()):
+            if not (isinstance(comp, dict) and comp.get("type") == ctype):
+                continue
+            if not _comp_visible(i, cfg, comp):
+                continue
+            try:
+                out.append((("w", i, str(comp.get("id") or ctype)), comp, _comp_rect(cfg, comp), cfg, i))
+            except Exception:
+                continue
+    full_cfg = {{"x": 0, "y": 0, "w": OUT_WIDTH, "h": OUT_HEIGHT}}
+    for j, blk in enumerate(blocks):
+        if not isinstance(blk, dict) or blk.get("hidden"):
+            continue
+        try:
+            out.append(((kind[0] + "b", j, ""), blk, _comp_rect(full_cfg, blk), blk, None))
+        except Exception:
+            continue
+    return out
+
+# ─── Historique VIDÉO : échantillonnage ──────────────────────────────────────
+
+def _vh_new():
+    return {{"src": None, "path": "", "scan_t": 0.0,
+             "cells": deque(maxlen=HIST_MAX_S + 2),   # {{sec, img (RGB uint8), pinned, evt}}
+             "evt": deque(maxlen=int(HIST_MAX_S / VH_TICK_S) + 8),   # (t, code) — ruban
+             "last_fi": None, "last_fi_t": 0.0, "status": "",
+             "thumb": None, "good": None, "ver": 0}}
+
+def _vh_close(st):
+    src = st.get("src")
+    if src is not None:
+        try: src["reader"].close()
+        except Exception: pass
+    st["src"] = None; st["path"] = ""
+    try: inst.garbage_collect()
+    except Exception: pass
+
+def _vh_pick_path(name):
+    """Source la MOINS CHÈRE pour une vignette : le plus PETIT proxy pyramide qui couvre encore
+    96×54, sinon le flux plein. On ne redimensionne jamais une trame : on prélève 96×54 points."""
+    best = name; ba = None
+    for p in (_scan_proxies_for({{"path": "/dev/shm/" + name}}) or ()):
+        w = int(p.get("w") or 0); h = int(p.get("h") or 0)
+        if w >= VH_THUMB_W and h >= VH_THUMB_H and (ba is None or w * h < ba):
+            ba = w * h; best = (p.get("path") or "").removeprefix("/dev/shm/")
+    return best or name
+
+def _vh_thumb(src, view):
+    """Vignette RGB (VH_THUMB_H×VH_THUMB_W×3) + (luma moyenne, luma max) sur l'échelle 8 bits.
+    Gather de 96×54 POINTS sur les plans du grain (vue zéro-copie) — pas un resize de trame."""
+    in_w, in_h = src["in_w"], src["in_h"]
+    yb  = in_w * in_h * _BPS
+    uvb = (in_w // _CW) * (in_h // _CH) * _BPS
+    y = view[:yb].view(_NP_DT).reshape(in_h, in_w)
+    u = view[yb:yb + uvb].view(_NP_DT).reshape(in_h // _CH, in_w // _CW)
+    v = view[yb + uvb:yb + 2 * uvb].view(_NP_DT).reshape(in_h // _CH, in_w // _CW)
+    ry = (np.arange(VH_THUMB_H) * in_h) // VH_THUMB_H
+    rx = (np.arange(VH_THUMB_W) * in_w) // VH_THUMB_W
+    cy = (np.arange(VH_THUMB_H) * (in_h // _CH)) // VH_THUMB_H
+    cx = (np.arange(VH_THUMB_W) * (in_w // _CW)) // VH_THUMB_W
+    ty = y[np.ix_(ry, rx)].astype(np.float32) / _SCALE          # échelle 8 bits (10/12 bits ramenés)
+    tu = u[np.ix_(cy, cx)].astype(np.float32) / _SCALE - 128.0
+    tv = v[np.ix_(cy, cx)].astype(np.float32) / _SCALE - 128.0
+    r = ty + 1.402 * tv
+    g = ty - 0.344136 * tu - 0.714136 * tv
+    b = ty + 1.772 * tu
+    rgb = np.clip(np.stack([r, g, b], axis=-1), 0, 255).astype(np.uint8)
+    return rgb, float(ty.mean()), float(ty.max())
+
+def _vh_sample(name, win, now):
+    """Un relevé (VH_TICK_S) d'une source vidéo suivie : vignette + statut + épinglage d'événement."""
+    with _hist_lock:
+        st = _vh.get(name)
+        if st is None:
+            st = _vh_new(); _vh[name] = st
+    if st["src"] is None or (now - st["scan_t"]) > VH_RESCAN_S:
+        want = _vh_pick_path(name)
+        if st["src"] is None or st["path"] != want:
+            _vh_close(st)
+            st["src"] = open_source({{"path": want}})
+            st["path"] = want if st["src"] is not None else ""
+        st["scan_t"] = now
+    got = None
+    if st["src"] is not None:
+        try:
+            got = st["src"]["reader"].get_latest()
+        except Exception:
+            got = None
+    status = ""
+    thumb = None
+    if got is None:
+        status = "nosignal"
+        st["thumb"] = None
+        st["last_fi"] = None
+        _vh_close(st)          # reader périmé/flux disparu → rouvert au prochain relevé
+    else:
+        fi = got[0]
+        if fi != st.get("last_fi"):
+            st["last_fi"] = fi; st["last_fi_t"] = now
+        mean_y = max_y = 0.0
+        try:
+            thumb, mean_y, max_y = _vh_thumb(st["src"], got[2])
+            st["thumb"] = thumb; st["good"] = thumb
+        except Exception:
+            thumb = None
+        # Statut : celui DÉJÀ calculé par la boucle de mix si la source alimente une fenêtre
+        # (aucune seconde détection) ; sinon MÊME règle appliquée à notre reader. Le noir n'est
+        # pas un statut du moteur → mesuré sur la vignette.
+        ws = _tile_status.get(win) if win is not None else None
+        if ws in ("nosignal", "freeze"):
+            status = ws
+        elif FREEZE_DETECT_S > 0 and (now - st["last_fi_t"]) > FREEZE_DETECT_S:
+            status = "freeze"
+        elif thumb is not None and mean_y <= VH_BLACK_MEAN and max_y <= VH_BLACK_MAX:
+            status = "black"
+    st["evt"].append((now, status))
+    prev = st.get("status") or ""
+    st["status"] = status
+    sec = int(now)
+    cells = st["cells"]
+    cur = cells[-1] if cells else None
+    if cur is None or cur["sec"] != sec:
+        cur = {{"sec": sec, "img": st.get("thumb"), "pinned": False, "evt": ""}}
+        cells.append(cur)
+        st["ver"] += 1                       # nouvelle case → la bande est recomposée (1 Hz)
+    elif not cur["pinned"]:
+        cur["img"] = st.get("thumb")         # dernière image de la seconde en cours (sans re-bake)
+    if status != prev:
+        if status:
+            # ★ TRANSITION : on ÉPINGLE l'image de l'instant — celle sur laquelle ça s'est figé
+            # (gel/noir) ou la dernière VALIDE (perte de signal) — dans la case de cette seconde.
+            img = st.get("good") if status == "nosignal" else st.get("thumb")
+            if img is not None:
+                cur["img"] = img; cur["pinned"] = True; cur["evt"] = status
+        st["ver"] += 1                       # transition → ruban + liseré rafraîchis tout de suite
+
+def _vhist_loop():
+    """Thread d'échantillonnage vidéo (VH_TICK_S). Aucune trame prélevée dans la boucle de mix."""
+    while True:
+        time.sleep(VH_TICK_S)
+        try:
+            units = _hist_units("video")
+            wanted = {{}}
+            for _k, _u, _r, cfg_src, wi in units:
+                nm = (cfg_src.get("path") or "").removeprefix("/dev/shm/")
+                if nm:
+                    wanted.setdefault(nm, wi)
+            with _hist_lock:
+                dead = [nm for nm in _vh if nm not in wanted]
+                for nm in dead:
+                    _vh_close(_vh.pop(nm))
+            # Carte source → fenêtre : un BLOC de mur câblé sur la source d'une fenêtre réutilise
+            # AUSSI le statut de cette fenêtre (aucune détection en double).
+            wmap = {{}}
+            for i, cfg in enumerate(FLUX_CONFIG):
+                if cfg.get("hidden"):
+                    continue
+                p = (cfg.get("path") or "").removeprefix("/dev/shm/")
+                if p and p not in wmap:
+                    wmap[p] = i
+            now = time.time()
+            for nm, wi in wanted.items():
+                try:
+                    _vh_sample(nm, wmap.get(nm, wi), now)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+# ─── Historique AUDIO : échantillonnage ──────────────────────────────────────
+
+def _ah_new():
+    return {{"ar": None, "name": "", "w": 0, "n": 0, "last_t": 0.0, "last_head": None,
+             "t":    np.zeros(AH_MAX, dtype=np.float64),
+             "pk":   np.full((AH_MAX, A_CHANNELS_MAX), METER_MIN_DB, dtype=np.float32),
+             "clip": np.zeros((AH_MAX, A_CHANNELS_MAX), dtype=np.uint8)}}
+
+def _ah_push(st, t, pk, clip):
+    w = st["w"]
+    st["t"][w] = t
+    st["pk"][w] = pk
+    st["clip"][w] = clip
+    st["w"] = (w + 1) % AH_MAX
+    st["n"] = min(AH_MAX, st["n"] + 1)
+
+def _ah_sample(name, now):
+    """Un relevé (AH_TICK_S) d'un flux audio suivi : crêtes par canal + saturation.
+    On lit la fenêtre d'échantillons RÉELLEMENT écoulée depuis le relevé précédent (≈20 ms), pas
+    seulement le 1 ms des VU-mètres : sans ça une saturation de quelques ms passerait entre les
+    mailles (les VU n'échantillonnent que 1 ms sur 20 — suffisant pour une barre, pas pour un
+    détecteur de clip). Coût : ~960×8 float32 = 30 ko + un max/abs → quelques dizaines de µs."""
+    with _hist_lock:
+        st = _ah.get(name)
+        if st is None:
+            st = _ah_new(); st["name"] = name; _ah[name] = st
+    if st["ar"] is None:
+        try:
+            inst.garbage_collect()
+        except Exception:
+            pass
+        try:
+            st["ar"] = bobimxl.AudioReader(inst, name)
+            st["last_head"] = None
+        except Exception:
+            st["ar"] = None
+    ar = st["ar"]
+    mn = np.full(A_CHANNELS_MAX, METER_MIN_DB, dtype=np.float32)
+    zc = np.zeros(A_CHANNELS_MAX, dtype=np.uint8)
+    if ar is None:
+        _ah_push(st, now, mn, zc)           # flux absent → plancher (jamais de crête figée)
+        st["last_t"] = now
+        return
+    try:
+        head = int(ar.head_index())
+    except Exception:
+        head = -1
+    if head < 0:
+        _ah_push(st, now, mn, zc); st["last_t"] = now
+        return
+    # Flux COUPÉ (head figé au-delà de ABSENCE_MS) → plancher + reconnexion (même logique que
+    # _update_peaks : ni l'AudioWriter MXL ni mtl_rx ne bumpent lastWriteTime).
+    if head == st.get("last_head"):
+        if (now - float(st.get("last_head_t") or now)) * 1000.0 > ABSENCE_MS:
+            try: ar.close()
+            except Exception: pass
+            st["ar"] = None
+            _ah_push(st, now, mn, zc); st["last_t"] = now
+            return
+    else:
+        st["last_head"] = head; st["last_head_t"] = now
+    dt = now - (st["last_t"] or (now - AH_TICK_S))
+    n = int(max(A_SAMPLES_PER_CHUNK, min(2400, dt * A_SAMPLE_RATE + A_SAMPLES_PER_CHUNK)))
+    start = head + A_SAMPLES_PER_CHUNK - n     # fenêtre glissante finissant au dernier sample commité
+    blk = None
+    if start >= 0:
+        try:
+            blk = ar.read_from(start, n)
+        except Exception:
+            blk = None
+    if blk is None:
+        try:
+            blk = ar.read_latest(A_SAMPLES_PER_CHUNK)   # repli : la seule dernière milliseconde
+        except Exception:
+            blk = None
+    st["last_t"] = now
+    if blk is None or blk.size == 0:
+        _ah_push(st, now, mn, zc)
+        return
+    amp = np.abs(blk)
+    ch = min(A_CHANNELS_MAX, amp.shape[1])
+    pk = mn.copy()
+    peak_lin = amp[:, :ch].max(axis=0)
+    with np.errstate(divide="ignore"):
+        pk[:ch] = np.maximum(METER_MIN_DB, 20.0 * np.log10(np.maximum(peak_lin, 1e-7)))
+    cl = zc.copy()
+    if amp.shape[0] >= AH_CLIP_RUN:
+        fs = amp[:, :ch] >= AH_CLIP_LEVEL          # échantillons pleine échelle
+        run = fs[:-(AH_CLIP_RUN - 1)]
+        for k in range(1, AH_CLIP_RUN):
+            run = run & fs[k:amp.shape[0] - (AH_CLIP_RUN - 1) + k]
+        cl[:ch] = run.any(axis=0).astype(np.uint8)  # ≥ AH_CLIP_RUN FS consécutifs = saturation
+    _ah_push(st, now, pk, cl)
+
+def _ah_names(unit, cfg_src):
+    """Noms des flux audio à suivre pour une unité (espace de 16 canaux = 2 flux de 8)."""
+    try:
+        s0 = max(0, min(2 * A_CHANNELS_MAX - 1, int(unit.get("ch_start") or 1) - 1))
+        n = max(1, min(A_CHANNELS_MAX, int(unit.get("channels") or 2)))
+    except (TypeError, ValueError):
+        s0, n = 0, 2
+    n = min(n, 2 * A_CHANNELS_MAX - s0)
+    out = []
+    for flow in (0, 1):
+        f0 = flow * A_CHANNELS_MAX
+        if max(s0, f0) < min(s0 + n, f0 + A_CHANNELS_MAX):
+            nm = _audio_name_for(cfg_src, flow)
+            out.append((flow, nm))
+    return s0, n, out
+
+def _ahist_loop():
+    """Thread d'échantillonnage audio (AH_TICK_S = cadence trame)."""
+    while True:
+        time.sleep(AH_TICK_S)
+        try:
+            wanted = set()
+            for _k, unit, _r, cfg_src, _wi in _hist_units("audio"):
+                for _flow, nm in _ah_names(unit, cfg_src)[2]:
+                    if nm:
+                        wanted.add(nm)
+            with _hist_lock:
+                for nm in [k for k in _ah if k not in wanted]:
+                    stx = _ah.pop(nm)
+                    try:
+                        if stx.get("ar"):
+                            stx["ar"].close()
+                    except Exception:
+                        pass
+            now = time.time()
+            for nm in wanted:
+                try:
+                    _ah_sample(nm, now)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+# ─── Historique : rendu (tuiles YUV cachées, recomposées au changement seulement) ─────────
+
+def _hist_evt_at(evts, t):
+    """Code d'événement au temps t (ruban) — dernier relevé antérieur, "" si hors ring."""
+    code = None
+    for (ts, c) in evts:
+        if ts <= t:
+            code = c
+        else:
+            break
+    return code or ""
+
+def _vh_render(unit, rect, name, now):
+    """Bande de vignettes + ruban d'événements → RGBA numpy (rh, rw, 4).
+    100 % numpy (aucun PIL par colonne/vignette) : la recomposition n'a lieu qu'à l'arrivée
+    d'une vignette (1 Hz) ou à une transition d'événement, mais elle tombe DANS une trame du
+    mur (budget 20 ms à 50 fps) → elle doit rester à quelques ms, pas quelques dizaines."""
+    _rx, _ry, rw, rh = rect
+    dur = _hist_dur(unit)
+    show_evt = _as_bool(unit.get("events", True), True)
+    a_bg = max(10, min(100, int(unit.get("opacity") or 85))) * 255 // 100
+    rb = max(4, min(10, rh // 8)) if show_evt else 0     # hauteur du ruban
+    sh = max(4, rh - rb - (2 if rb else 0))              # hauteur de la bande de vignettes
+    arr = np.empty((rh, rw, 4), dtype=np.uint8)
+    arr[..., 0:3] = _HIST_BG
+    arr[..., 3] = a_bg
+    with _hist_lock:
+        st = _vh.get(name)
+        cells = list(st["cells"]) if st else []
+        evts = list(st["evt"]) if st else []
+    t0 = now - dur
+    by_sec = {{c["sec"]: c for c in cells}}
+    cw = rw / float(dur)
+    strip = arr[:sh, :, 0:3]
+    strip[:] = (30, 32, 38)                             # cases sans vignette (avant la 1ʳᵉ seconde)
+    _rows = None; _rows_h = -1
+    for k in range(dur):
+        c = by_sec.get(int(t0) + k + 1)
+        if c is None or c.get("img") is None:
+            continue
+        x0 = int(round(k * cw)); x1 = max(x0 + 1, int(round((k + 1) * cw))) - 1
+        x1 = min(x1, rw)
+        cwid = x1 - x0
+        if cwid < 1:
+            continue
+        if _rows_h != sh:                               # mapping vertical partagé par toutes les cases
+            _rows = (np.arange(sh) * VH_THUMB_H) // sh
+            _rows_h = sh
+        cols = (np.arange(cwid) * VH_THUMB_W) // cwid
+        strip[:, x0:x1] = c["img"][np.ix_(_rows, cols)]  # nearest (gather) — pas de resize PIL
+        if c.get("pinned") and c.get("evt"):
+            # Vignette CAPTURÉE À L'INSTANT de l'événement : liseré à la couleur de l'événement.
+            col = _HIST_EVT_RGB.get(c["evt"], (255, 255, 255))
+            strip[0, x0:x1] = col; strip[sh - 1, x0:x1] = col
+            strip[:, x0] = col; strip[:, x1 - 1] = col
+    if rb:
+        # Ruban : couleur du statut à l'instant de chaque colonne (vide = signal sain). Recherche
+        # vectorisée dans le ring d'événements (relevés à VH_TICK_S, donc déjà triés par temps).
+        band = arr[sh + 1:rh, :, 0:3]
+        band[:] = (44, 48, 56)
+        if evts:
+            ets = np.fromiter((e[0] for e in evts), dtype=np.float64, count=len(evts))
+            codes = [e[1] for e in evts]
+            tcol = t0 + (np.arange(rw) + 0.5) * dur / float(rw)
+            j = np.searchsorted(ets, tcol, side="right") - 1
+            for code, rgb in _HIST_EVT_RGB.items():
+                m = np.zeros(rw, dtype=bool)
+                hit = [i for i, c in enumerate(codes) if c == code]
+                if not hit:
+                    continue
+                hset = np.zeros(len(codes), dtype=bool)
+                hset[hit] = True
+                ok = j >= 0
+                m[ok] = hset[j[ok]]
+                if m.any():
+                    band[:, m] = rgb
+    return arr
+
+def _ah_render(unit, rect, cfg_src, now):
+    """Enveloppe des crêtes + saturation (rouge, persistante) + silence (gris) → RGBA numpy.
+    Agrégation par colonne en O(n) SANS scatter (`np.maximum.at` est lent) : le ring est trié
+    par temps → bornes de colonne par searchsorted + reduceat."""
+    _rx, _ry, rw, rh = rect
+    dur = _hist_dur(unit)
+    s0, n, names = _ah_names(unit, cfg_src)
+    a_bg = max(10, min(100, int(unit.get("opacity") or 85))) * 255 // 100
+    peak = np.full(rw, METER_MIN_DB, dtype=np.float32)
+    clip = np.zeros(rw, dtype=bool)
+    seen = np.zeros(rw, dtype=bool)
+    t0 = now - dur
+    need = min(AH_MAX, int(dur / AH_TICK_S) + 8)        # on ne relit QUE la fenêtre affichée…
+    snap = []
+    with _hist_lock:
+        for flow, nm in names:
+            st = _ah.get(nm) if nm else None
+            if st is None or st["n"] == 0:
+                continue
+            cnt = min(st["n"], need)
+            # …mais la borne est le TEMPS, pas un nombre d'entrées : si les `need` derniers relevés
+            # ne remontent pas jusqu'à t0 (thread d'échantillonnage en retard, ou rendu d'un instant
+            # antérieur), on élargit au ring entier plutôt que d'afficher une enveloppe TRONQUÉE.
+            if cnt < st["n"] and st["t"][(st["w"] - cnt) % AH_MAX] > t0:
+                cnt = st["n"]
+            idx = (np.arange(cnt) + (st["w"] - cnt)) % AH_MAX
+            snap.append((flow, st["t"][idx].copy(), st["pk"][idx].copy(), st["clip"][idx].copy()))
+    edges = t0 + np.arange(rw) * (dur / float(rw))
+    for flow, ts, pks, cls in snap:
+        f0 = flow * A_CHANNELS_MAX
+        a = max(s0, f0); b = min(s0 + n, f0 + A_CHANNELS_MAX)     # canaux suivis DANS ce flux
+        if a >= b or ts.size == 0:
+            continue
+        sel = slice(a - f0, b - f0)
+        vals = pks[:, sel].max(axis=1)
+        cl = cls[:, sel].any(axis=1)
+        st_i = np.searchsorted(ts, edges, side="left")            # début de chaque colonne
+        cnt = np.diff(np.append(st_i, ts.size))
+        keep = (cnt > 0) & (st_i < ts.size)
+        if not keep.any():
+            continue
+        starts = st_i[keep]
+        pk_col = np.maximum.reduceat(vals, starts)
+        cl_col = np.maximum.reduceat(cl.astype(np.uint8), starts).astype(bool)
+        peak[keep] = np.maximum(peak[keep], pk_col)
+        clip[keep] |= cl_col
+        seen[keep] = True
+    arr = np.empty((rh, rw, 4), dtype=np.uint8)
+    arr[..., 0:3] = _HIST_BG
+    arr[..., 3] = a_bg
+    silence = seen & (peak <= SILENCE_DB)
+    if silence.any():
+        arr[:, silence, 0:3] = _HIST_SILENCE                      # plage silencieuse : fond grisé
+    cy = rh // 2
+    half = max(1, cy - 1)
+    frac = np.clip((peak - METER_MIN_DB) / (0.0 - METER_MIN_DB), 0.0, 1.0)   # dBFS → 0..1 (linéaire en dB)
+    hgt = (frac * half).astype(int)
+    hgt[~seen] = 0
+    band = np.abs(np.arange(rh)[:, None] - cy) <= hgt[None, :]
+    rgb = arr[..., 0:3]
+    rgb[band] = _HIST_WAVE
+    # SATURATION : colonne ROUGE sur TOUTE la hauteur → le marqueur PERSISTE tant que la colonne
+    # est dans la fenêtre de temps (une saturation de 3 ms reste lisible pendant 30 s), et reste
+    # visible même si la crête moyenne de la tranche est basse. Élargie à 2 px : à 120 s de
+    # profondeur une colonne fait moins d'un pixel de temps — un trait de 1 px se rate à l'œil.
+    if clip.any():
+        wide = clip.copy()
+        wide[1:] |= clip[:-1]
+        rgb[:, wide] = _HIST_CLIP
+    axis = np.maximum(rgb[cy], np.array((90, 96, 108), dtype=np.uint8))
+    rgb[cy] = axis
+    return arr
+
+def _hist_tile(rect, arr):
+    """RGBA numpy d'une unité → tuile YUV chroma-alignée (contrat de blend des VU-mètres)."""
+    rx, ry, rw, rh = rect
+    bx0 = max(0, rx); by0 = max(0, ry)
+    bx1 = min(OUT_WIDTH, rx + rw); by1 = min(OUT_HEIGHT, ry + rh)
+    bx0 -= bx0 % _CW; by0 -= by0 % _CH
+    if (bx1 - bx0) % _CW: bx1 = min(OUT_WIDTH, bx1 - ((bx1 - bx0) % _CW))
+    if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 - ((by1 - by0) % _CH))
+    if bx1 <= bx0 or by1 <= by0:
+        return None
+    sub = arr[by0 - ry:by1 - ry, bx0 - rx:bx1 - rx]
+    oy, ou, ov, oa, oa2 = rgba_to_yuv(sub)   # rgba_to_yuv accepte un ndarray RGBA (np.array(img))
+    return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
+
+def render_history_tiles(now):
+    """Tuiles YUV des historiques vidéo/audio (composants de PiP + blocs de mur), ou None.
+    CACHÉES : la bande vidéo n'est recomposée qu'à l'arrivée d'une vignette (1 Hz) ou à une
+    transition d'événement (`ver`) ; l'enveloppe audio, qu'au changement de COLONNE (rw/durée Hz,
+    typiquement 10-20 Hz). Entre deux, le coût par trame se réduit au blend de la tuile."""
+    if not (VHIST_BLOCKS or AHIST_BLOCKS or _hist_cache or FLUX_CONFIG):
+        return None
+    tiles = []
+    live = set()
+    # AMORTISSEMENT : au plus UNE frise recomposée par trame (la recomposition tombe DANS le
+    # budget de 20 ms de la trame). Les autres gardent leur tuile cachée un tour de plus (20 ms
+    # de retard sur une frise à la seconde = invisible) → jamais de pic cumulé qui ferait tomber
+    # une trame quand plusieurs frises basculent en même temps (ex. la seconde qui roule).
+    budget = 1
+    for kind in ("video", "audio"):
+        for key, unit, rect, cfg_src, _wi in _hist_units(kind):
+            rw = rect[2]
+            if rw < 8 or rect[3] < 8:
+                continue
+            live.add(key)
+            dur = _hist_dur(unit)
+            if kind == "video":
+                name = (cfg_src.get("path") or "").removeprefix("/dev/shm/")
+                if not name:
+                    continue
+                with _hist_lock:
+                    stv = _vh.get(name)
+                    ver = stv["ver"] if stv else -1
+                sig = (rect, dur, ver, int(unit.get("opacity") or 85),
+                       _as_bool(unit.get("events", True), True), name)
+            else:
+                # Pas de recomposition = arrivée d'une nouvelle COLONNE, plafonné à 5 Hz : au-delà,
+                # l'enveloppe n'avance que de 1-2 px (invisible) et on paierait le dessin 20×/s.
+                col = int(now / max(0.2, dur / float(rw)))
+                sig = (rect, dur, col, int(unit.get("opacity") or 85),
+                       int(unit.get("channels") or 2), int(unit.get("ch_start") or 1),
+                       _audio_name_for(cfg_src, 0) or "")
+            hit = _hist_cache.get(key)
+            if hit is not None and hit[0] != sig and budget <= 0:
+                tiles.extend(hit[1])          # tuile légèrement périmée : recomposée à la trame suivante
+                continue
+            if hit is None or hit[0] != sig:
+                budget -= 1
+                try:
+                    img = (_vh_render(unit, rect, sig[-1], now) if kind == "video"
+                           else _ah_render(unit, rect, cfg_src, now))
+                    t = _hist_tile(rect, img)
+                except Exception:
+                    t = None
+                hit = (sig, [t] if t is not None else [])
+                _hist_cache[key] = hit
+            tiles.extend(hit[1])
+    for k in [k for k in _hist_cache if k not in live]:
+        _hist_cache.pop(k, None)
+    return tiles or None
+
+
 # ─── Couche « info » : NO SIGNAL / FREEZE / format source ────────────────────
 # Cachée par signature (statuts + textes) : le coût PIL n'est payé qu'aux
 # transitions d'état, pas par frame. Posée SOUS l'habillage (bordure, labels et
@@ -2933,6 +3545,28 @@ class MvControlHandler(BaseHTTPRequestHandler):
         if self.path != "/input":
             self.send_response(404); self.end_headers(); return
         b = self._json()
+        # Ports des BLOCS D'HISTORIQUE de mur (page Câbles) : vidéo (`vh_idx` → `path`) et audio
+        # (`ah_idx` → `audio_path`). Clés d'entrée DISTINCTES de `idx`/`block_idx` (sinon un câblage
+        # de bloc écraserait la fenêtre du même indice numérique). Les rings d'échantillonnage sont
+        # keyés par NOM DE FLUX → le simple changement de source suffit (le thread ferme l'ancien).
+        for _hk, _hlist, _hfield in (("vh_idx", VHIST_BLOCKS, "path"),
+                                     ("ah_idx", AHIST_BLOCKS, "audio_path")):
+            if _hk in b:
+                try: hidx = int(b.get(_hk))
+                except Exception:
+                    self.send_response(400); self.end_headers(); return
+                shm = (b.get("shm") or "").strip()
+                ok = False
+                with state_lock:
+                    if 0 <= hidx < len(_hlist):
+                        _hlist[hidx][_hfield] = ("/dev/shm/" + shm) if shm else ""
+                        ok = True
+                if ok:
+                    _hist_cache.clear()
+                self.send_response(200 if ok else 400)
+                self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(json.dumps({{"ok": ok}}).encode())
+                return
         # Port AUDIO d'un bloc VU-mètres de MUR (câblage page Câbles, `wiring.consumes`
         # `from_list: meter_blocks`, `input_key: block_idx` — DISTINCT de `idx` des fenêtres,
         # sinon un câblage de bloc écraserait l'entrée FLUX_CONFIG du même indice numérique).
@@ -3077,6 +3711,15 @@ class MvControlHandler(BaseHTTPRequestHandler):
         # chaud depuis le composer). On purge TOUS les états audio de blocs (clé ("mb", j)) —
         # les indices peuvent avoir bougé (réordonnement/suppression), les rouvrir est cheap.
         new_mb = b.get("meter_blocks") or []
+        # Blocs d'HISTORIQUE (vidéo/audio) : même remplacement atomique. Les états d'échantillonnage
+        # (_vh/_ah) sont keyés par NOM DE FLUX, pas par indice → ils survivent au réordonnement ; les
+        # threads d'échantillonnage ferment d'eux-mêmes ceux qui ne sont plus demandés. Seul le cache
+        # de TUILES (keyé par indice de bloc) est purgé.
+        if "video_history_blocks" in b or "audio_history_blocks" in b:
+            with state_lock:
+                VHIST_BLOCKS[:] = b.get("video_history_blocks") or []
+                AHIST_BLOCKS[:] = b.get("audio_history_blocks") or []
+            _hist_cache.clear()
         with state_lock:
             METER_BLOCKS[:] = new_mb
             for k in list(audio_states):
@@ -3176,6 +3819,11 @@ threading.Thread(
 
 # Injection de proxies pyramide À CHAUD : scrute /dev/shm en continu (cf. _proxy_scan_loop).
 threading.Thread(target=_proxy_scan_loop, daemon=True).start()
+
+# Historiques vidéo/audio : échantillonnage HORS de la boucle de mix (threads dédiés). Aucune unité
+# configurée → les boucles ne font que dormir (coût strictement nul sur les murs existants).
+threading.Thread(target=_vhist_loop, daemon=True).start()
+threading.Thread(target=_ahist_loop, daemon=True).start()
 
 # Sortie MXL : index tai en genlock-grille, sinon compteur libre (input-locked / cadence libre).
 _out_mode  = "tai" if (GENLOCK and not INPUT_LOCKED) else "free"
@@ -3961,6 +4609,9 @@ while True:
         # Inhérents per-frame (le niveau change à chaque trame) → jamais cachés, mais chaque tuile ne
         # couvre que la bande VU d'une cellule (≪ bbox-union quasi plein écran de l'ancien chemin).
         _meter_tiles = render_meters(now)
+        # Historiques vidéo/audio : tuiles CACHÉES (recomposées à l'arrivée d'une vignette / au
+        # changement de colonne — cf. render_history_tiles) ; par trame, seul le blend est payé.
+        _hist_tiles = render_history_tiles(now)
         # Couche PER-FRAME des overlays fg = HORLOGES, en TUILES (une bbox par horloge, cf. render_meters
         # ; texte/images fixes bakés dans le chrome). Rendu PIL + conversion YUV refaits SEULEMENT au
         # changement de VALEUR (signature = chaînes formatées, déterministe → 1×/s sans le champ images
@@ -3986,7 +4637,7 @@ while True:
         _ts_ov2 = time.time_ns()   # fin du blend chrome
         # 2) VU-mètres puis 3) horloges : blend de chaque TUILE sur sa propre bbox (z-ordre conservé :
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
-        for _src_tiles in (() if SLICE_ON else (_meter_tiles, _pf_tiles)):
+        for _src_tiles in (() if SLICE_ON else (_meter_tiles, _hist_tiles, _pf_tiles)):
             if not _src_tiles:
                 continue
             for (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) in _src_tiles:
@@ -4004,8 +4655,11 @@ while True:
         if SLICE_ON:
             # MODE TRANCHE : placement des tuiles + habillage + écriture sortie BANDE PAR BANDE,
             # avec commit MXL progressif (l'aval démarre sur la 1ʳᵉ bande). CPU/paysage (gaté).
+            # MODE TRANCHE : les historiques passent par le même canal que les horloges (tuiles
+            # per-frame blendées bande par bande) — concaténés à _pf_tiles.
             _sl_waited = _compose_bands(canvas_y, canvas_u, canvas_v, _slice_batch,
-                                        _chrome_pre, _meter_tiles, _pf_tiles,
+                                        _chrome_pre, _meter_tiles,
+                                        ((_pf_tiles or []) + (_hist_tiles or [])) or None,
                                         fi_out=_fi_out) or 0
         else:
             if _PORTRAIT:                        # compose en portrait → tourne 90° vers la trame paysage

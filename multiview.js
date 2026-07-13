@@ -41,6 +41,20 @@ const _ovThumbCache = {};   // clé "slug|path" → Image (vignette média pour 
 let selectedBlock = -1;     // index dans editorParams.meter_blocks, ou -1
 let dragBlock      = false; // true pendant un drag/resize de bloc (réutilise dragMode/dragStart)
 
+// Blocs d'HISTORIQUE de MUR (frise vidéo / frise audio) : mêmes conventions que les blocs
+// VU-mètres (pixels canvas à l'édition → fractions 0..1 du mur à la sérialisation, source
+// câblée en propre). Deux listes distinctes (essences différentes côté câblage) manipulées
+// par UN SEUL jeu de fonctions, paramétrées par `kind` ('video' | 'audio').
+let selectedHist     = -1;        // index dans la liste du kind courant, ou -1
+let selectedHistKind = 'video';   // 'video' | 'audio' — liste visée par selectedHist
+let dragHist         = false;
+const HIST_LIST = {video: 'video_history_blocks', audio: 'audio_history_blocks'};
+function histList(kind) {
+    const k = HIST_LIST[kind || selectedHistKind];
+    editorParams[k] = editorParams[k] || [];
+    return editorParams[k];
+}
+
 const OVERLAY_FONTS = [
     ['dejavu-sans-bold',     'DejaVu Sans Bold'],
     ['dejavu-sans',          'DejaVu Sans'],
@@ -337,6 +351,8 @@ async function chargerMw(vmid) {
         tsl_port: 4801,
         overlays: [],
         meter_blocks: [],
+        video_history_blocks: [],
+        audio_history_blocks: [],
         default_template: null,
         default_template_ref: ''
     }, dc.params || {});
@@ -381,10 +397,23 @@ async function chargerMw(vmid) {
         label: b.label || '',
         hidden: !!b.hidden,
     }));
+    // Blocs d'historique (frises) : fractions 0..1 du mur en base → PIXELS canvas pour l'édition
+    // (même conversion que les blocs VU-mètres ci-dessus ; re-sérialisés en fractions au deploy).
+    ['video', 'audio'].forEach(kind => {
+        const key = HIST_LIST[kind];
+        editorParams[key] = (editorParams[key] || []).map((b, i) => Object.assign(newHistBlock(kind), b, {
+            id: b.id || ('hb' + kind + i + '_' + Date.now().toString(36)),
+            x: Math.round((b.x || 0) * editorParams.out_width),
+            y: Math.round((b.y || 0) * editorParams.out_height),
+            w: Math.max(48, Math.round((b.w || 0.3) * editorParams.out_width)),
+            h: Math.max(24, Math.round((b.h || 0.12) * editorParams.out_height)),
+        }));
+    });
     padBank();   // banque à indices stables : toujours max_inputs entrées
     selectedIdxs = [];
     selectedOverlay = -1;
     selectedBlock = -1;
+    selectedHist = -1;
     renderEditor(c.hostname);
 }
 
@@ -849,6 +878,7 @@ function ajouterBlocVU() {
     editorParams.meter_blocks.push(newMeterBlock());
     selectedBlock = editorParams.meter_blocks.length - 1;
     selectedOverlay = -1;
+    selectedHist = -1;
     selectedIdxs = [];
     dessiner();
     hotApplyFull();
@@ -860,6 +890,255 @@ function supprimerBlocVU() {
     selectedBlock = -1;
     dessiner();
     hotApplyFull();
+}
+
+// ─── Blocs d'HISTORIQUE de MUR (frise vidéo / frise audio) ───
+// Frise vidéo : une vignette par seconde + ruban gel/noir/perte de signal (la vignette de
+// l'INSTANT de l'événement est épinglée). Frise audio : enveloppe des crêtes + saturation
+// (rouge, persistante) + silence. Cf. plugins/multiview/script.py, render_history_tiles.
+function newHistBlock(kind) {
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    const w = Math.max(48, Math.round(ow * 0.32) & ~1);
+    const h = Math.max(24, Math.round(oh * (kind === 'audio' ? 0.10 : 0.13)) & ~1);
+    const b = {
+        id: 'hb' + Date.now().toString(36) + Math.floor(Math.random() * 1000),
+        kind,
+        x: Math.round((ow - w) / 2) & ~1, y: Math.round((oh - h) / 2) & ~1, w, h,
+        duration: 30, opacity: 85, label: '', hidden: false,
+    };
+    if (kind === 'audio') { b.audio_path = ''; b.channels = 2; b.ch_start = 1; }
+    else { b.path = ''; b.events = true; }
+    return b;
+}
+
+function ajouterBlocHist(kind) {
+    if (!editorParams) return;
+    histList(kind).push(newHistBlock(kind));
+    selectedHistKind = kind;
+    selectedHist = histList(kind).length - 1;
+    selectedBlock = -1; selectedOverlay = -1; selectedIdxs = [];
+    dessiner();
+    hotApplyFull();
+}
+
+function supprimerBlocHist() {
+    if (selectedHist < 0) return;
+    histList(selectedHistKind).splice(selectedHist, 1);
+    selectedHist = -1;
+    dessiner();
+    hotApplyFull();
+}
+
+function hitHist(pos) {
+    for (const kind of ['audio', 'video']) {
+        const bs = histList(kind);
+        for (let i = bs.length - 1; i >= 0; i--) {
+            const b = bs[i];
+            if (b.hidden) continue;
+            if (kind === selectedHistKind && i === selectedHist &&
+                pos.x >= b.x + b.w - HANDLE_SIZE && pos.y >= b.y + b.h - HANDLE_SIZE) {
+                return {i, kind, mode: 'resize'};
+            }
+            if (pos.x >= b.x && pos.x <= b.x + b.w && pos.y >= b.y && pos.y <= b.y + b.h) {
+                return {i, kind, mode: 'move'};
+            }
+        }
+    }
+    return null;
+}
+
+function beginHistDrag(hit, pos) {
+    selectedHistKind = hit.kind;
+    selectedHist = hit.i;
+    selectedBlock = -1; selectedOverlay = -1; selectedIdxs = [];
+    dragHist = true;
+    dragMode = hit.mode;
+    dragStart = pos;
+    dragOrigRect = {...histList(hit.kind)[hit.i]};
+    _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
+    dessiner();
+}
+
+function histMouseMove(e) {
+    if (!dragMode || selectedHist < 0) return;
+    const pos = getCanvasPos(e);
+    const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
+    const b = histList(selectedHistKind)[selectedHist];
+    if (!b) return;
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    if (dragMode === 'move') {
+        b.x = Math.max(0, Math.min(ow - b.w, Math.round(dragOrigRect.x + dx)));
+        b.y = Math.max(0, Math.min(oh - b.h, Math.round(dragOrigRect.y + dy)));
+    } else if (dragMode === 'resize') {
+        const nw = Math.max(48, Math.min(ow - b.x, Math.round(dragOrigRect.w + dx)));
+        const nh = Math.max(24, Math.min(oh - b.y, Math.round(dragOrigRect.h + dy)));
+        b.w = nw % 2 === 0 ? nw : nw - 1;
+        b.h = nh % 2 === 0 ? nh : nh - 1;
+    }
+    drawCanvas();
+    syncGeomFields();
+}
+
+// Aperçu SCHÉMATIQUE sur le canvas de l'éditeur (pas de flux live ici) : cases de vignettes +
+// ruban pour la frise vidéo, enveloppe mock + colonne rouge pour la frise audio.
+function drawHistLayer(ctx) {
+    ['video', 'audio'].forEach(kind => {
+        histList(kind).forEach((b, i) => {
+            if (b.hidden) return;
+            const sel = (kind === selectedHistKind && i === selectedHist);
+            ctx.save();
+            ctx.fillStyle = 'rgba(14,16,20,0.85)';
+            ctx.fillRect(b.x, b.y, b.w, b.h);
+            if (kind === 'video') {
+                const n = Math.max(1, Math.min(120, parseInt(b.duration) || 30));
+                const rb = b.events === false ? 0 : Math.max(3, Math.min(10, Math.round(b.h / 8)));
+                const sh = Math.max(3, b.h - rb - 2);
+                const cw = b.w / n;
+                for (let k = 0; k < n; k++) {
+                    ctx.fillStyle = (k % 2) ? 'rgba(52,56,66,0.9)' : 'rgba(40,44,52,0.9)';
+                    ctx.fillRect(b.x + k * cw, b.y, Math.max(1, cw - 1), sh);
+                }
+                if (rb) {
+                    ctx.fillStyle = 'rgba(44,48,56,0.95)';
+                    ctx.fillRect(b.x, b.y + sh + 1, b.w, rb);
+                    ctx.fillStyle = 'rgba(240,184,44,0.95)';   // gel (exemple)
+                    ctx.fillRect(b.x + b.w * 0.55, b.y + sh + 1, Math.max(2, b.w * 0.08), rb);
+                    ctx.fillStyle = 'rgba(236,72,60,0.95)';    // perte de signal (exemple)
+                    ctx.fillRect(b.x + b.w * 0.8, b.y + sh + 1, Math.max(2, b.w * 0.05), rb);
+                }
+            } else {
+                const cy = b.y + b.h / 2;
+                ctx.strokeStyle = 'rgba(96,210,140,0.9)';
+                ctx.beginPath();
+                for (let x = 0; x < b.w; x += 2) {
+                    const a = (Math.abs(Math.sin(x / 7)) * 0.4 + Math.abs(Math.sin(x / 23)) * 0.5) * (b.h / 2 - 2);
+                    ctx.moveTo(b.x + x, cy - a);
+                    ctx.lineTo(b.x + x, cy + a);
+                }
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(236,72,60,0.95)';        // saturation (exemple)
+                ctx.fillRect(b.x + b.w * 0.62, b.y, 2, b.h);
+            }
+            ctx.strokeStyle = sel ? '#ffffff' : '#c084fc';
+            ctx.lineWidth = sel ? 2 : 1;
+            ctx.setLineDash(sel ? [6, 4] : [4, 3]);
+            ctx.strokeRect(b.x, b.y, b.w, b.h);
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#c084fc'; ctx.font = '10px monospace';
+            ctx.fillText((kind === 'video' ? 'HIST V ' : 'HIST A ') + (b.label || (i + 1)) +
+                         ' · ' + (b.duration || 30) + 's', b.x + 3, b.y + 11);
+            if (sel) {
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(b.x + b.w - HANDLE_SIZE, b.y + b.h - HANDLE_SIZE, HANDLE_SIZE, HANDLE_SIZE);
+            }
+            ctx.restore();
+        });
+    });
+}
+
+// ── Panneau de propriétés d'un bloc d'historique ──
+function _hbSetVal(id, v) { const e = document.getElementById(id); if (e) e.value = v; }
+
+function refreshHistPanel() {
+    const panel = document.getElementById('ed_hb_panel');
+    if (!panel) return;
+    const b = selectedHist >= 0 ? histList(selectedHistKind)[selectedHist] : null;
+    if (!b) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const isVideo = selectedHistKind === 'video';
+    const ttl = document.getElementById('hb_title');
+    if (ttl) ttl.textContent = T(isVideo ? 'plugin.multiview.hb_title_video' : 'plugin.multiview.hb_title_audio');
+    const vr = document.getElementById('hb_video_row');
+    const ar = document.getElementById('hb_audio_row');
+    if (vr) vr.hidden = !isVideo;
+    if (ar) ar.hidden = isVideo;
+    _hbSetVal('hb_x', b.x); _hbSetVal('hb_y', b.y);
+    _hbSetVal('hb_w', b.w); _hbSetVal('hb_h', b.h);
+    _hbSetVal('hb_duration', String(b.duration ?? 30));
+    _hbSetVal('hb_opacity', b.opacity ?? 85);
+    _hbSetVal('hb_label', b.label || '');
+    const ev = document.getElementById('hb_events');
+    if (ev) ev.checked = b.events !== false;
+    if (!isVideo) {
+        _hbSetVal('hb_channels', String(b.channels ?? 2));
+        _hbSetVal('hb_ch_start', b.ch_start ?? 1);
+    }
+    // Source : flux vidéo ou audio de la flotte (la page Câbles câble le même port).
+    const sel = document.getElementById('hb_source');
+    if (sel) {
+        const list = isVideo ? videoSources : audioSources;
+        const cur = (isVideo ? b.path : b.audio_path) || '';
+        const opts = list.map(s => {
+            const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})` : `${s.hostname} → ${s.shm}`;
+            return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
+        });
+        opts.unshift('<option value="">' + escapeHtml(T('plugin.multiview.mb_audio_none_option')) + '</option>');
+        if (cur && !list.some(s => '/dev/shm/' + s.shm === cur)) {
+            opts.splice(1, 0, `<option value="${escapeHtml(cur)}">${escapeHtml(cur)}</option>`);
+        }
+        sel.innerHTML = opts.join('');
+        sel.value = cur;
+    }
+}
+
+function onHistChange() {
+    if (selectedHist < 0) return;
+    const b = histList(selectedHistKind)[selectedHist];
+    if (!b) return;
+    const isVideo = selectedHistKind === 'video';
+    b.duration = parseInt(document.getElementById('hb_duration').value) || 30;
+    b.opacity = Math.max(10, Math.min(100, parseInt(document.getElementById('hb_opacity').value) || 85));
+    b.label = document.getElementById('hb_label').value || '';
+    const src = document.getElementById('hb_source').value || '';
+    if (isVideo) {
+        b.path = src;
+        b.events = !!document.getElementById('hb_events').checked;
+    } else {
+        b.audio_path = src;
+        b.channels = parseInt(document.getElementById('hb_channels').value) || 2;
+        b.ch_start = Math.max(1, Math.min(16, parseInt(document.getElementById('hb_ch_start').value) || 1));
+    }
+    dessiner();
+    hotApplyFull();
+}
+
+function onHistGeomChange() {
+    if (selectedHist < 0) return;
+    const b = histList(selectedHistKind)[selectedHist];
+    if (!b) return;
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    b.x = Math.max(0, Math.min(ow - 2, parseInt(document.getElementById('hb_x').value) || 0));
+    b.y = Math.max(0, Math.min(oh - 2, parseInt(document.getElementById('hb_y').value) || 0));
+    b.w = Math.max(48, Math.min(ow - b.x, parseInt(document.getElementById('hb_w').value) || 48));
+    b.h = Math.max(24, Math.min(oh - b.y, parseInt(document.getElementById('hb_h').value) || 24));
+    dessiner();
+    hotApplyFull();
+}
+
+// Sérialisation : pixels canvas → fractions 0..1 du MUR (contrat serveur, cf. script.py).
+function serializeHistBlocks(kind) {
+    const ow = Math.max(1, editorParams.out_width), oh = Math.max(1, editorParams.out_height);
+    const frac = (v, span) => Math.max(0, Math.min(1, +(v / span).toFixed(4)));
+    const DURS = [10, 30, 60, 120];
+    return histList(kind).map(b => {
+        const d = parseInt(b.duration) || 30;
+        const o = {
+            x: frac(b.x, ow), y: frac(b.y, oh), w: frac(b.w, ow), h: frac(b.h, oh),
+            duration: DURS.includes(d) ? d : 30,
+            opacity: Math.max(10, Math.min(100, parseInt(b.opacity) || 85)),
+            label: b.label || '',
+            hidden: !!b.hidden,
+        };
+        if (kind === 'audio') {
+            o.audio_path = b.audio_path || '';
+            o.channels = parseInt(b.channels) || 2;
+            o.ch_start = Math.max(1, Math.min(16, parseInt(b.ch_start) || 1));
+        } else {
+            o.path = b.path || '';
+            o.events = b.events !== false;
+        }
+        return o;
+    });
 }
 
 function supprimerEntreeSelectionnee() {
@@ -1147,6 +1426,7 @@ function dessiner() {
     refreshEntryPanel();
     refreshOverlayPanel();
     refreshBlockPanel();
+    refreshHistPanel();
     updateToolbar();
     _readTokens();
     drawCanvas();
@@ -1351,6 +1631,8 @@ function drawCanvas() {
 
     // Blocs VU-mètres de mur : par-dessus les fenêtres (toujours manipulables), sous le texte.
     drawBlocksLayer(ctx, t);
+    // Frises d'historique de mur : même couche que les blocs VU-mètres.
+    drawHistLayer(ctx);
 
     // Overlays texte/horloge/logo (layer=foreground) : par-dessus les fenêtres.
     drawOverlayLayer(ctx, 'foreground');
@@ -1422,7 +1704,9 @@ function canvasMouseDown(e) {
     // 1. Overlays de premier plan (au-dessus de la vidéo)
     let hit = hitOverlay(pos, 'foreground');
     if (hit) return beginOverlayDrag(hit, pos);
-    // 2. Blocs VU-mètres de mur (au-dessus des fenêtres, pour rester toujours manipulables)
+    // 2. Blocs de mur (VU-mètres, frises d'historique) — au-dessus des fenêtres, toujours manipulables
+    const hhit = hitHist(pos);
+    if (hhit) return beginHistDrag(hhit, pos);
     const bhit = hitBlock(pos);
     if (bhit) return beginBlockDrag(bhit, pos);
     // 3. Fenêtres vidéo
@@ -1432,14 +1716,14 @@ function canvasMouseDown(e) {
         if (f.hidden) continue;   // entrées masquées : pas dans le canvas
         if (i === primary &&
             pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
-            selectedOverlay = -1; selectedBlock = -1;
+            selectedOverlay = -1; selectedBlock = -1; selectedHist = -1;
             dragMode = 'resize'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...f};
             _setCanvasCursor('nwse-resize');
             return;
         }
         if (pos.x >= f.x && pos.x <= f.x + f.w &&
             pos.y >= f.y && pos.y <= f.y + f.h) {
-            selectedOverlay = -1; selectedBlock = -1;
+            selectedOverlay = -1; selectedBlock = -1; selectedHist = -1;
             // Si on commence le drag sur une fenêtre DÉJÀ sélectionnée (sans Maj), on garde la
             // sélection multiple pour la déplacer en groupe ; sinon clic = sélection simple.
             if (!(isSelected(i) && !e.shiftKey)) toggleSelection(i, e.shiftKey);
@@ -1456,6 +1740,7 @@ function canvasMouseDown(e) {
     if (!e.shiftKey) selectedIdxs = [];
     selectedOverlay = -1;
     selectedBlock = -1;
+    selectedHist = -1;
     dragMode = null;
     dessiner();
 }
@@ -1479,6 +1764,7 @@ function hitBlock(pos) {
 function beginBlockDrag(hit, pos) {
     selectedBlock = hit.i;
     selectedOverlay = -1;
+    selectedHist = -1;
     selectedIdxs = [];
     dragBlock = true;
     dragMode = hit.mode;
@@ -1508,6 +1794,7 @@ function hitOverlay(pos, layer) {
 function beginOverlayDrag(hit, pos) {
     selectedOverlay = hit.i;
     selectedBlock = -1;
+    selectedHist = -1;
     selectedIdxs = [];
     dragOverlay = true;
     dragMode = hit.mode;
@@ -1537,6 +1824,8 @@ function toggleSelection(i, additive) {
 function _cursorForPos(pos) {
     let hit = hitOverlay(pos, 'foreground');
     if (hit) return hit.mode === 'resize' ? 'nwse-resize' : 'move';
+    const hhit = hitHist(pos);
+    if (hhit) return hhit.mode === 'resize' ? 'nwse-resize' : 'move';
     const bhit = hitBlock(pos);
     if (bhit) return bhit.mode === 'resize' ? 'nwse-resize' : 'move';
     const primary = primaryIdx();
@@ -1563,6 +1852,7 @@ function canvasMouseMove(e) {
     if (!dragMode) { _setCanvasCursor(_cursorForPos(getCanvasPos(e))); return; }
     if (dragOverlay) return overlayMouseMove(e);
     if (dragBlock) return blockMouseMove(e);
+    if (dragHist) return histMouseMove(e);
     const primary = primaryIdx();
     if (primary < 0) return;
     const pos = getCanvasPos(e);
@@ -1662,6 +1952,11 @@ function canvasMouseUp() {
         hotApplyFull();   // même canal que les overlays : full deploy → hot-apply /reconfigure
         return;
     }
+    if (dragHist) {
+        dragHist = false; dragMode = null; dessiner();
+        hotApplyFull();
+        return;
+    }
     dragMode = null; snapGuides = []; dessiner();
     selectedIdxs.forEach(idx => hotApplyWindow(idx));
 }
@@ -1680,6 +1975,13 @@ function syncGeomFields() {
         if (!b) return;
         _mbSetVal('mb_x', b.x); _mbSetVal('mb_y', b.y);
         _mbSetVal('mb_w', b.w); _mbSetVal('mb_h', b.h);
+        return;
+    }
+    if (dragHist && selectedHist >= 0) {
+        const b = histList(selectedHistKind)[selectedHist];
+        if (!b) return;
+        _hbSetVal('hb_x', b.x); _hbSetVal('hb_y', b.y);
+        _hbSetVal('hb_w', b.w); _hbSetVal('hb_h', b.h);
         return;
     }
     const p = primaryIdx();
@@ -1806,7 +2108,7 @@ function ajouterOverlay(kind) {
     editorParams.overlays = editorParams.overlays || [];
     editorParams.overlays.push(newOverlay(kind));
     selectedOverlay = editorParams.overlays.length - 1;
-    selectedIdxs = []; selectedBlock = -1;
+    selectedIdxs = []; selectedBlock = -1; selectedHist = -1;
     dessiner();
     hotApplyFull();
 }
@@ -2472,6 +2774,8 @@ async function deployerEditor() {
         flux_config,
         overlays:      serializeOverlays(),
         meter_blocks:  serializeMeterBlocks(),
+        video_history_blocks: serializeHistBlocks('video'),
+        audio_history_blocks: serializeHistBlocks('audio'),
         shm_out:       editorParams.shm_out,
         out_width:     editorParams.out_width,
         out_height:    editorParams.out_height,

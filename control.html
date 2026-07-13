@@ -13,6 +13,8 @@
             <span class="lbl" data-i18n="plugin.multiview.add_label">Ajouter :</span>
             <button type="button" class="btn" onclick="ajouterEntree()" data-i18n="plugin.multiview.add_pip" data-i18n-title="plugin.multiview.add_pip_title" title="Réaffiche la première entrée masquée de la banque (sa source câblée est conservée) ; affectez-lui une source dans le panneau ci-dessous ou via la page Câbles.">+ PiP</button>
             <button type="button" class="btn" onclick="ajouterBlocVU()" data-i18n="plugin.multiview.add_meterblock" data-i18n-title="plugin.multiview.add_meterblock_title" title="Ajoute un bloc VU-mètres posé directement sur le mur (indépendant de toute fenêtre) — affectez-lui une source audio dans le panneau ci-dessous ou via la page Câbles.">+ VU-mètres</button>
+            <button type="button" class="btn" onclick="ajouterBlocHist('video')" data-i18n="plugin.multiview.add_vhist" data-i18n-title="plugin.multiview.add_vhist_title" title="Ajoute une frise d'historique VIDÉO posée sur le mur (une vignette par seconde + ruban gel/noir/perte de signal) — affectez-lui une source vidéo dans le panneau ci-dessous ou via la page Câbles.">+ Hist. vidéo</button>
+            <button type="button" class="btn" onclick="ajouterBlocHist('audio')" data-i18n="plugin.multiview.add_ahist" data-i18n-title="plugin.multiview.add_ahist_title" title="Ajoute une frise d'historique AUDIO posée sur le mur (enveloppe des crêtes, saturation, silence) — affectez-lui une source audio dans le panneau ci-dessous ou via la page Câbles.">+ Hist. audio</button>
             <button type="button" class="btn" onclick="ajouterOverlay('text')" data-i18n="plugin.multiview.add_text" data-i18n-title="plugin.multiview.add_text_title" title="Ajouter un champ texte (texte local ou TSL)">+ Texte</button>
             <button type="button" class="btn" onclick="ajouterOverlay('clock')" data-i18n="plugin.multiview.add_clock" data-i18n-title="plugin.multiview.add_clock_title" title="Ajouter une horloge / timecode (PTP, chrono ou décompte)">+ Horloge</button>
             <button type="button" class="btn" onclick="ajouterOverlay('image')" data-i18n="plugin.multiview.add_image" data-i18n-title="plugin.multiview.add_image_title" title="Ajouter une image (logo ou fond) importée depuis l'ordinateur">+ Image</button>
@@ -265,6 +267,35 @@
                 <div class="field"><label for="mb_align" data-i18n="plugin.multiview.align">Alignement</label><select id="mb_align" onchange="onBlockChange()"><option value="left" data-i18n="plugin.multiview.left">Gauche</option><option value="center" data-i18n="plugin.multiview.center">Centre</option><option value="right" data-i18n="plugin.multiview.right">Droite</option></select></div>
                 <div class="field" title="Fixe = largeur intrinsèque du meter (l'alignement s'applique). Suit la largeur du bloc = les barres remplissent tout le bloc (graduations/espacement restent fixes)." data-i18n-title="plugin.multiview.mb_width_mode_title"><label for="mb_width_mode" data-i18n="plugin.multiview.mb_width_mode">Largeur</label><select id="mb_width_mode" onchange="onBlockChange()"><option value="auto" data-i18n="plugin.multiview.mb_width_fixed">Fixe</option><option value="fit" data-i18n="plugin.multiview.mb_width_fit">Suit la largeur du bloc</option></select></div>
                 <div class="field field-grow"><label for="mb_label" title="Nom facultatif affiché sur le port de ce bloc, page Câbles." data-i18n="plugin.multiview.mb_label" data-i18n-title="plugin.multiview.mb_label_title">Nom (câblage)</label><input type="text" id="mb_label" onchange="onBlockChange()"></div>
+            </div>
+        </div>
+        <div id="ed_hb_panel" class="mw-entry-panel" hidden>
+            <div class="mw-overlay-head">
+                <span class="mw-overlay-kind" id="hb_title" data-i18n="plugin.multiview.hb_title_video">Historique vidéo</span>
+                <button type="button" class="btn btn-red" onclick="supprimerBlocHist()" title="Supprime cette frise du mur (source décâblée)." data-i18n="plugin.multiview.delete" data-i18n-title="plugin.multiview.delete_hb_title">Supprimer</button>
+            </div>
+            <div class="mw-editor-row">
+                <div class="field field-narrow"><label for="hb_x">X</label><input type="number" id="hb_x" onchange="onHistGeomChange()"></div>
+                <div class="field field-narrow"><label for="hb_y">Y</label><input type="number" id="hb_y" onchange="onHistGeomChange()"></div>
+                <div class="field field-narrow"><label for="hb_w" data-i18n="plugin.multiview.width">Largeur</label><input type="number" id="hb_w" onchange="onHistGeomChange()"></div>
+                <div class="field field-narrow"><label for="hb_h" data-i18n="plugin.multiview.height">Hauteur</label><input type="number" id="hb_h" onchange="onHistGeomChange()"></div>
+            </div>
+            <div class="mw-editor-row">
+                <div class="field field-grow"><label for="hb_source" title="Source de cette frise — indépendante de toute fenêtre. Se câble aussi depuis la page Câbles (port « Hist. vidéo N » / « Hist. audio N »)." data-i18n="plugin.multiview.hb_source" data-i18n-title="plugin.multiview.hb_source_title">Source</label><select id="hb_source" onchange="onHistChange()"></select></div>
+                <div class="field"><label for="hb_duration" title="Profondeur de l'historique affiché." data-i18n="plugin.multiview.hb_duration" data-i18n-title="plugin.multiview.hb_duration_title">Durée</label><select id="hb_duration" onchange="onHistChange()"><option value="10">10 s</option><option value="30">30 s</option><option value="60">60 s</option><option value="120">120 s</option></select></div>
+                <div class="field field-narrow"><label for="hb_opacity" data-i18n="plugin.multiview.opacity">Opacité</label><input type="number" id="hb_opacity" min="10" max="100" onchange="onHistChange()"></div>
+            </div>
+            <div class="mw-editor-row" id="hb_video_row">
+                <div class="field"><label for="hb_events" title="Ruban d'événements sous la bande : gel (ambre), noir (indigo), perte de signal (rouge). La vignette capturée À L'INSTANT de l'événement est épinglée dans sa case." data-i18n="plugin.multiview.hb_events" data-i18n-title="plugin.multiview.hb_events_title">Ruban d'événements</label>
+                    <label class="ios-toggle"><input type="checkbox" id="hb_events" onchange="onHistChange()"><span class="slider"></span></label>
+                </div>
+            </div>
+            <div class="mw-editor-row" id="hb_audio_row">
+                <div class="field"><label for="hb_channels" data-i18n="plugin.multiview.meter">Peak meter</label><select id="hb_channels" onchange="onHistChange()"><option value="1">1 ch</option><option value="2">2 ch</option><option value="4">4 ch</option><option value="8">8 ch</option></select></div>
+                <div class="field field-narrow"><label for="hb_ch_start" title="Canal de départ (1-based) dans l'espace 16 canaux (2 flux de 8) de la source câblée." data-i18n="plugin.multiview.mb_ch_start" data-i18n-title="plugin.multiview.mb_ch_start_title">1er canal</label><input type="number" id="hb_ch_start" min="1" max="16" onchange="onHistChange()"></div>
+            </div>
+            <div class="mw-editor-row">
+                <div class="field field-grow"><label for="hb_label" title="Nom facultatif affiché sur le port de cette frise, page Câbles." data-i18n="plugin.multiview.mb_label" data-i18n-title="plugin.multiview.mb_label_title">Nom (câblage)</label><input type="text" id="hb_label" onchange="onHistChange()"></div>
             </div>
         </div>
         <table class="mw-entry-table" aria-label="Entrées de la composition" data-i18n-aria="plugin.multiview.entries_aria">

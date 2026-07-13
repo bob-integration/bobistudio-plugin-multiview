@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.36.0",
+  "version": "0.37.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -46,6 +46,8 @@
   "deploy_defaults": {
     "flux_config": [],
     "meter_blocks": [],
+    "video_history_blocks": [],
+    "audio_history_blocks": [],
     "overlays": [],
     "shm_out": "mxl_mix",
     "genlock": true,
@@ -256,6 +258,26 @@
         "input_key": "block_idx",
         "optional": true,
         "label": "VU mur {i1}"
+      },
+      {
+        "from_list": "video_history_blocks",
+        "essence": "video",
+        "shm_field": "path",
+        "shm_prefix": "/dev/shm/",
+        "existing_only": true,
+        "input_key": "vh_idx",
+        "optional": true,
+        "label": "Hist. vidéo {i1}"
+      },
+      {
+        "from_list": "audio_history_blocks",
+        "essence": "audio",
+        "shm_field": "audio_path",
+        "shm_prefix": "/dev/shm/",
+        "existing_only": true,
+        "input_key": "ah_idx",
+        "optional": true,
+        "label": "Hist. audio {i1}"
       }
     ],
     "mode": "hot-wire",
