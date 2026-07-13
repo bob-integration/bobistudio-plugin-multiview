@@ -483,15 +483,38 @@ def _update_peaks(state, n_channels, now):
     status = "silence" if (now - float(state.get("last_loud_ts", now))) >= SILENCE_HOLD_S else "ok"
     return peak_db, holds, status
 
-def _meter_layout(n_channels):
-    """Renvoie (width, ...) pour un meter à N canaux. Sans bordure."""
-    return METER_TICK_W + n_channels * METER_BAR_W + (n_channels - 1) * METER_GAP
+def _meter_layout(n_channels, tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+    """Renvoie la largeur totale d'un meter à N canaux pour les dimensions données. Sans bordure."""
+    return tick_w + n_channels * bar_w + (n_channels - 1) * gap
 
-def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opacity_pct, ch0=0):
+def _meter_fit_dims(n_channels, rw):
+    """Dimensions (tick_w, bar_w, gap, mw_effectif) d'un meter mode `fit` : SEULES les barres de
+    canaux s'élargissent pour occuper `rw` — la zone de graduations (tick_w) et l'espacement
+    inter-canaux (gap) restent FIXES (METER_TICK_W/METER_GAP), sinon l'échelle dBFS/PPM et ses
+    repères se déforment. `mw_effectif` ≤ rw (arrondi entier des barres) : c'est la largeur
+    réellement dessinée, à utiliser comme `mw` par l'appelant (jamais `rw` tel quel).
+    Repli : si `rw` est trop étroit pour tenir graduations + barres au minimum (≥ 2 px), retombe
+    proprement sur la largeur INTRINSÈQUE (mode `auto`, jamais de barre à 0 px)."""
+    n = max(1, n_channels)
+    MIN_BAR = 2
+    tick_w, gap = METER_TICK_W, METER_GAP
+    avail_bars = rw - tick_w - (n - 1) * gap
+    bar_w = avail_bars // n if n > 0 else 0
+    if bar_w < MIN_BAR:
+        bar_w = METER_BAR_W   # repli intrinsèque : mêmes dims que le mode auto
+        mw = _meter_layout(n, tick_w, bar_w, gap)
+    else:
+        mw = _meter_layout(n, tick_w, bar_w, gap)   # ≤ rw (reste éventuel non dessiné, à droite)
+    return tick_w, bar_w, gap, mw
+
+def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opacity_pct, ch0=0,
+                 tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
     """Dessine un peak meter sur l'image RGBA. opacity_pct 10..100.
     Réserve 12 px en bas pour afficher le numéro de canal sous chaque barre.
     `ch0` : décalage d'étiquetage (composants meters à affectation de canaux : la barre k
-    affiche le n° réel ch0+k+1 — le rendu des barres est inchangé)."""
+    affiche le n° réel ch0+k+1 — le rendu des barres est inchangé).
+    `tick_w`/`bar_w`/`gap` : dimensions effectives (mode `fit` : mises à l'échelle de `rw` via
+    `_meter_fit_dims` ; par défaut = constantes historiques, mode `auto`)."""
     d = ImageDraw.Draw(img, "RGBA")
     a_bg   = int(180 * opacity_pct / 100)
     a_bar  = int(220 * opacity_pct / 100)
@@ -531,7 +554,7 @@ def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opac
         f = to_frac(tick_dbfs)
         y_tick = my + bars_mh - int(round(f * bars_mh))
         # Petite ligne 3px à droite de la zone tick (donc dans la zone des barres, devant)
-        d.line([mx + METER_TICK_W - 4, y_tick, mx + METER_TICK_W - 1, y_tick],
+        d.line([mx + tick_w - 4, y_tick, mx + tick_w - 1, y_tick],
                fill=(180, 180, 180, a_text))
         # Label seulement si suffisamment d'espace vertical avec le précédent
         if abs(y_tick - last_label_y) >= 9 and y_tick - 4 >= my and y_tick + 4 <= bars_bottom:
@@ -539,38 +562,38 @@ def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opac
                    font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
             last_label_y = y_tick
     # Barres + numéro de canal en bas
-    bar_x0 = mx + METER_TICK_W
+    bar_x0 = mx + tick_w
     green_top_px  = int(round(green_top  * bars_mh))
     yellow_top_px = int(round(yellow_top * bars_mh))
     for ch in range(n_channels):
-        bx = bar_x0 + ch * (METER_BAR_W + METER_GAP)
+        bx = bar_x0 + ch * (bar_w + gap)
         peak_h = int(round(to_frac(peaks_db[ch]) * bars_mh))
         hold_h = int(round(to_frac(holds_db[ch]) * bars_mh))
         # Green zone
         gh = min(peak_h, green_top_px)
         if gh > 0:
-            d.rectangle([bx, bars_bottom - gh, bx + METER_BAR_W - 1, bars_bottom],
+            d.rectangle([bx, bars_bottom - gh, bx + bar_w - 1, bars_bottom],
                         fill=(60, 200, 60, a_bar))
         # Yellow zone
         if peak_h > green_top_px:
             yh = min(peak_h, yellow_top_px) - green_top_px
             if yh > 0:
-                d.rectangle([bx, bars_bottom - green_top_px - yh, bx + METER_BAR_W - 1, bars_bottom - green_top_px],
+                d.rectangle([bx, bars_bottom - green_top_px - yh, bx + bar_w - 1, bars_bottom - green_top_px],
                             fill=(220, 180, 40, a_bar))
         # Red zone
         if peak_h > yellow_top_px:
             rh = peak_h - yellow_top_px
             if rh > 0:
-                d.rectangle([bx, bars_bottom - yellow_top_px - rh, bx + METER_BAR_W - 1, bars_bottom - yellow_top_px],
+                d.rectangle([bx, bars_bottom - yellow_top_px - rh, bx + bar_w - 1, bars_bottom - yellow_top_px],
                             fill=(230, 60, 60, a_bar))
         # Peak hold (ligne fine)
         if hold_h > 0:
             yh = bars_bottom - hold_h
-            d.line([bx, yh, bx + METER_BAR_W - 1, yh], fill=(255, 255, 255, a_hold), width=1)
+            d.line([bx, yh, bx + bar_w - 1, yh], fill=(255, 255, 255, a_hold), width=1)
         # Numéro de canal sous la barre (centré sur la barre, ch0+ch+1 = 1-indexé réel)
         ch_label = str(ch0 + ch + 1)
         # ImageFont.load_default() est très petit, label sur 1 caractère → ~5px wide
-        lx = bx + (METER_BAR_W // 2) - 2
+        lx = bx + (bar_w // 2) - 2
         ly = bars_bottom + 2
         d.text((lx, ly), ch_label,
                font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
@@ -594,9 +617,11 @@ def _meter_scale_params(scale):
         return max(0.0, min(1.0, (dbfs - METER_MIN_DB) / (-METER_MIN_DB)))
     return to_frac, to_frac(-20.0), to_frac(-6.0)
 
-def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct, ch0=0):
+def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct, ch0=0,
+                        tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
     """Partie STATIQUE du meter (fond + graduations + labels dB + n° de canal), SANS les barres —
-    identique à _draw_meter hors boucle barres/hold. Rendu une seule fois (caché)."""
+    identique à _draw_meter hors boucle barres/hold. Rendu une seule fois (caché).
+    `tick_w`/`bar_w`/`gap` : voir _draw_meter (mode `fit` vs dimensions historiques)."""
     d = ImageDraw.Draw(img, "RGBA")
     a_bg = int(180 * opacity_pct / 100); a_text = int(255 * opacity_pct / 100)
     bars_mh = max(20, mh - 12)
@@ -613,22 +638,25 @@ def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct, ch0=
     last_label_y = -10
     for tick_dbfs, lbl in ticks_dbfs:
         y_tick = my + bars_mh - int(round(to_frac(tick_dbfs) * bars_mh))
-        d.line([mx + METER_TICK_W - 4, y_tick, mx + METER_TICK_W - 1, y_tick], fill=(180, 180, 180, a_text))
+        d.line([mx + tick_w - 4, y_tick, mx + tick_w - 1, y_tick], fill=(180, 180, 180, a_text))
         if abs(y_tick - last_label_y) >= 9 and y_tick - 4 >= my and y_tick + 4 <= bars_bottom:
             d.text((mx + 1, y_tick - 4), lbl, font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
             last_label_y = y_tick
     for ch in range(n_channels):
-        bx = mx + METER_TICK_W + ch * (METER_BAR_W + METER_GAP)
-        d.text((bx + (METER_BAR_W // 2) - 2, bars_bottom + 2), str(ch0 + ch + 1),
+        bx = mx + tick_w + ch * (bar_w + gap)
+        d.text((bx + (bar_w // 2) - 2, bars_bottom + 2), str(ch0 + ch + 1),
                font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
 
-def _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0=0):
-    """RGBA statique (backend float32) cachée pour cette config de meter — l'idée 'graduations en VRAM'."""
-    key = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0)
+def _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0=0,
+                      tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+    """RGBA statique (backend float32) cachée pour cette config de meter — l'idée 'graduations en VRAM'.
+    La clé de cache inclut tick_w/bar_w/gap : un meter `fit` (largeur effective propre à sa cellule)
+    ne doit JAMAIS réutiliser le fond caché d'un meter `auto` ou `fit` d'une autre largeur."""
+    key = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap)
     arr = _meter_static_xp_cache.get(key)
     if arr is None:
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        _draw_meter_static(img, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0)
+        _draw_meter_static(img, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap)
         host = np.array(img).astype(np.float32)
         arr = xp.asarray(host) if GPU else host
         _meter_static_xp_cache[key] = arr
@@ -677,32 +705,34 @@ def _meter_comp_rect(tile, x0, y0, x1, y1, rgb, a):
     tile[y0:y1, x0:x1, 2] = rgb[2]
     tile[y0:y1, x0:x1, 3] = a
 
-def _meter_tile_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0):
-    """Tuile YUV d'un meter (chemin GPU) : statique caché copié + barres/hold composées en RGBA (xp)."""
-    tile = _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0).copy()
+def _meter_tile_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0,
+                     tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+    """Tuile YUV d'un meter (chemin GPU) : statique caché copié + barres/hold composées en RGBA (xp).
+    `tick_w`/`bar_w`/`gap` : voir _draw_meter."""
+    tile = _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap).copy()
     a_bar = int(220 * opacity_pct / 100); a_hold = int(255 * opacity_pct / 100)
     bars_mh = max(20, mh - 12); bars_bottom = rmy + bars_mh
     to_frac, green_top, yellow_top = _meter_scale_params(scale)
     green_top_px = int(round(green_top * bars_mh)); yellow_top_px = int(round(yellow_top * bars_mh))
     for ch in range(n):
-        bx = rmx + METER_TICK_W + ch * (METER_BAR_W + METER_GAP)
+        bx = rmx + tick_w + ch * (bar_w + gap)
         peak_h = int(round(to_frac(peaks_db[ch]) * bars_mh))
         hold_h = int(round(to_frac(holds_db[ch]) * bars_mh))
         # NB : PIL d.rectangle est INCLUSIF sur (x1,y1) → bas +1 ici pour égaler les hauteurs.
         gh = min(peak_h, green_top_px)
         if gh > 0:
-            _meter_comp_rect(tile, bx, bars_bottom - gh, bx + METER_BAR_W, bars_bottom + 1, _MET_GREEN, a_bar)
+            _meter_comp_rect(tile, bx, bars_bottom - gh, bx + bar_w, bars_bottom + 1, _MET_GREEN, a_bar)
         if peak_h > green_top_px:
             yh = min(peak_h, yellow_top_px) - green_top_px
             if yh > 0:
-                _meter_comp_rect(tile, bx, bars_bottom - green_top_px - yh, bx + METER_BAR_W, bars_bottom - green_top_px + 1, _MET_YELLOW, a_bar)
+                _meter_comp_rect(tile, bx, bars_bottom - green_top_px - yh, bx + bar_w, bars_bottom - green_top_px + 1, _MET_YELLOW, a_bar)
         if peak_h > yellow_top_px:
             rh = peak_h - yellow_top_px
             if rh > 0:
-                _meter_comp_rect(tile, bx, bars_bottom - yellow_top_px - rh, bx + METER_BAR_W, bars_bottom - yellow_top_px + 1, _MET_RED, a_bar)
+                _meter_comp_rect(tile, bx, bars_bottom - yellow_top_px - rh, bx + bar_w, bars_bottom - yellow_top_px + 1, _MET_RED, a_bar)
         if hold_h > 0:
             yh = bars_bottom - hold_h
-            _meter_comp_rect(tile, bx, yh, bx + METER_BAR_W, yh + 1, _MET_WHITE, a_hold)
+            _meter_comp_rect(tile, bx, yh, bx + bar_w, yh + 1, _MET_WHITE, a_hold)
     return _rgba_to_yuv_xp(tile)
 
 # état tally : {{"<idx>_L": "red"|"green"|"amber"|"off", "<idx>_R": ...}}
@@ -1287,12 +1317,15 @@ def _tile_peaks_range(i, cfg, start0, count, now):
             got_sil = True
     return peaks, holds, ("ok" if got_ok else ("silence" if got_sil else "absence"))
 
-def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status, tiles, ch0=0):
+def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status, tiles, ch0=0,
+                     tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
     """Tuile(s) YUV d'un meter à la géométrie donnée (bbox chroma-alignée + étiquette
     SILENCE/ABSENCE) — corps commun aux meters legacy et aux composants de modèle.
     bbox locale du meter (_draw_meter dessine jusqu'à mx+mw / my+mh inclus → +1), bornée à
     la sortie et alignée chroma : origine ramenée à un multiple de _CW/_CH, dimensions
-    complétées au multiple supérieur (rgba_to_yuv sous-échantillonne par _CW/_CH)."""
+    complétées au multiple supérieur (rgba_to_yuv sous-échantillonne par _CW/_CH).
+    `tick_w`/`bar_w`/`gap` : dimensions effectives des graduations/barres (mode `fit` → mises à
+    l'échelle de `mw` par l'appelant via _meter_fit_dims ; par défaut = mode `auto` historique)."""
     bx0 = max(0, mx); by0 = max(0, my)
     bx1 = min(OUT_WIDTH, mx + mw + 1); by1 = min(OUT_HEIGHT, my + mh + 1)
     bx0 -= bx0 % _CW; by0 -= by0 % _CH
@@ -1306,12 +1339,13 @@ def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status,
         # PEINTS par trame en RGBA (xp), conversion _rgba_to_yuv_xp — AUCUNE PIL par trame.
         # Prouvé pixel-identique au chemin PIL (max|Δ|=0, validation 0.20.0 re-jouée en 0.31.0).
         oy, ou, ov, oa, oa2 = _meter_tile_gpu(bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, n,
-                                              peaks, holds, scale, opacity_pct, ch0)
+                                              peaks, holds, scale, opacity_pct, ch0, tick_w, bar_w, gap)
     else:
         # Repli `meters_pil` : chemin PIL historique VERBATIM (redéployer avec meters_pil=true
         # restaure le comportement d'avant 0.31.0 à l'identique en cas de doute sur un mur).
         tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
-        _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds, scale, opacity_pct, ch0)
+        _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds, scale, opacity_pct, ch0,
+                    tick_w, bar_w, gap)
         oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
     tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
     # Étiquette SILENCE / ABSENCE par-dessus (tuile séparée, même bbox → blend après le meter).
@@ -1359,15 +1393,25 @@ def render_meters(now):
                     n = min(n, 2 * A_CHANNELS_MAX - s0)
                     peaks, holds, status = _tile_peaks_range(i, cfg, s0, n, now)
                     rx, ry, rw, rh = _comp_rect(cfg, comp)
-                    mw = _meter_layout(n)
                     mh = max(20, rh - 1)
-                    al = comp.get("align") or "left"
-                    mx = rx + ((rw - mw) // 2 if al == "center"
-                               else (rw - mw if al == "right" else 0))
+                    width_mode = comp.get("width_mode") or "auto"
+                    if width_mode == "fit":
+                        # Suit la largeur du composant : SEULES les barres de canaux s'élargissent
+                        # pour occuper rw (zone de graduations tick_w et espacement gap FIXES —
+                        # sinon l'échelle dBFS/PPM et ses repères se déforment, cf. _meter_fit_dims).
+                        # L'alignement devient sans effet — le meter occupe le rectangle (mw ≤ rw).
+                        tick_w, bar_w, gap, mw = _meter_fit_dims(n, rw)
+                        mx = rx
+                    else:
+                        tick_w, bar_w, gap = METER_TICK_W, METER_BAR_W, METER_GAP
+                        mw = _meter_layout(n, tick_w, bar_w, gap)
+                        al = comp.get("align") or "left"
+                        mx = rx + ((rw - mw) // 2 if al == "center"
+                                   else (rw - mw if al == "right" else 0))
                     opacity_pct = max(10, min(100, int(comp.get("opacity") or 70)))
                     _meter_tiles_at(mx, ry, mw, mh, n, peaks, holds,
                                     comp.get("scale") or "dbfs", opacity_pct, status, tiles,
-                                    ch0=s0)
+                                    ch0=s0, tick_w=tick_w, bar_w=bar_w, gap=gap)
                 except Exception:
                     continue
     return tiles or None
