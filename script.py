@@ -862,6 +862,9 @@ def _refresh_lat_metrics():
         _bake_ctr["t0"] = _now_r
     metrics["bakes_per_s"] = dict(_bake_rate)
     metrics["mvk_host"] = _MVK_HOST
+    metrics["mvk_miss"] = dict(_mvk_miss)
+    metrics["mvk_why"] = dict(_mvk_why)
+    metrics["hist_bake_ms"] = dict(_hist_bake)
 # debug TSL : dernier paquet reçu (mis à jour par _handle_tsl_client)
 tsl_debug = {{"last_raw_hex": None, "last_ver": None, "last_index": None,
               "last_control": None, "last_text": None, "last_error": None,
@@ -1027,7 +1030,14 @@ def rgba_to_yuv(img):
             arr, _NP_DT, _SCALE, _MAXV, _CW, _CH)
         if _got is not None:
             _y, _u2, _v2 = _got
-            _a = arr[..., 3]
+            # ⚠ PERF : `arr[..., 3]` est une vue de PAS 4 (RGBA entrelacé). Les kernels mvk
+            # exigent le DERNIER AXE CONTIGU (_mvk_ok2d) → un alpha stridé faisait échouer
+            # SILENCIEUSEMENT mvk_blend_into sur le plan Y de CHAQUE tuile per-frame (frises,
+            # horloges) → repli numpy à 20× le coût (banc : 3,4 ms au lieu de 0,11 ms sur une
+            # frise 1920×250). Les plans chroma, eux, passaient : leur alpha sous-échantillonnée
+            # est un tableau NEUF. On COMPACTE l'alpha ici, une fois (0,16 ms plein cadre, payé
+            # au bake), pour que tous les blends aval prennent le kernel C.
+            _a = np.ascontiguousarray(arr[..., 3])
             _am = _a
             if _CW == 2: _am = np.maximum(_am[:, 0::2], _am[:, 1::2])
             if _CH == 2: _am = np.maximum(_am[0::2, :], _am[1::2, :])
@@ -1035,7 +1045,7 @@ def rgba_to_yuv(img):
     r = arr[..., 0].astype(np.float32)
     g = arr[..., 1].astype(np.float32)
     b = arr[..., 2].astype(np.float32)
-    a = arr[..., 3]
+    a = np.ascontiguousarray(arr[..., 3])   # cf. note PERF ci-dessus : alpha compactée (mvk)
     y = (( 0.299 * r + 0.587 * g + 0.114 * b      ) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
     u = ((-0.169 * r - 0.331 * g + 0.500 * b + 128) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
     v = (( 0.500 * r - 0.419 * g - 0.081 * b + 128) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
@@ -1095,9 +1105,20 @@ def blend_pre(dst, inv_a, src_a):
 # mvk = 1 passe mémoire directe dans la vue (plus d'intermédiaire ni de ré-assignation) ; repli
 # = strictement l'assignation d'origine `vue[...] = blend(...)` (mêmes octets). Ne PAS utiliser
 # sur un dst partagé/caché (mvk mute dst) — uniquement les vues canvas de la trame courante.
+_mvk_miss = {{"blend": 0, "blend_pre": 0, "place": 0, "calls": 0}}   # diagnostic : replis numpy
+_mvk_why = {{}}   # diagnostic : signature (shape/dtype) des replis
+_hist_bake = {{"last": 0.0, "max": 0.0}}   # coût UNITAIRE du re-bake d'une frise (pic, cf. render_history_tiles)
+
 def _blend_into(dv, s, aa):
+    _mvk_miss["calls"] += 1
     if _MVK and bobimxl.mvk_blend_into(dv, s, aa):
         return
+    # Un repli numpy ICI coûte 20× le kernel C (banc : 4,6 ms vs 0,19 ms sur une tuile de frise
+    # 1920×250, 3 plans) → il doit rester à ZÉRO. Compté et exposé (`mvk_miss` sur :8080).
+    if _MVK:
+        _mvk_miss["blend"] += 1
+        _k = "dv%s/%s s%s/%s a%s/%s" % (dv.shape, dv.dtype, s.shape, s.dtype, aa.shape, aa.dtype)
+        _mvk_why[_k] = _mvk_why.get(_k, 0) + 1
     dv[...] = blend(dv, s, aa)
 
 def _blend_pre_into(dv, ia, sa):
@@ -1319,7 +1340,9 @@ def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
     """TUILE YUV séparée : étiquette VERTICALE « SILENCE » (signal muet) ou « ABSENCE » (flux coupé),
     petite, centrée sur la zone des barres — pour SAVOIR pourquoi il n'y a pas de son. Posée en tuile
     INDÉPENDANTE (PIL→YUV), donc rendu IDENTIQUE sur les chemins GPU et CPU, et payée uniquement hors
-    état « ok ». Renvoie un tuple tuile (même bbox que le meter) ou None."""
+    état « ok ». Renvoie un tuple tuile (même bbox que le meter) ou None.
+    (Banc 2026-07-14 : mesurée à < 0,05 ms par trame et par meter muet, même sur un mur 16 cellules
+    — la cacher ne rapporte RIEN de mesurable. Ne pas « optimiser » ce chemin.)"""
     txt = "ABSENCE" if status == "absence" else "SILENCE"
     col = (236, 72, 60) if status == "absence" else (240, 184, 44)   # rouge / ambre
     tw_, th_ = bx1 - bx0, by1 - by0
@@ -2468,6 +2491,7 @@ def render_history_tiles(now):
                 continue
             if hit is None or hit[0] != sig:
                 budget -= 1
+                _ts_hb = time.time_ns()
                 try:
                     img = (_vh_render(unit, rect, sig[-1], now) if kind == "video"
                            else _ah_render(unit, rect, cfg_src, now))
@@ -2480,6 +2504,13 @@ def render_history_tiles(now):
                     # Loggé UNE fois par (frise, signature d'erreur) — jamais 50×/s.
                     _hist_warn(key, kind, rect, repr(_e), trace=True)
                     t = None
+                # Le RE-BAKE d'une frise (dessin + conversion YUV) tombe ENTIER dans la trame qui le
+                # déclenche : c'est un PIC, pas un coût lissé. La moyenne `ov_hist` le dilue (il n'a
+                # lieu qu'à 5 Hz) — on expose donc son coût unitaire (dernier / max) sur :8080.
+                _hb = (time.time_ns() - _ts_hb) / 1e6
+                _hist_bake["last"] = round(_hb, 2)
+                if _hb > _hist_bake["max"]:
+                    _hist_bake["max"] = round(_hb, 2)
                 hit = (sig, [t] if t is not None else [])
                 _hist_cache[key] = hit
             tiles.extend(hit[1])

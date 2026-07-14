@@ -1,7 +1,13 @@
 {
-  "version": "0.39.2",
+  "version": "0.39.3",
   "date": "2026-07-14",
   "changes": {
+    "★ Le kernel C ne s'appliquait JAMAIS au plan Y des tuiles d'habillage (0.39.3)": [
+      "CAUSE RACINE d'un habillage per-frame 5× trop cher : `rgba_to_yuv` renvoyait l'alpha sous la forme `arr[..., 3]` — une VUE de pas 4 dans le tampon RGBA entrelacé. Les kernels mvk exigent un dernier axe contigu (`_mvk_ok2d`) : l'alpha stridée les faisait donc renvoyer False SILENCIEUSEMENT, et chaque blend de tuile per-frame (frises d'historique, horloges, bandeaux ANC) retombait sur le blend numpy — 20× plus lent. Les plans chroma, eux, passaient (leur alpha sous-échantillonnée est un tableau neuf) : seul le plan Y, le plus gros, payait le repli. Aucun symptôme visible, juste 3 ms de trame par frise.",
+      "L'alpha est désormais compactée une fois au bake (`np.ascontiguousarray`, 0,16 ms plein cadre). Mesuré au banc (nœud 30, 4 fenêtres 1080p50 + habillage complet + 1 frise audio) : `ov_blend` 3,1 → 0,6 ms, `own_latency` 6,6 → 5,5 ms, replis mvk 5 850 → 0. Le gain croît avec le nombre de frises : à 2 frises, `ov_blend` 5,0 → 0,9 ms.",
+      "Nouveau champ de diagnostic sur :8080 : `mvk_miss` (compteur de replis numpy par famille de kernel — blend / blend_pre / place). Il DOIT rester à zéro sur un mur CPU ; toute valeur non nulle signale un kernel C qui ne s'applique pas et un coût multiplié.",
+      "`compose_breakdown_ms` gagne la ventilation fine de `ov_render` : `ov_meters` / `ov_hist` / `ov_clock` — le coût de rendu des VU-mètres, des frises et des horloges est désormais attribuable séparément."
+    ],
     "★ Fin du re-bake d'habillage en rafale : le mur tenait 28-36 fps au lieu de 50 (0.39.2)": [
       "CAUSE RACINE d'un mur GPU collé à son budget de trame (mur 333, Horace/Tesla T4 : own_latency 19,9 ms pour un budget de 20,0 ms, GPU à 7 % d'utilisation) : le distributeur TSL central repousse un paquet `tally_bulk` toutes les 100 ms MÊME quand rien ne change (sa boucle tourne sur un timeout). Le mur marquait alors son habillage « sale » à CHAQUE paquet — sans jamais comparer les valeurs — et re-composait PLEIN CADRE ses couches cachées (PIL `Image.new` 1920×1080 + `alpha_composite` + conversion RGBA→YUV + upload GPU) 8 à 10 fois par seconde. Chaque re-bake (~25 ms mesuré au banc) tombe dans UNE trame et lui fait sauter son budget de 20 ms : d'où les images perdues et le fps qui oscille.",
       "Le mur ne marque désormais son habillage sale que si une valeur CHANGE réellement (couleur de tally, texte de label, texte/état d'un overlay sourcé TSL). Mesuré au banc (nœud 30, même topologie que le 333) : `bakes_per_s` 8,5 → 0 au repos, re-bake immédiat au moindre changement TSL (comportement visuel inchangé).",
