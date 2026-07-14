@@ -185,6 +185,34 @@ PIX_FMT = ({{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}.get(CHROMA, 
            + (("12le" if BIT_DEPTH >= 12 else "10le") if _DEEP else ""))
 OUT_FRAME_SIZE = (OUTPUT_W * OUTPUT_H + 2 * (OUTPUT_W // _CW) * (OUTPUT_H // _CH)) * _BPS
 
+# ─── BALAYAGE DE SORTIE (progressif / ENTRELACÉ) ─────────────────────────────────────────────
+# `scan`/`field_order` sont portés HORS-BANDE par le deploy_config (cf. app/scripts.py) et
+# DÉCLARÉS à tout l'aval (NMOS, slot TX du moteur 2110, SDP). Jusqu'en 0.40.x le script les
+# IGNORAIT : un mur « 1080i50 » écrivait une TRAME PLEINE PROGRESSIVE (flowDef
+# interlace_mode=progressive, grain = 4 147 200 o) — mesuré au banc. L'aval champ-natif (mtl_rx :
+# `plane_h = height/2`, `reader_field`) lisait alors la MOITIÉ du payload = la moitié HAUTE de
+# l'image. D'où : sortie « i » en réalité progressive ET images coupées en deux côté consommateur.
+#
+# CONTRAT MXL ENTRELACÉ (identique au txgen du moteur 2110, seule référence qui fait foi) :
+#   flowDef : frame_height PLEINE (1080) + interlace_mode=interlaced_tff/bff
+#             + grain_rate = cadence TRAME (25/1)
+#   libmxl  : dimensionne chaque grain à 1 CHAMP (½ hauteur) et DOUBLE la cadence de grain (50/s)
+#   écriture: 2 grains-CHAMPS par trame, aux index CHAMP = trame×2 + parité
+#             (index PAIR = lignes PAIRES = champ HAUT ; index IMPAIR = lignes impaires)
+# L'ordre de champ ne change PAS cette correspondance index↔parité de ligne : il dit seulement
+# lequel des deux est émis EN PREMIER sur le fil (le moteur s'en charge).
+SCAN = str(CONFIG.get("scan") or "p").strip().lower()
+INTERLACED = (SCAN == "i") and OUTPUT_H % 2 == 0
+FIELD_ORDER = str(CONFIG.get("field_order") or "").strip().lower()
+if FIELD_ORDER not in ("tff", "bff"):
+    # Défaut par résolution, MÊME convention que app.scripts.field_order (HD/UHD = TFF, SD = BFF).
+    FIELD_ORDER = "bff" if 0 < OUTPUT_H <= 576 else "tff"
+IL_MODE = (("interlaced_bff" if FIELD_ORDER == "bff" else "interlaced_tff")
+           if INTERLACED else "progressive")
+# Taille d'un grain-CHAMP (½ hauteur) — ce que libmxl alloue réellement en entrelacé.
+FIELD_H = OUTPUT_H // 2
+OUT_FIELD_SIZE = (OUTPUT_W * FIELD_H + 2 * (OUTPUT_W // _CW) * (FIELD_H // _CH)) * _BPS
+
 def _rotate_out(cy, cu, cv):
     # Tourne le canevas portrait (OUT_WIDTH×OUT_HEIGHT logique) de 90° vers la trame paysage
     # (OUTPUT_W×OUTPUT_H). La chroma 4:2:x ne se tourne PAS directement (les axes de
@@ -217,6 +245,12 @@ def _rate_nd(v):
     if abs(f - n) < 0.01: return (n or 25), 1
     nominal = round(f * 1001.0 / 1000.0); return nominal * 1000, 1001
 _FN, _FD = _rate_nd(CONFIG.get("fps") or 25)
+# ENTRELACÉ : le format de réglage stocke la cadence CHAMP (« HD 1080i50 » → fps=50), comme le
+# reste de la chaîne (cf. moteur 2110 : `if scan == "i" and fps > 30: fps /= 2`). Le flowDef et la
+# boucle de composition travaillent en cadence TRAME (25) — 1 trame composée = 2 champs émis.
+if INTERLACED and (_FN / _FD) > 30:
+    if _FN % 2 == 0: _FN //= 2            # 50/1 → 25/1
+    else:            _FD *= 2             # 60000/1001 → 30000/1001 (59,94i → 29,97)
 FRAME_INTERVAL = _FD / _FN                # période exacte (cadence rationnelle, gère 29.97/59.94)
 # Genlock broadcast : sortie du multiview (mur de monitoring) calée en PHASE sur la grille PTP
 # (CLOCK_REALTIME, disciplinée phc2sys) → write_ts = instant de grille. off → cadence libre héritée.
@@ -253,7 +287,9 @@ GPU_SLICE_REQ = _as_bool(CONFIG.get("gpu_slice", False))
 # Repli lot PIL (0.31.0) : `meters_pil=true` restaure le rendu PIL par-trame HISTORIQUE des
 # VU-mètres (avant 0.31.0 le chemin tuile — statique caché + barres peintes — était GPU-only).
 METERS_PIL = _as_bool(CONFIG.get("meters_pil", False))
-SLICE_ON = (SLICE_MODE and (not GPU or GPU_SLICE_REQ) and not _PORTRAIT
+# ENTRELACÉ : le mode TRANCHE est INCOMPATIBLE (un grain = 1 champ, pas une trame à découper en
+# bandes) → désactivé, comme dans le moteur 2110 (`if slice_wanted() && !s->interlaced`).
+SLICE_ON = (SLICE_MODE and (not GPU or GPU_SLICE_REQ) and not _PORTRAIT and not INTERLACED
             and SLICE_LINES > 0 and OUT_HEIGHT % SLICE_LINES == 0 and SLICE_LINES % _CH == 0)
 GPU_SLICE = GPU and SLICE_ON      # chemin tranche VRAM actif (exige GPU + flag + éligibilité)
 # ── MICRO-BATCH GPU (TISSU_SLICE_GPU.md §b variante 2, verdict banc gate GO-MEGA-135) ─────────
@@ -1157,6 +1193,21 @@ def _mvk_place_plane(dstv, plane, th, tw):
 # ─── Placement groupé des tuiles vidéo (CPU direct / GPU upload épinglé groupé) ───────────────
 _pin = {{"host": None, "dev": None, "cap": 0}}   # buffers persistants GPU (staging épinglé entrées + device)
 _outpin = {{"buf": None}}                        # buffer hôte ÉPINGLÉ persistant pour le download sortie (GPU)
+
+def _out_host(arr):
+    """Tableau planar prêt à écrire dans un grain, côté HÔTE. En GPU : download D2H ÉPINGLÉ
+    (.get(out=pinned) — un .get direct dans le grain, mmap non épinglé, serait ~4× plus lent,
+    banc Phase 0). En CPU : renvoyé tel quel (zéro copie). Chemin PARTAGÉ par la sortie
+    progressive (1 trame pleine) et la sortie entrelacée (2 champs) — le buffer épinglé est
+    dimensionné sur la plus grosse demande vue, donc réutilisé d'un champ à l'autre."""
+    if not GPU:
+        return arr
+    _n = arr.size
+    if _outpin["buf"] is None or _outpin["buf"].size < _n:
+        _outpin["buf"] = np.frombuffer(cp.cuda.alloc_pinned_memory(_n * _BPS),
+                                       dtype=_NP_DT, count=_n)
+    arr.get(out=_outpin["buf"][:_n])
+    return _outpin["buf"][:_n]
 # GPU SLICE : staging épinglé PAR LOT (entrées) + buffers épinglés de SORTIE (D2H) — bande seule
 # (hy/hu/hv, squelette k=1) ou lots ×2 double-buffer + stream D2H dédié (hb/stream, micro-batch).
 # Persistants (l'allocation pinned est coûteuse) ; capacité entrée en croissance ×2 comme _pin.
@@ -1702,6 +1753,12 @@ AH_MAX         = int(HIST_MAX_S / AH_TICK_S)   # 6000 relevés (120 s) par flux 
 AH_LANE_MIN_PX = 10                    # hauteur MINIMALE d'une piste de canal : en dessous, on
                                        # replie sur une piste unique (max des canaux) plutôt que
                                        # d'empiler des traits d'un pixel illisibles.
+# NUMÉROTATION DES CANAUX (bandeau tout à gauche de la frise audio) — « quand il y a la place »
+# est un SEUIL DUR, pas une intention : en dessous, on n'écrit RIEN (jamais de chiffre tronqué,
+# jamais d'enveloppe rognée). Deux conditions, l'une de hauteur, l'autre de largeur.
+AH_NUM_MIN_PX   = 12                   # hauteur mini d'une DEMI-bande pour porter un chiffre
+                                       # (ImageFont.load_default() ≈ 11 px de haut + 1 px d'air)
+AH_NUM_MAX_FRAC = 12                   # le bandeau ne doit pas manger plus de 1/12 de la LARGEUR
 # SATURATION (critère retenu, défendable et documenté) : un échantillon est « pleine échelle » si
 # |x| ≥ AH_CLIP_LEVEL (≈ −0,009 dBFS, soit le dernier LSB en 20 bits) ; une colonne est marquée
 # SATURÉE si un canal suivi présente AH_CLIP_RUN échantillons pleine échelle CONSÉCUTIFS — la
@@ -2301,6 +2358,61 @@ def _hist_scales(arr, rw, rh, dur, a_bg, now):
         arr[rh - h:rh] = _hist_scale_band(rw, h, dur, a_bg, True, now)
     return h
 
+_ah_num_cache = {{}}   # (rw, wh, nband, band_h, n, s0) → bandeau RGBA (wh, lab_w, 4) | None
+
+def _ah_num_band(rw, wh, nband, band_h, n, s0):
+    """Bandeau RGBA des NUMÉROS DE CANAL, collé tout à GAUCHE de la frise audio.
+
+    Le numéro écrit est le numéro RÉEL du canal — `ch_start` pris en compte : `s0 + ch + 1`,
+    1-indexé — EXACTEMENT la convention des VU-mètres (`_draw_meter` : `ch0 + k + 1`).
+    Une bande porte 2 canaux : le premier dans sa moitié HAUTE, le second dans sa moitié BASSE
+    (mise en page identique à celle des demi-enveloppes). Un canal SEUL est centré sur son axe.
+
+    « QUAND IL Y A LA PLACE » = seuil DUR → renvoie None (on n'écrit RIEN) si :
+      - une DEMI-bande fait moins de AH_NUM_MIN_PX (un chiffre n'y tiendrait pas sans mordre
+        l'enveloppe), ou
+      - le bandeau mangerait plus de 1/AH_NUM_MAX_FRAC de la largeur de la frise.
+    Dégradation SILENCIEUSE et NETTE : pas de demi-chiffre, pas d'onde rognée.
+
+    ★ CACHÉ, même couche que les graduations (`_hist_scale_band`) : le contenu ne dépend QUE de
+    la géométrie, du nombre de canaux et de ch_start → zéro rendu PIL par trame.
+    ⚠ La clé PORTE `n` et `s0` (channels/ch_start) : sans eux, changer ch_start afficherait des
+    numéros PÉRIMÉS (piège déjà rencontré sur le fond des VU-mètres et les échelles des frises)."""
+    key = (rw, wh, nband, band_h, n, s0)
+    if key in _ah_num_cache:
+        return _ah_num_cache[key]
+    half = band_h // 2
+    labels = [str(s0 + ch + 1) for ch in range(n)]
+    lab_w = 4 + 6 * max(len(l) for l in labels)      # load_default ≈ 6 px/caractère + marge
+    band = None
+    if half >= AH_NUM_MIN_PX and rw >= lab_w * AH_NUM_MAX_FRAC:
+        img = Image.new("RGBA", (lab_w, wh), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img, "RGBA")
+        f = ImageFont.load_default()
+        for bi in range(nband):
+            by0 = bi * band_h
+            by1 = (bi + 1) * band_h if bi < nband - 1 else wh    # la dernière bande absorbe le reste
+            cy = by0 + (by1 - by0) // 2
+            for side in (0, 1):
+                ch = 2 * bi + side
+                if ch >= n:
+                    break
+                lone = (side == 0 and 2 * bi + 1 >= n)           # canal seul → centré sur l'axe
+                if lone:
+                    ty = cy - 5
+                else:                                            # moitié HAUTE / moitié BASSE
+                    ty = (cy - (by1 - by0) // 4 - 5) if side == 0 else (cy + (by1 - by0) // 4 - 5)
+                ty = max(by0, min(by1 - 11, ty))
+                # Liseré sombre : le chiffre reste lisible quand l'enveloppe passe dessous.
+                for _ox, _oy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    d.text((2 + _ox, ty + _oy), labels[ch], font=f, fill=(18, 20, 24, 200))
+                d.text((2, ty), labels[ch], font=f, fill=(228, 232, 240, 255))
+        band = np.asarray(img).copy()
+    if len(_ah_num_cache) > 12:
+        _ah_num_cache.clear()          # borné (quelques géométries × nombres de canaux)
+    _ah_num_cache[key] = band
+    return band
+
 def _vh_render(unit, rect, name, now):
     """Bande de vignettes + ruban d'événements → RGBA numpy (rh, rw, 4).
     La recomposition n'a lieu qu'à l'arrivée d'une vignette (tous les `step` s ≈ 6 s) ou à une
@@ -2471,12 +2583,15 @@ def _ah_render(unit, rect, cfg_src, now):
     # l'impair vers le BAS (stéréo : canal 1 en haut, canal 2 en bas, sur la même hauteur qu'avant).
     # 4 canaux → 2 bandes, 8 canaux → 4 bandes. Un canal SEUL reste symétrique (haut + bas).
     nband = (n + 1) // 2
+    _merged = False
     if (wh // max(1, nband)) < AH_LANE_MIN_PX:      # place insuffisante → tout fusionner (max)
         peak = peak.max(axis=0)[None, :]
         clip = clip.any(axis=0)[None, :]
         seen = seen.any(axis=0)[None, :]
         silence = seen & (peak <= SILENCE_DB)
         n, nband = 1, 1
+        _merged = True                             # enveloppe FUSIONNÉE (max des canaux) : la
+                                                   # numéroter serait un MENSONGE → aucun numéro
 
     band_h = wh // nband
     for bi in range(nband):
@@ -2526,6 +2641,15 @@ def _ah_render(unit, rect, cfg_src, now):
         if bi < nband - 1 and by1 < wy1:
             for _c, _v in enumerate((58, 60, 68)):
                 arr[by1 - 1, :, _c] = _v
+    # NUMÉROS DE CANAL (tout à gauche) — bandeau CACHÉ, posé APRÈS les enveloppes (sinon l'onde
+    # repeindrait par-dessus). None = pas la place → on n'écrit rien (cf. _ah_num_band).
+    _nb = None if _merged else _ah_num_band(rw, wh, nband, band_h, n, s0)
+    if _nb is not None:
+        _lw = _nb.shape[1]
+        _sub = arr[wy0:wy1, 0:_lw]
+        _al = _nb[..., 3:4].astype(np.uint16)
+        _sub[..., :3] = ((_nb[..., :3].astype(np.uint16) * _al
+                          + _sub[..., :3].astype(np.uint16) * (255 - _al)) // 255).astype(np.uint8)
     return arr
 
 def _hist_tile(rect, arr):
@@ -4383,8 +4507,14 @@ _out_mode  = "tai" if (GENLOCK and not INPUT_LOCKED) else "free"
 # Mode tranche : le flowDef porte slice_height → libmxl publie le grain en N tranches égales
 # (commit progressif). Writer forwarde **flow_kw à build_flow_def. Sans slice : inchangé (1 tranche).
 out_writer = bobimxl.Writer(inst, SHM_OUT_NAME, OUTPUT_W, OUTPUT_H, CHROMA, BIT_DEPTH,
-                            _FN, _FD, index_mode=_out_mode,
+                            _FN, _FD, index_mode=_out_mode, interlace=IL_MODE,
                             **({{"slice_height": SLICE_LINES}} if SLICE_ON else {{}}))
+if INTERLACED:
+    # Le mur COMPOSE toujours une trame PLEINE (OUTPUT_H) : tout le rendu (tuiles, habillage,
+    # VU, frises) est inchangé. Seule l'ÉCRITURE change : la trame est découpée en 2 champs.
+    print(f"multiview: sortie ENTRELACÉE {{OUTPUT_W}}x{{OUTPUT_H}}{{FIELD_ORDER}} — "
+          f"{{_FN}}/{{_FD}} trames/s, 2 grains-champs de {{OUT_FIELD_SIZE}} o par trame")
+_il_frame = 0        # compteur de TRAME (cadence libre / input-locked) → index champ = ×2 + parité
 if SLICE_ON:
     print(f"multiview: MODE TRANCHE actif — {{SLICE_LINES}} lignes/bande "
           f"({{OUT_HEIGHT // SLICE_LINES}} tranches/trame)")
@@ -5234,21 +5364,31 @@ while True:
         else:
             if _PORTRAIT:                        # compose en portrait → tourne 90° vers la trame paysage
                 canvas_y, canvas_u, canvas_v = _rotate_out(canvas_y, canvas_u, canvas_v)
-            out_frame = xp.concatenate([canvas_y.ravel(), canvas_u.ravel(), canvas_v.ravel()])
-            # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). En genlock-grille,
-            # l'index tai vient du Writer ; en input-locked/libre, compteur interne du Writer.
-            _gidx, _gi_o, _vw_o = out_writer.open_grain()
-            if GPU:
-                # Download D2H ÉPINGLÉ (.get(out=pinned), rapide) puis copie vers la vue grain. Un .get
-                # direct dans le grain (non épinglé) serait ~4× plus lent (banc Phase 0 : dl 5,8→1,3 ms).
-                _n = out_frame.size
-                if _outpin["buf"] is None or _outpin["buf"].size < _n:
-                    _outpin["buf"] = np.frombuffer(cp.cuda.alloc_pinned_memory(_n * _BPS), dtype=_NP_DT, count=_n)
-                out_frame.get(out=_outpin["buf"][:_n])
-                _vw_o[:OUT_FRAME_SIZE] = _outpin["buf"][:_n].view(np.uint8)
+            if INTERLACED:
+                # SORTIE CHAMP-NATIVE : la trame composée (PLEINE) est découpée en 2 CHAMPS, écrits
+                # dans 2 grains distincts — c'est ce que libmxl alloue (grain = ½ hauteur) et ce que
+                # l'aval champ-natif attend (moteur 2110 : `reader_field`, index = trame×2 + parité).
+                # Champ de parité p = lignes p::2 des TROIS plans : la chroma suit le même découpage
+                # (4:2:2 → champ chroma = ½ largeur × ½ hauteur de trame ; 4:2:0 → ¼) — exactement le
+                # `full[k][fld::2]` du générateur de mire du moteur, la seule référence qui fait foi.
+                # Index PAIR = lignes PAIRES = champ HAUT ; l'ordre de champ (tff/bff) est DÉCLARÉ
+                # dans le flowDef et n'inverse pas cette correspondance (il dit lequel part d'abord).
+                _fbase = int(out_writer._next_index()) if _out_mode == "tai" else _il_frame
+                _il_frame += 1
+                for _p in (0, 1):
+                    _fld = xp.concatenate([canvas_y[_p::2].ravel(),
+                                           canvas_u[_p::2].ravel(),
+                                           canvas_v[_p::2].ravel()])
+                    _gidx, _gi_o, _vw_o = out_writer.open_grain(index=_fbase * 2 + _p)
+                    _vw_o[:OUT_FIELD_SIZE] = _out_host(_fld).view(np.uint8)
+                    out_writer.commit(_gi_o)
             else:
-                _vw_o[:OUT_FRAME_SIZE] = out_frame.view(np.uint8)
-            out_writer.commit(_gi_o)
+                out_frame = xp.concatenate([canvas_y.ravel(), canvas_u.ravel(), canvas_v.ravel()])
+                # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). En genlock-grille,
+                # l'index tai vient du Writer ; en input-locked/libre, compteur interne du Writer.
+                _gidx, _gi_o, _vw_o = out_writer.open_grain()
+                _vw_o[:OUT_FRAME_SIZE] = _out_host(out_frame).view(np.uint8)
+                out_writer.commit(_gi_o)
         ts_out = time.time_ns()
         # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
         _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)

@@ -1,7 +1,27 @@
 {
-  "version": "0.40.3",
+  "version": "0.41.0",
   "date": "2026-07-14",
   "changes": {
+    "Sortie ENTRELACÉE réelle : un mur « i » écrit enfin des CHAMPS (0.41.0)": [
+      "BUG DE CONFORMITÉ BROADCAST : un mur configuré `scan: \"i\"` (ex. 1080i50) produisait en réalité un flux PROGRESSIF. Le script IGNORAIT purement et simplement `scan`/`field_order` (pourtant poussés par le deploy_config) : le Writer MXL était toujours créé sans `interlace=`, donc `interlace_mode: progressive`, grain = TRAME PLEINE (4 147 200 o), grain_rate = 50/1. Mesuré au banc ET au harnais, pas déduit.",
+      "L'aval champ-natif était donc trompé : le moteur 2110 en TX entrelacé (`reader_field`, `plane_h = height/2`) lit un CHAMP par grain — face à une trame pleine il ne consommait que la MOITIÉ du payload, c'est-à-dire la moitié HAUTE de l'image. La « sortie i en réalité progressive » et les « images coupées en deux » côté consommateur sont le MÊME défaut, vu des deux bouts.",
+      "Le mur respecte désormais le contrat MXL entrelacé, identique à celui du générateur de mire du moteur 2110 (seule référence qui fait foi) : flowDef à hauteur PLEINE + `interlace_mode: interlaced_tff|bff` + grain_rate = cadence TRAME (25/1) ; libmxl dimensionne chaque grain à 1 CHAMP (½ hauteur) et double la cadence de grain (50/s) ; le mur écrit 2 grains-CHAMPS par trame composée, aux index CHAMP `trame×2 + parité` (index PAIR = lignes PAIRES = champ haut).",
+      "La cadence stockée d'un format « i » est la cadence CHAMP (« HD 1080i50 » → fps=50) : elle est ramenée à la cadence TRAME (25) pour le flowDef et pour la boucle, comme le fait déjà le moteur (`if scan == \"i\" and fps > 30: fps /= 2`). Un mur 1080i50 compose donc 25 trames/s (et non 50) — il émet bien 50 champs/s.",
+      "La COMPOSITION est inchangée : le mur rend toujours une trame PLEINE (tuiles, habillage, VU-mètres, frises) ; seule l'ÉCRITURE change (découpage en 2 champs). Le mode TRANCHE est désactivé en entrelacé (un grain = 1 champ, pas une trame à découper en bandes) — même règle que le moteur 2110.",
+      "Progressif : STRICTEMENT inchangé (vérifié au harnais : flowDef progressive, 1 grain de trame pleine).",
+      "NON REPRODUIT : le « PiP entrelacé coupé en moitié haute » n'existe PAS dans le chemin de LECTURE du mur. Mesuré sur une vraie source champ-native (mire du moteur 2110, 1920×540, `interlaced_tff`) au banc ET au harnais : `open_source` lit correctement la hauteur de CHAMP, les plans se reconstruisent au pixel près et la vignette est PLEINE. Le symptôme « moitié haute » vient bien du défaut ci-dessus, mais côté CONSOMMATEUR champ-natif."
+    ],
+    "Historique audio : numérotation des canaux (0.41.0)": [
+      "La frise audio affiche désormais, tout à GAUCHE, le NUMÉRO RÉEL de chaque canal (`ch_start` pris en compte : `s0 + ch + 1`, 1-indexé — même convention que les VU-mètres). Le canal du HAUT dans la moitié haute de sa bande, celui du BAS dans la moitié basse.",
+      "« Quand il y a la place » est un SEUIL DUR : rien n'est écrit si une demi-bande fait moins de AH_NUM_MIN_PX (12 px) ou si le bandeau mangerait plus de 1/12 de la largeur. Jamais de chiffre tronqué, jamais d'enveloppe rognée — dégradation silencieuse et nette.",
+      "Aucun numéro non plus quand l'enveloppe est FUSIONNÉE (repli sous AH_LANE_MIN_PX) : un seul numéro sur un max de tous les canaux serait un mensonge.",
+      "Rendu CACHÉ (même couche que les graduations) : le bandeau ne dépend que de la géométrie, du nombre de canaux et de `ch_start` — zéro rendu PIL par trame. La clé de cache PORTE `channels` et `ch_start` (sans quoi on afficherait des numéros périmés)."
+    ],
+    "Aperçu du mur : tous les éléments, plus seulement les PiP (0.41.0)": [
+      "`drawMiniPreview` ne dessinait QUE `flux_config` : les overlays (texte/horloge/image), les blocs VU-mètres et les frises d'historique étaient INVISIBLES dans les trois vues qu'elle alimente — carte de conteneur, aperçu du composer et liste des layouts.",
+      "Les quatre familles manquantes sont désormais dessinées, chacune avec son aplat + liseré (ambre/orange/magenta pour les overlays, vert pour les VU, bleu pour la frise vidéo, cyan pour la frise audio) — distinctes des PiP au premier coup d'œil. Les unités sont respectées : overlays en PIXELS du mur, blocs et frises en FRACTIONS 0..1. `hidden` est honoré sur chaque liste.",
+      "Le compteur de la liste des layouts ne comptait que les fenêtres (« 0 entrées » pour un layout fait d'habillages) : il énumère maintenant chaque famille présente (« 6 fenêtres · 2 habillages · 1 frise audio »), i18n FR/EN."
+    ],
     "Historique audio : demi-enveloppe par canal, par PAIRES (0.40.3)": [
       "Le choix `channels` était actif, mais les canaux étaient FUSIONNÉS en une seule enveloppe (max) : impossible de distinguer la gauche de la droite, et la saturation d'un canal peignait la colonne de l'autre.",
       "Une forme d'onde étant symétrique, une MOITIÉ suffit : une bande porte désormais DEUX canaux autour d'un axe commun — le premier vers le HAUT, le second vers le BAS (stéréo : canal 1 en haut, canal 2 en bas, sur la même hauteur qu'avant). 4 canaux → 2 bandes, 6 → 3, 8 → 4. Un canal seul reste symétrique. Chaque canal a ses colonnes de SATURATION et ses plages de SILENCE dans SA moitié : on voit lequel a fauté.",

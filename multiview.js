@@ -164,6 +164,7 @@ function drawMiniPreview(canvas, params) {
     ctx.fillStyle = _cs.getPropertyValue('--canvas-bg').trim() || '#0d1117';
     ctx.fillRect(0, 0, cw, ch);
 
+    // ── FENÊTRES (PiP) : géométrie en PIXELS DU MUR ────────────────────────────
     (params.flux_config || []).filter(f => !f.hidden).forEach((f, i) => {
         const x = f.x * sx, y = f.y * sy;
         const w = f.w * sx, h = f.h * sy;
@@ -172,7 +173,65 @@ function drawMiniPreview(canvas, params) {
         ctx.fillRect(x, y, w, h);
         ctx.globalAlpha = 1;
     });
+
+    // ── LES AUTRES ÉLÉMENTS DU MUR ─────────────────────────────────────────────
+    // ⚠ DEUX SYSTÈMES D'UNITÉS, à ne surtout pas mélanger :
+    //   • overlays[]              → PIXELS du mur (comme les fenêtres) ;
+    //   • meter_blocks[], video_history_blocks[], audio_history_blocks[]
+    //                             → FRACTIONS 0..1 du mur ENTIER.
+    // Chaque famille a son aplat de couleur + un liseré : on doit les distinguer des PiP
+    // au premier coup d'œil (ce sont des vignettes de quelques centaines de pixels, pas un
+    // rendu fidèle). `hidden` est respecté sur CHAQUE liste.
+    const drawBlock = (x, y, w, h, color) => {
+        if (!(w > 0) || !(h > 0)) return;
+        ctx.globalAlpha = 0.45;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, w, h);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, w - 1), Math.max(1, h - 1));
+    };
+    // fractions 0..1 → pixels du canevas d'aperçu
+    const frac = (b, color) => drawBlock(b.x * cw, b.y * ch, b.w * cw, b.h * ch, color);
+
+    (params.overlays || []).filter(o => !o.hidden).forEach(o => {
+        // overlays = PIXELS du mur → même échelle que les fenêtres (sx/sy)
+        drawBlock((o.x || 0) * sx, (o.y || 0) * sy, (o.w || 0) * sx, (o.h || 0) * sy,
+                  OVERLAY_COLORS[o.kind] || OVERLAY_COLORS.text);
+    });
+    (params.meter_blocks || []).filter(b => !b.hidden).forEach(b => frac(b, EL_COLORS.meters));
+    (params.video_history_blocks || []).filter(b => !b.hidden).forEach(b => frac(b, EL_COLORS.vhist));
+    (params.audio_history_blocks || []).filter(b => !b.hidden).forEach(b => frac(b, EL_COLORS.ahist));
 }
+
+// Résumé du CONTENU d'un layout : le compteur historique ne comptait que les fenêtres
+// (`flux_config.length` + « entrées ») → un layout fait d'habillages et de frises s'affichait
+// « 0 entrées ». On énumère chaque famille PRÉSENTE (masqués exclus, comme l'aperçu).
+function layoutSummary(cfg) {
+    cfg = cfg || {};
+    const live = a => (a || []).filter(e => e && !e.hidden).length;
+    const parts = [];
+    const push = (n, key) => { if (n > 0) parts.push(n + ' ' + T(key)); };
+    push(live(cfg.flux_config),          'plugin.multiview.count_windows');
+    push(live(cfg.overlays),             'plugin.multiview.count_overlays');
+    push(live(cfg.meter_blocks),         'plugin.multiview.count_meters');
+    push(live(cfg.video_history_blocks), 'plugin.multiview.count_vhist');
+    push(live(cfg.audio_history_blocks), 'plugin.multiview.count_ahist');
+    return parts.length ? parts.join(' · ') : T('plugin.multiview.count_empty');
+}
+
+// Couleurs des éléments NON-PiP de l'aperçu (distinctes de la palette COLORS des fenêtres).
+const OVERLAY_COLORS = {
+    text:  '#f0b429',   // texte      — ambre
+    clock: '#f2711c',   // horloge    — orange
+    image: '#d64bc8',   // image      — magenta
+};
+const EL_COLORS = {
+    meters: '#2fbf71',  // blocs VU-mètres      — vert
+    vhist:  '#3d8bfd',  // frise historique vidéo — bleu
+    ahist:  '#00b8c4',  // frise historique audio — cyan
+};
 
 // ─── Containers (sources pour l'éditeur) ──────────────────────
 // allContainers alimente les listes de sources de renderEditor() + _containerForShm().
@@ -3083,7 +3142,7 @@ async function rafraichirListeLayouts() {
     ul.innerHTML = savedLayouts.map(l => `
         <li>
             <div><b>${escapeHtml(l.name)}</b></div>
-            <div class="meta">${escapeHtml(l.created_at || '')} · ${(l.config.flux_config || []).length} ${escapeHtml(T('plugin.multiview.entries'))}</div>
+            <div class="meta">${escapeHtml(l.created_at || '')} · ${escapeHtml(layoutSummary(l.config))}</div>
             <canvas data-layout-preview="${l.id}"></canvas>
             <div class="actions">
                 <button class="btn btn-blue" onclick="appliquerLayout(${l.id})">${escapeHtml(T('plugin.multiview.apply'))}</button>
