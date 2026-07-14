@@ -833,7 +833,71 @@ _tsl_slots = {{}}
 _tsl_combined = {{}}         # index → True si le contrôleur envoie des paquets combinés
 TSL_SLOT_TTL_FACTOR = 2.5   # TTL = factor × intervalle keepalive mesuré
 TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
+# ─── CADENCE : compteurs HONNÊTES (0.42.0) ───────────────────────────────────────────────────
+# ★ Pourquoi ce bloc existe. Jusqu'à la 0.41.x, `fps` était calculé TOUS LES 25 TRAMES :
+# `25 / (t_maintenant − t_du_25e_précédent)`. Le NOMBRE de trames de la fenêtre est donc FIXE et
+# c'est sa DURÉE qui varie → un seul tick en retard (20-30 ms : GC, hoquet de grille, pic hôte)
+# gonfle la durée d'UNE fenêtre de 0,5 s de 5 % et fait « chuter » fps à 47-48, pendant que la
+# fenêtre SUIVANTE, qui rattrape, remonte à 52 — le mur, lui, n'a rien perdu. Le tableau de bord
+# n'échantillonne qu'une fenêtre toutes les 5 s : il tombe sur une fenêtre creuse ~1 fois sur 4.
+# Mesuré sur le mur 333 (60 relevés) : fps min 47,9 / méd 50,0 / max 50,5, moyenne 49,78 — quand
+# `bakes_per_s.frames` (fenêtre ≥ 1 s, MÊME compteur) donnait min 48,9 / méd 49,9, moyenne 49,73.
+# **Les deux comptaient la même chose** (les trames composées) : l'écart était 100 % un artefact de
+# FENÊTRE. Une métrique qui oscille de ±5 % sans qu'aucune trame ne soit perdue fait perdre une
+# heure à chaque incident — donc :
+#   • la cadence est mesurée sur une fenêtre de TEMPS (2 s) à partir de compteurs MONOTONES ;
+#   • elle est calculée AU MOMENT DU SCRAPE (bord droit = maintenant) → si la boucle de compo
+#     meurt, le chiffre DÉCROÎT vers 0 au lieu de rester figé sur sa dernière belle valeur ;
+#   • le vrai signal de santé (« ai-je perdu des trames ? ») n'est plus déduit du fps mais COMPTÉ :
+#     `frames_missed` = slots de grille genlock réellement sautés.
+# ★ ENTRELACÉ (0.41.0) : un mur 1080i50 COMPOSE 25 trames/s et ÉMET 50 champs/s. `fps` expose la
+# cadence de SORTIE (grains/s : champs si entrelacé) — c'est la cadence du format déclaré
+# (« HD 1080i50 » → 50), donc un mur i50 sain affiche 50 et ne paraît pas à moitié mort ;
+# `frames_per_s` expose les trames composées (25). Les deux sont publiés, nommés, et `fps_unit`
+# dit lequel est lequel.
+FPS_WINDOW_S = 2.0
+_GRAINS_PER_FRAME = 2 if INTERLACED else 1
+_rate_lock  = threading.Lock()
+_rate_total = {{"frames": 0, "missed": 0}}     # compteurs MONOTONES (écrits par la boucle de compo)
+_rate_hist  = deque(maxlen=64)                 # (t_monotone, frames, missed) échantillonnés ~2×/s
+
+def _rate_sample():
+    """Échantillon de cadence (appelé par la boucle de compo, ~toutes les 25 trames)."""
+    with _rate_lock:
+        _rate_hist.append((time.monotonic(), _rate_total["frames"], _rate_total["missed"]))
+
+def _update_rate_metrics():
+    """Publie fps / frames_per_s / frames_missed_per_s. Bord DROIT = maintenant (pas la dernière
+    trame) → une boucle morte fait tomber le chiffre à 0. Bord GAUCHE = le plus vieil échantillon
+    encore dans la fenêtre de 2 s."""
+    now = time.monotonic()
+    with _rate_lock:
+        hist = list(_rate_hist)
+        cur_f = _rate_total["frames"]; cur_m = _rate_total["missed"]
+    old = None
+    for s in hist:
+        if now - s[0] <= FPS_WINDOW_S:
+            old = s
+            break
+    if old is None and hist:
+        old = hist[-1]      # boucle figée : la fenêtre ne contient plus rien → delta 0 sur un long dt
+    if not old:
+        return
+    dt = now - old[0]
+    if dt < 0.3:
+        return              # trop tôt (démarrage) : on garde la valeur précédente
+    fps_frames = (cur_f - old[1]) / dt
+    metrics["frames_per_s"]        = round(fps_frames, 1)
+    metrics["fps"]                 = round(fps_frames * _GRAINS_PER_FRAME, 1)
+    metrics["frames_missed_per_s"] = round((cur_m - old[2]) / dt, 2)
+    metrics["frames_missed"]       = cur_m
+
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
+           "fps_nominal": round(_FN / _FD * _GRAINS_PER_FRAME, 2),   # cadence de sortie visée (= format déclaré)
+           "fps_unit": "fields" if INTERLACED else "frames",         # unité de `fps` (champs si entrelacé)
+           "frames_per_s": 0.0,        # trames COMPOSÉES/s (= fps ÷ 2 en entrelacé)
+           "frames_missed": 0,         # cumul des slots de grille genlock SAUTÉS (vraies trames perdues)
+           "frames_missed_per_s": 0.0,
            "mvk": _MVK,                          # kernel compose fusionné C actif (chemin CPU)
            "mvk_threads": (getattr(bobimxl, "mvk_threads", lambda: 0)() if _MVK else 0),
            "gpu": GPU, "gpu_name": _GPU_NAME,    # GPU = compositing accéléré cupy (sinon numpy CPU)
@@ -915,6 +979,10 @@ def _refresh_lat_metrics():
     # le dit explicitement (sur une version antérieure, ce même chiffre était un pic DANS la trame).
     # Le coût réellement vu par la trame est `compose_breakdown_ms.ov_hist` — il doit être ~0,05 ms.
     metrics["hist_bake_ms"] = dict(_hist_bake, **{{"async": True}})
+    # `chrome_bake_ms` = coût UNITAIRE d'une passe de boulange de l'habillage (fond + chrome).
+    # ★ 0.42.0 : payé par le THREAD BOULANGER → il ne coûte PLUS DE TRAME (`async: true`). Ce que la
+    # trame paie est `compose_breakdown_ms.ov_bake` (ramassage + upload) — il doit rester ~0,1 ms.
+    metrics["chrome_bake_ms"] = dict(_chrome_bake, **{{"async": True}})
 # debug TSL : dernier paquet reçu (mis à jour par _handle_tsl_client)
 tsl_debug = {{"last_raw_hex": None, "last_ver": None, "last_index": None,
               "last_control": None, "last_text": None, "last_error": None,
@@ -938,6 +1006,12 @@ class Handler(BaseHTTPRequestHandler):
                               "tally_state": dict(tally_state),
                               "tsl_text": {{str(k): v for k, v in tsl_text.items()}}}})
         else:
+            # Cadence recalculée AU SCRAPE (bord droit = maintenant) : le chiffre servi est frais,
+            # et une boucle de compo morte le fait tomber à 0 au lieu de le figer.
+            try:
+                _update_rate_metrics()
+            except Exception:
+                pass
             self._send_json(metrics)
 
     def do_POST(self):
@@ -2705,6 +2779,7 @@ def _hist_baker_loop():
     les publie, PRÊTES, dans `_hist_ready`. Une seule à la fois (sérialisé) — inutile d'en faire
     plus : à 5 Hz de recomposition, son taux d'occupation est de quelques pour cent, et rester
     mono-thread garantit qu'il ne dispute jamais deux cœurs à la compo."""
+    _nice_baker()   # 0.42.0 : même règle que le boulanger du chrome — la compo passe devant.
     while True:
         with _hb_cv:
             while not _hist_want:
@@ -3044,7 +3119,7 @@ if TSL_MODE == "direct" and TSL_PORT > 0:
 OVERLAYS = CONFIG.get("overlays") or []
 overlay_dirty = threading.Event()
 overlay_dirty.set()
-overlay_bg_layer = None              # couche images de fond (cachée, re-bakée sur overlay_dirty)
+_bg_seen = _chrome_seen = None       # dernière publication du boulanger RAMASSÉE par la boucle de compo
 _base_y = _base_u = _base_v = None   # canvas de base PRÉ-BLENDÉ avec le fond (copié par trame ; None = fond absent → neutre)
 _overlay_img_cache = {{}}            # id → (signature_b64, PIL RGBA)
 _chrono_state = {{}}                 # id → {{"running": bool, "base": s, "since": epoch|None}}
@@ -3985,10 +4060,150 @@ def render_clock_tiles(now):
 
 dyn_rgba     = None              # couche d'habillage des MODÈLES (cachée, re-bake sur dirty)
 overlay_fg_rgba = render_overlays_fg_static()   # overlays texte/images fixes, bakés dans le chrome
-_chrome_rgba = None              # info+bordure+statique+dynamique pré-composés en UNE image RGBA (caché)
-_chrome_yuv  = None              # sa conversion YUV+alpha (refaite seulement sur changement)
 _chrome_pre  = None              # opérandes de blend PRÉ-CALCULÉS du chrome (inv_a, src_a par plan) — chemin rapide
-_chrome_dirty = True             # force la 1re composition du chrome
+_chrome_dirty = True             # force la 1re composition du chrome (drapeau INTERNE au boulanger)
+
+# ─── ★ BOULANGER DU CHROME (0.42.0) — le re-bake d'habillage sort de la trame ──────────────────
+# Le churn est mort (0.39.2 : plus de re-bake sur keepalive TSL), mais un VRAI changement (bascule
+# de tally, texte UMD qui change) recomposait encore l'habillage PLEIN CADRE *dans la trame* :
+# PIL Image.new 1920×1080 + alpha_composite + getbbox + crop + rgba_to_yuv + opérandes ≈ 25 ms,
+# dans un budget de 20 ms → UNE TRAME PERDUE À CHAQUE BASCULE DE TALLY. Même arithmétique que les
+# frises (0.40.0), donc même remède, éprouvé : un THREAD BOULANGER fabrique l'habillage HORS TRAME
+# et le publie PRÊT ; la boucle de compo ne fait plus que ramasser (et, sur GPU, uploader les
+# opérandes — quelques centaines de µs).
+#   • Publication ATOMIQUE : une affectation d'un TUPLE À UN ÉLÉMENT (le payload, ou None quand il
+#     n'y a pas de chrome) → la boucle compare l'IDENTITÉ de l'objet ; elle ne peut jamais voir une
+#     publication à moitié écrite. Un seul écrivain par structure (le boulanger).
+#   • Le boulanger travaille en NUMPY HÔTE de bout en bout (y compris le PRÉ-BLEND du canvas de
+#     base) : aucun appel cupy hors du thread de compo → pas de question de stream/contexte GPU.
+#   • ⚠ Le boulanger ne prend PAS `state_lock` pendant ses rendus : la boucle de compo le prend à
+#     CHAQUE trame (ensure_input) — un boulanger qui le garderait 25 ms rendrait tout l'exercice
+#     vain. Il baisse donc les drapeaux AVANT de rendre : une mutation concurrente les relève et
+#     déclenche une nouvelle passe → convergence garantie (au pire un habillage intermédiaire vit
+#     10 ms). Les lectures sont des `dict.get` / itérations de liste (atomiques sous le GIL).
+#   • Latence : un changement de tally apparaît à la trame suivante (poll 5 ms) — imperceptible.
+_chrome_pub = None               # (opérandes HÔTE du chrome | None,) — publié par le boulanger
+_bg_pub     = None               # ((base_y, base_u, base_v) HÔTE pré-blendés | None,) — idem
+_chrome_bake = {{"last": 0.0, "max": 0.0}}   # coût UNITAIRE d'une passe de boulange (HORS trame)
+_chrome_bake_ctr = [0]
+_statuses_pub = ()               # signature des statuts de tuile, publiée par la boucle de compo
+_bake_wake = threading.Event()   # réveil du boulanger (changement de statut vu par la compo)
+_BAKE_BAND_H = 120               # hauteur de bande du compositing PIL (granularité de relâche du GIL)
+
+def _chrome_bake_pass():
+    """UNE passe du boulanger : re-bake des couches CACHÉES sales, puis publication des opérandes
+    HÔTE prêts à blender. ★ APPELÉE PAR LE THREAD BOULANGER SEULEMENT ★ (sauf l'amorce au boot)."""
+    global overlay_fg_rgba, dyn_rgba, _info_layer, _info_sig, _chrome_pub, _bg_pub, _chrome_dirty
+    _t0 = time.time_ns()
+    _did = False
+
+    # (a) FOND (layer=background) + overlays statiques : couche cachée. Le canvas de base est
+    # PRÉ-BLENDÉ ici, hôte, hors trame — la boucle par-trame n'en fait plus qu'une copie.
+    if overlay_dirty.is_set():
+        overlay_dirty.clear()          # AVANT le rendu (cf. convergence ci-dessus)
+        _bake_ctr["bg"] += 1
+        _bg_rgba = render_overlays_bg()
+        overlay_fg_rgba = render_overlays_fg_static()
+        if _bg_rgba is not None:
+            _oby, _obu, _obv, _oba, _oba2 = rgba_to_yuv(_bg_rgba)
+            _bg_pub = ((blend(np.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT), _oby, _oba),
+                        blend(np.full((OUT_HEIGHT // _CH, OUT_WIDTH // _CW), _NEUTRAL, dtype=_NP_DT), _obu, _oba2),
+                        blend(np.full((OUT_HEIGHT // _CH, OUT_WIDTH // _CW), _NEUTRAL, dtype=_NP_DT), _obv, _oba2)),)
+        else:
+            _bg_pub = (None,)
+        _chrome_dirty = True; _did = True
+
+    # (b) géométrie / tally / statuts → couches du chrome.
+    if geom_dirty.is_set():
+        geom_dirty.clear(); tally_dirty.set(); _info_sig = None
+        _bake_ctr["geom"] += 1; _chrome_dirty = True
+    if tally_dirty.is_set():
+        tally_dirty.clear()
+        dyn_rgba = render_dynamic()                      # composants bakés des modèles (géométrie incluse)
+        overlay_fg_rgba = render_overlays_fg_static()    # texte tally-réactif (couleur on/off)
+        _bake_ctr["tally"] += 1; _chrome_dirty = True
+    _sig = _statuses_pub
+    if _sig != _info_sig:
+        _info_layer = render_info(list(_sig)) if _sig else None
+        _info_sig = _sig
+        _bake_ctr["info"] += 1; _chrome_dirty = True
+
+    # (c) chrome consolidé (z-ordre info < dynamique < statique) → opérandes de blend HÔTE.
+    if _chrome_dirty:
+        _bake_ctr["chrome"] += 1
+        _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+        for _lyr in (_info_layer, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé
+            if _lyr is not None:
+                # ★ COMPOSITION PAR BANDES + relâche explicite du GIL entre chaque bande.
+                # `alpha_composite` plein cadre est UN appel C qui GARDE LE GIL du début à la fin
+                # (Pillow n'y fait pas de ImagingSection) : 1920×1080×3 couches = plusieurs ms
+                # pendant lesquelles la boucle de compo, même prioritaire, ne peut PAS se réveiller
+                # → tick en retard → slot de grille raté. Sortir le bake du thread ne suffit donc
+                # pas : il faut aussi qu'il ne SÉQUESTRE pas l'interpréteur. Mesuré : nice(10) seul
+                # ne corrigeait rien (un thread niché qui tient le GIL bloque quand même) — c'est
+                # bien la granularité de l'appel C qui compte. Bandes de 120 lignes → GIL rendu
+                # ~9 fois par couche, hold ≈ 0,3 ms.
+                for _yb in range(0, OUT_HEIGHT, _BAKE_BAND_H):
+                    _yb1 = min(OUT_HEIGHT, _yb + _BAKE_BAND_H)
+                    _ch.alpha_composite(_lyr.crop((0, _yb, OUT_WIDTH, _yb1)), (0, _yb))
+                    time.sleep(0)     # point de commutation : la compo peut prendre le GIL ICI
+        # Bornage à la BBOX réelle (chroma-alignée) : chrome épars → on ne blende pas tout l'écran.
+        # Chrome entièrement transparent → publication None → blend totalement sauté (cas assembleur).
+        _cbb = _ch.getbbox()
+        if _cbb is None:
+            _chrome_pub = (None,)
+        else:
+            bx0, by0, bx1, by1 = _cbb
+            bx0 -= bx0 % _CW; by0 -= by0 % _CH
+            if bx1 % _CW: bx1 = min(OUT_WIDTH, bx1 + (_CW - bx1 % _CW))
+            if by1 % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - by1 % _CH))
+            _cy, _cu, _cv, _ca, _ca2 = rgba_to_yuv(_ch.crop((bx0, by0, bx1, by1)))
+            # inv_a=(255−α) et src_a=src·α par plan — arithmétique IDENTIQUE à l'ancien chemin,
+            # simplement calculée hors trame ; la boucle ne fait plus que l'upload (_to_xp).
+            _chrome_pub = ((bx0, by0, bx1, by1,
+                            255 - _ca.astype(_ACC),  _cy.astype(_ACC) * _ca,
+                            255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2),)
+        _chrome_dirty = False; _did = True
+
+    if _did:
+        _ms = (time.time_ns() - _t0) / 1e6
+        _chrome_bake["last"] = round(_ms, 2)
+        if _ms > _chrome_bake["max"]:
+            _chrome_bake["max"] = round(_ms, 2)
+        _chrome_bake_ctr[0] += 1
+    return _did
+
+_bake_errs = [0.0]
+
+def _nice_baker():
+    """Le boulanger est un thread SECONDAIRE : sous contention, la boucle de composition doit
+    gagner. Sous Linux, `nice` est PAR THREAD (setpriority(PRIO_PROCESS, 0) = thread courant) →
+    on peut dé-prioriser le boulanger sans toucher à la compo. Sans ça, sur un nœud sans cœur
+    libre, les 40-55 ms de PIL du boulanger volent le cœur (ou le GIL) au tick de la compo, qui
+    se réveille en retard et rate son slot de grille — le pic serait sorti de la trame pour
+    revenir par la fenêtre. Best-effort (échec silencieux si la plateforme refuse)."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, 0, 10)
+    except Exception:
+        pass
+
+def _chrome_baker_loop():
+    """Thread BOULANGER de l'habillage. Sérialisé (une passe à la fois) : à quelques bakes/s son
+    taux d'occupation est de quelques pour cent."""
+    _nice_baker()
+    while True:
+        try:
+            _chrome_bake_pass()
+        except Exception as _e:
+            # ⛔ jamais d'échec muet : on log (throttlé) et on RE-LÈVE le drapeau → nouvelle tentative.
+            _chrome_dirty_retry = time.time()
+            if _chrome_dirty_retry - _bake_errs[0] > 5.0:
+                _bake_errs[0] = _chrome_dirty_retry
+                print(f"multiview: boulanger chrome — échec de re-bake : {{_e!r}}")
+            tally_dirty.set()
+            time.sleep(0.05)
+        _bake_wake.wait(0.005)
+        _bake_wake.clear()
 # Cache de la couche PER-FRAME des HORLOGES (les VU-mètres ont leur propre chemin par tuiles, jamais
 # caché) : YUV+bbox réutilisés tant que la valeur affichée ne change pas (re-render+convert
 # DÉTERMINISTE, 1×/s sans le champ images).
@@ -4501,6 +4716,13 @@ threading.Thread(target=_ahist_loop, daemon=True).start()
 # ★ BOULANGER des frises (0.40.0) : la RECOMPOSITION (6-27 ms) sort de la boucle de composition —
 # elle ne fait plus tomber de trame. Voir le bloc de commentaire sur `_hist_want`.
 threading.Thread(target=_hist_baker_loop, daemon=True).start()
+# ★ BOULANGER de l'HABILLAGE (0.42.0) : le re-bake du chrome (≈25 ms plein cadre) sort lui aussi de
+# la trame. Amorce SYNCHRONE d'abord — la 1re trame doit sortir habillée, pas nue.
+try:
+    _chrome_bake_pass()
+except Exception as _e:
+    print(f"multiview: amorce du chrome échouée ({{_e!r}}) — le boulanger réessaiera")
+threading.Thread(target=_chrome_baker_loop, daemon=True).start()
 
 # Sortie MXL : index tai en genlock-grille, sinon compteur libre (input-locked / cadence libre).
 _out_mode  = "tai" if (GENLOCK and not INPUT_LOCKED) else "free"
@@ -4521,8 +4743,6 @@ if SLICE_ON:
     metrics["slice_mode"] = True
 out_frame_index = 0
 start_time = time.time()
-_fps_last_idx = 0          # fps en fenêtre glissante (delta depuis le dernier report)
-_fps_last_t   = start_time
 next_frame_time = _grid_next(start_time, FRAME_INTERVAL) if GENLOCK else start_time
 _last_in_fi = {{}}         # mode input-locked : dernier frame_index COMPOSÉ par source (barrière)
 _lag_frames = {{}}         # mode input-locked : retard par shm = nb de composes consécutifs SANS
@@ -5038,30 +5258,19 @@ while True:
     with state_lock:
         _fc = list(FLUX_CONFIG)   # snapshot stable pour cette frame
 
-    # Images de fond (layer=background) : sous la vidéo. Couche cachée, re-bakée sur changement.
-    # Idem couche overlay PREMIER-PLAN cachée (texte/images fixes) → re-bakée ici (édition / MAJ TSL),
-    # puis intégrée au chrome (coût par-trame nul). Le fond étant STATIQUE, on le PRÉ-BLENDE une seule
-    # fois (à la re-bake) dans un canvas de base caché `_base_*` ; la boucle par-trame fait alors une
-    # simple COPIE de ce base au lieu de re-blender plein écran 3 plans À CHAQUE trame (≈30 ms → ≈1 ms,
-    # le coût dominant des assembleurs/murs avec image de fond). Cf. caching du chrome premier-plan.
-    if overlay_dirty.is_set():
+    # Images de fond (layer=background) : sous la vidéo. Couche cachée, PRÉ-BLENDÉE dans un canvas de
+    # base `_base_*` — la boucle par-trame n'en fait qu'une COPIE (≈1 ms) au lieu de re-blender plein
+    # écran 3 plans à chaque trame (≈30 ms). ★ 0.42.0 : le RE-BAKE (PIL + rgba_to_yuv + pré-blend,
+    # ≈13 ms plein cadre) est fait par le BOULANGER, hors trame. Il ne reste ici que le RAMASSAGE de
+    # la publication : sur GPU un upload des 3 plans (~0,3 ms), en CPU rien du tout (_to_xp = identité).
+    if _bg_pub is not _bg_seen:
         _ts_bg0 = time.time_ns()
-        _bake_ctr["bg"] += 1
-        with state_lock:
-            _bg_rgba = render_overlays_bg()
-            overlay_fg_rgba = render_overlays_fg_static()
-        overlay_bg_layer = rgba_to_yuv(_bg_rgba) if _bg_rgba is not None else None
-        overlay_dirty.clear()
-        _chrome_dirty = True
-        if overlay_bg_layer is not None:
-            # _base pré-blendé RÉSIDENT BACKEND (device si GPU) : uploadé une seule fois à la re-bake
-            # (rare), la boucle par-trame n'en fait qu'une copie. _to_xp uploade les plans d'overlay.
-            _oby, _obu, _obv, _oba, _oba2 = overlay_bg_layer
-            _base_y = blend(xp.zeros((OUT_HEIGHT, OUT_WIDTH), dtype=_NP_DT), _to_xp(_oby), _to_xp(_oba))
-            _base_u = blend(xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _to_xp(_obu), _to_xp(_oba2))
-            _base_v = blend(xp.full((OUT_HEIGHT//_CH, OUT_WIDTH//_CW), _NEUTRAL, dtype=_NP_DT), _to_xp(_obv), _to_xp(_oba2))
-        else:
+        _bg_seen = _bg_pub
+        _bgh = _bg_seen[0]
+        if _bgh is None:
             _base_y = _base_u = _base_v = None
+        else:
+            _base_y = _to_xp(_bgh[0]); _base_u = _to_xp(_bgh[1]); _base_v = _to_xp(_bgh[2])
         _t_ov_bg.push((time.time_ns() - _ts_bg0) / 1e6)
 
     # Canvas de la trame (RÉSIDENT BACKEND : VRAM si GPU) : COPIE du base pré-blendé (fond) si présent,
@@ -5245,54 +5454,29 @@ while True:
     _t_after_inputs = time.time_ns()   # profiling : fin des entrées vidéo (lecture+resize+blend tuiles)
 
     try:
-        # Re-bake des couches d'habillage CACHÉES (RGBA) sur changement, puis (re)composition du
-        # « chrome » consolidé (z-ordre info < bordure < statique < dynamique) en UNE image RGBA cachée.
+        # ★ 0.42.0 : le RE-BAKE du chrome (PIL plein cadre + conversion + opérandes ≈ 25 ms) est fait
+        # par le BOULANGER, HORS TRAME. Ici on ne fait plus que RAMASSER la publication (comparaison
+        # d'identité) et, sur GPU, uploader les opérandes de la bbox (~0,3 ms) pour que le blend_pre
+        # par-trame reste 100 % en VRAM. En CPU, _to_xp = identité → coût strictement nul.
+        # Les statuts de tuile (couche `info`) sont PUBLIÉS au boulanger, qui les rend hors trame.
         _ts_bake0 = time.time_ns()
-        if geom_dirty.is_set():
-            geom_dirty.clear(); tally_dirty.set(); _info_sig = None; _chrome_dirty = True
-            _bake_ctr["geom"] += 1
-
-        if tally_dirty.is_set():
-            with state_lock:
-                dyn_rgba = render_dynamic()   # composants bakés des modèles (géométrie incluse)
-            overlay_fg_rgba = render_overlays_fg_static()   # texte tally-réactif (couleur on/off)
-            tally_dirty.clear(); _chrome_dirty = True
-            _bake_ctr["tally"] += 1
-
         _sig = tuple(_statuses)
-        if _sig != _info_sig:
-            with state_lock:
-                _info_layer = render_info(_statuses) if _statuses else None
-            _info_sig = _sig; _chrome_dirty = True
-            _bake_ctr["info"] += 1
-
-        if _chrome_dirty:
-            _bake_ctr["chrome"] += 1
-            _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-            for _lyr in (_info_layer, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé (overlays fixes au-dessus)
-                if _lyr is not None:
-                    _ch.alpha_composite(_lyr)
-            # Bornage à la BBOX réelle du chrome (chroma-alignée) : on ne blende plus tout l'écran à
-            # chaque trame quand l'habillage est ÉPARS (ex. assembleur du tissu = 0 ou 1 texte). Chrome
-            # entièrement transparent → _chrome_pre None → blend totalement sauté (cas assembleur).
-            _cbb = _ch.getbbox()
-            if _cbb is None:
-                _chrome_rgba = None; _chrome_pre = None
+        if _sig != _statuses_pub:
+            _statuses_pub = _sig
+            _bake_wake.set()
+        if _chrome_pub is not _chrome_seen:
+            _chrome_seen = _chrome_pub
+            _cph = _chrome_seen[0]
+            if _cph is None:
+                _chrome_pre = None      # chrome entièrement transparent → blend sauté (cas assembleur)
             else:
-                bx0, by0, bx1, by1 = _cbb
-                bx0 -= bx0 % _CW; by0 -= by0 % _CH
-                if bx1 % _CW: bx1 = min(OUT_WIDTH, bx1 + (_CW - bx1 % _CW))
-                if by1 % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - by1 % _CH))
-                _chrome_rgba = _ch
-                # Opérandes de blend pré-calculés sur la BBOX (statiques jusqu'au prochain changement) :
-                # inv_a=(255−α) et src_a=src·α par plan (Y, puis U/V via l'alpha sous-échantillonnée).
-                _cy, _cu, _cv, _ca, _ca2 = rgba_to_yuv(_ch.crop((bx0, by0, bx1, by1)))
-                # Opérandes UPLOADÉS au backend (device si GPU) UNE fois ici (chrome caché, re-bake rare)
-                # → le blend_pre par-trame reste 100 % en VRAM. _to_xp = identité en CPU (inchangé).
-                _chrome_pre = (bx0, by0, bx1, by1,
-                               _to_xp(255 - _ca.astype(_ACC)),  _to_xp(_cy.astype(_ACC) * _ca),
-                               _to_xp(255 - _ca2.astype(_ACC)), _to_xp(_cu.astype(_ACC) * _ca2), _to_xp(_cv.astype(_ACC) * _ca2))
-            _chrome_dirty = False
+                _chrome_pre = (_cph[0], _cph[1], _cph[2], _cph[3],
+                               _to_xp(_cph[4]), _to_xp(_cph[5]),
+                               _to_xp(_cph[6]), _to_xp(_cph[7]), _to_xp(_cph[8]))
+            # Diagnostic : la zone RÉELLEMENT habillée, telle qu'elle est blendée. `null` = aucun
+            # habillage (légitime sur un assembleur, ANORMAL sur un mur à labels/tally → le
+            # boulanger n'a rien publié). Rend visible une panne d'habillage sans capture d'écran.
+            metrics["chrome_bbox"] = None if _cph is None else [_cph[0], _cph[1], _cph[2], _cph[3]]
 
         # Habillage = chrome STATIQUE (caché) + VU-mètres (tuiles per-frame) + horloges (cachées).
         _ts_ov0 = time.time_ns()
@@ -5395,6 +5579,7 @@ while True:
         _t_overlays.push((_t_after_overlays - _t_after_inputs) / 1e6)
         _t_output.push((ts_out - _t_after_overlays) / 1e6)
         _bake_ctr["frames"] += 1
+        _rate_total["frames"] += 1     # compteur MONOTONE des trames RÉELLEMENT composées+émises
     except Exception as _e:
         # Garde-fou : une exception transitoire (rendu overlay/chrome, écriture sortie…) ne doit
         # PAS tuer le process. On saute cette frame (la sortie garde sa dernière image via le ring)
@@ -5442,17 +5627,22 @@ while True:
             # RATTRAPE (tick immédiat, les attentes par bande absorbent le retard, la phase
             # reconverge seule) tant que le retard reste < 1 période ; au-delà, recale normal.
             if not (FLOW and time.time() - next_frame_time < FRAME_INTERVAL):
-                next_frame_time = _grid_next(time.time(), FRAME_INTERVAL)
+                _nft = _grid_next(time.time(), FRAME_INTERVAL)
+                # ★ VRAIES TRAMES PERDUES : le recale saute les slots de grille compris entre le tick
+                # attendu et le prochain. C'est LE signal de santé (« ai-je perdu des images ? ») —
+                # ne plus le déduire d'un fps bruité. 0 = le mur tient sa grille.
+                _miss = int(round((_nft - next_frame_time) / FRAME_INTERVAL))
+                if _miss > 0:
+                    _rate_total["missed"] += _miss
+                next_frame_time = _nft
     else:
         next_frame_time = start_time + (out_frame_index * FRAME_INTERVAL)
     if out_frame_index % 25 == 0:
-        # fps en fenêtre glissante (débit sur les ~25 dernières trames) au lieu d'une moyenne
-        # cumulée depuis le démarrage (qui masquait les variations / sous-estimait après warmup).
-        _now_fps = time.time()
-        _dt_fps = _now_fps - _fps_last_t
-        if _dt_fps > 0:
-            metrics["fps"] = round((out_frame_index - _fps_last_idx) / _dt_fps, 1)
-        _fps_last_idx = out_frame_index; _fps_last_t = _now_fps
+        # Échantillon de cadence (compteurs monotones) : le fps LUI-MÊME est calculé sur une fenêtre
+        # de TEMPS au scrape (cf. _update_rate_metrics) — plus de fenêtre à nombre de trames FIXE,
+        # dont la durée variable faisait « chuter » fps à 47-48 sans qu'aucune trame ne soit perdue.
+        _rate_sample()
+        _update_rate_metrics()
         _refresh_lat_metrics()
         _sd = globals().get('_sl_dbg')
         if _sd:
@@ -5460,7 +5650,9 @@ while True:
             metrics["slice"] = {{"tiles": _sd[0], "valid0": _sd[1], "waits": _sd[2],
                                "fallbacks": _sd[3], "dormant": _sd[4],
                                "backoff": len(_sl_backoff)}}
-        print(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} fps"
+        print(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} {{metrics['fps_unit']}}/s"
+              + (f" ({{metrics['frames_per_s']}} trames/s)" if INTERLACED else "")
+              + (f" [perdues: {{_rate_total['missed']}}]" if _rate_total["missed"] else "")
               + (f" [slice: tuiles={{_sd[0]}} valid0={{_sd[1]}} waits={{_sd[2]}} replis={{_sd[3]}} dorm={{_sd[4]}}]" if _sd else ""))
     # Point sûr GC (cf. bloc gc.disable() avant la boucle) : la dernière bande de la trame est
     # committée (l'aval a déjà tout), on est dans le temps mort avant le tick suivant. gen0+gen1
