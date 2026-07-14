@@ -3,7 +3,7 @@
 # Auteur : Cyril Mazouer, pour le compte de BOBI SAS
 # Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
-import mmap, socket, struct, time, numpy as np, threading, json, os, re, base64, io, signal, gc
+import mmap, socket, struct, sys, time, numpy as np, threading, json, os, re, base64, io, signal, gc
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
@@ -63,7 +63,8 @@ _t_ov_render = RollingMs(); _t_ov_convert = RollingMs(); _t_ov_blend = RollingMs
 _t_ov_meters = RollingMs(); _t_ov_hist = RollingMs(); _t_ov_clock = RollingMs()
 _t_ov_bake = RollingMs()   # re-bake du chrome (Image.new + alpha_composite + rgba_to_yuv bbox)
 _t_ov_bg   = RollingMs()   # re-bake couche fond/fg statique (overlay_dirty) — compté dans `inputs`
-_bake_ctr = {{"chrome": 0, "bg": 0, "tally": 0, "geom": 0, "info": 0, "frames": 0, "t0": time.time()}}
+_bake_ctr = {{"chrome": 0, "bg": 0, "tally": 0, "geom": 0, "info": 0, "hist": 0, "frames": 0,
+              "t0": time.time()}}
 _bake_rate = {{}}          # dernier instantané par seconde (exposé sur :8080)
 
 # ─── Config injectée (contrat plugin) ───────────────────────
@@ -633,12 +634,14 @@ def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opac
                font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
 
 # ─── Peak meters : chemin GPU (cupy) ─────────────────────────────────────────
-# Graduations/fond/labels/n° de canal = STATIQUES → rendus PIL UNE fois (image), convertis YUV et
-# résidents backend (VRAM si GPU), cachés par config. Barres + peak-hold = DYNAMIQUES → composés par
-# trame en RGBA sur le backend (xp), puis UNE conversion RGBA→YUV. Plus aucun PIL par trame.
-# Le chemin CPU (GPU=False) n'utilise PAS ce code : render_meters garde la branche PIL d'origine VERBATIM.
-_meter_static_xp_cache = {{}}   # key -> RGBA backend float32 (rendu PIL une fois, uploadé une fois)
+# Graduations/fond/labels/n° de canal = STATIQUES → rendus PIL UNE fois, ★ convertis en YUV et
+# cachés SOUS CETTE FORME ★. Barres + peak-hold = DYNAMIQUES → peints par trame DIRECTEMENT dans
+# les plans YUV (couleur unie ⇒ YUV constant). Plus aucun PIL NI aucune conversion RGBA→YUV par
+# trame (0.40.0 : c'était 86 % du coût des VU au banc — la tuile entière était re-convertie alors
+# que seules quelques barres de couleur unie changeaient).
+_meter_static_yuv_cache = {{}}   # key -> (Y, U, V, alpha, alpha_sub) HÔTE du fond STATIQUE (sans barres)
 _MET_GREEN = (60, 200, 60); _MET_YELLOW = (220, 180, 40); _MET_RED = (230, 60, 60); _MET_WHITE = (255, 255, 255)
+_MET_YUV_CACHE = {{}}   # (r,g,b) -> (Y, U, V) natifs — constantes de couleur des barres
 
 def _meter_scale_params(scale):
     """(to_frac, green_top, yellow_top) selon l'échelle — réplique la logique de _draw_meter."""
@@ -681,73 +684,74 @@ def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct, ch0=
         d.text((bx + (bar_w // 2) - 2, bars_bottom + 2), str(ch0 + ch + 1),
                font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
 
-def _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0=0,
-                      tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
-    """RGBA statique (backend float32) cachée pour cette config de meter — l'idée 'graduations en VRAM'.
+def _meter_static_yuv(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0=0,
+                       tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+    """Fond STATIQUE du meter (fond + graduations + labels), rendu PIL UNE fois puis caché
+    ★ DÉJÀ CONVERTI EN YUV ★ (0.40.0). C'était LE point chaud des VU (banc : 86 % de leur coût) :
+    l'ancien chemin gardait le statique en RGBA et re-convertissait TOUTE la tuile en YUV à CHAQUE
+    trame, alors que seules les barres changent — et qu'elles sont d'une COULEUR UNIE, donc de YUV
+    constant. La conversion par trame était intégralement redondante.
     La clé de cache inclut tick_w/bar_w/gap : un meter `fit` (largeur effective propre à sa cellule)
     ne doit JAMAIS réutiliser le fond caché d'un meter `auto` ou `fit` d'une autre largeur."""
     key = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap)
-    arr = _meter_static_xp_cache.get(key)
-    if arr is None:
+    p = _meter_static_yuv_cache.get(key)
+    if p is None:
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         _draw_meter_static(img, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap)
-        host = np.array(img).astype(np.float32)
-        arr = xp.asarray(host) if GPU else host
-        _meter_static_xp_cache[key] = arr
-    return arr
+        p = rgba_to_yuv(img)      # (Y, U, V, alpha, alpha_sub) — hôte, kernel C si dispo
+        _meter_static_yuv_cache[key] = p
+    return p
 
-def _rgba_to_yuv_xp(arr):
-    """rgba_to_yuv pour un RGBA backend (xp) float32 — réplique rgba_to_yuv sans PIL (xp=np en CPU).
-    Chemin CPU : conversion Y/U/V fusionnée en C (mvk ABI 2, image ≥ 0.12) quand disponible —
-    bit-exact (mêmes expressions float32, .so compilé -ffp-contract=off) ; alpha reste numpy."""
-    if _MVK_HOST and not (GPU and isinstance(arr, cp.ndarray)):
-        _got = getattr(bobimxl, "mvk_rgba2yuv", lambda *a: None)(
-            np.ascontiguousarray(arr, dtype=np.float32), _NP_DT, _SCALE, _MAXV, _CW, _CH)
-        if _got is not None:
-            _y, _u2, _v2 = _got
-            _a8 = arr[..., 3].astype(_NP_DT)
-            _am = _a8
-            if _CW == 2: _am = np.maximum(_am[:, 0::2], _am[:, 1::2])
-            if _CH == 2: _am = np.maximum(_am[0::2, :], _am[1::2, :])
-            return _y, _u2, _v2, _a8, _am
-    r = arr[..., 0]; g = arr[..., 1]; b = arr[..., 2]; a = arr[..., 3]
-    y = (( 0.299 * r + 0.587 * g + 0.114 * b      ) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
-    u = ((-0.169 * r - 0.331 * g + 0.500 * b + 128) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
-    v = (( 0.500 * r - 0.419 * g - 0.081 * b + 128) * _SCALE).clip(0, _MAXV).astype(_NP_DT)
-    def _sub_avg(p):
-        pp = p.astype(xp.uint32)
-        if _CW == 2: pp = (pp[:, 0::2] + pp[:, 1::2] + 1) // 2
-        if _CH == 2: pp = (pp[0::2, :] + pp[1::2, :] + 1) // 2
-        return pp.astype(_NP_DT)
-    def _sub_max(p):
-        if _CW == 2: p = xp.maximum(p[:, 0::2], p[:, 1::2])
-        if _CH == 2: p = xp.maximum(p[0::2, :], p[1::2, :])
-        return p
-    a8 = a.astype(_NP_DT)
-    return y, _sub_avg(u), _sub_avg(v), a8, _sub_max(a8)
+def _met_yuv(rgb):
+    """(Y, U, V) natifs d'une couleur RGB UNIE, obtenus par le MÊME convertisseur que le reste du
+    mur (patch 2×2 → rgba_to_yuv) : la valeur d'une barre est donc BIT-EXACTE avec l'ancien chemin.
+    Mémoïsé (4 couleurs)."""
+    c = _MET_YUV_CACHE.get(rgb)
+    if c is None:
+        patch = np.empty((2, 2, 4), dtype=np.uint8)
+        patch[..., 0] = rgb[0]; patch[..., 1] = rgb[1]; patch[..., 2] = rgb[2]; patch[..., 3] = 255
+        _y, _u, _v, _a, _am = rgba_to_yuv(Image.fromarray(patch, "RGBA"))
+        c = (int(_y[0, 0]), int(_u[0, 0]), int(_v[0, 0]))
+        _MET_YUV_CACHE[rgb] = c
+    return c
 
-def _meter_comp_rect(tile, x0, y0, x1, y1, rgb, a):
-    """PEINT (remplace) une couleur pleine (rgb, a 0..255) sur la région RGBA `tile` (xp) — réplique
-    EXACTEMENT le comportement de PIL ImageDraw 'RGBA' (paint, pas un over-compositing : le pixel prend
-    la couleur+alpha du fill). Bornée aux dimensions de la tuile."""
-    Ht = tile.shape[0]; Wt = tile.shape[1]
+def _meter_paint_rect(y, u, v, a8, x0, y0, x1, y1, ycc, a):
+    """PEINT une couleur unie DIRECTEMENT dans les plans YUV+alpha de la tuile (bornée).
+    ⚠ ÉCART ASSUMÉ (validé produit, 0.40.0) : la LUMA et l'ALPHA sont posées à PLEINE RÉSOLUTION —
+    donc strictement identiques à l'ancien chemin (peinture RGBA puis conversion). Le CHROMA, lui,
+    est sous-échantillonné : un échantillon chroma coupé en deux par le bord MOBILE d'une barre
+    prenait la MOYENNE (fond/barre) et prend désormais la couleur FRANCHE de celui qui le couvre
+    majoritairement (arrondi au plus proche). L'écart maximal est donc un liseré chroma d'UN
+    échantillon (2 px) sur le bord d'une barre ; la couleur, la hauteur, la position et l'opacité
+    de la barre restent inchangées AU BIT PRÈS (la luma, qui porte le contour, est exacte)."""
+    Ht = y.shape[0]; Wt = y.shape[1]
     x0 = max(0, x0); y0 = max(0, y0); x1 = min(Wt, x1); y1 = min(Ht, y1)
     if x1 <= x0 or y1 <= y0:
         return
-    tile[y0:y1, x0:x1, 0] = rgb[0]
-    tile[y0:y1, x0:x1, 1] = rgb[1]
-    tile[y0:y1, x0:x1, 2] = rgb[2]
-    tile[y0:y1, x0:x1, 3] = a
+    y[y0:y1, x0:x1] = ycc[0]
+    a8[y0:y1, x0:x1] = a
+    cx0 = (x0 + _CW // 2) // _CW; cx1 = (x1 + _CW // 2) // _CW
+    cy0 = (y0 + _CH // 2) // _CH; cy1 = (y1 + _CH // 2) // _CH
+    if cx1 > cx0 and cy1 > cy0:
+        u[cy0:cy1, cx0:cx1] = ycc[1]
+        v[cy0:cy1, cx0:cx1] = ycc[2]
 
-def _meter_tile_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0,
+def _meter_tile_yuv(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0,
                      tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
-    """Tuile YUV d'un meter (chemin GPU) : statique caché copié + barres/hold composées en RGBA (xp).
-    `tick_w`/`bar_w`/`gap` : voir _draw_meter."""
-    tile = _meter_static_xp(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap).copy()
+    """Tuile YUV d'un meter : copie du fond statique CACHÉ EN YUV + barres/hold peints DIRECTEMENT
+    en YUV. Plus AUCUNE conversion RGBA→YUV par trame (banc : 2,3 → 0,4 ms sur 4 fenêtres).
+    Tuile HÔTE (numpy) : elle est minuscule (une bande de VU), et `_to_xp` l'uploade au blend —
+    ce qui, sur un mur GPU, supprime aussi la nuée de micro-noyaux cupy que coûtait la peinture
+    RGBA par tranche. `tick_w`/`bar_w`/`gap` : voir _draw_meter."""
+    sy, su, sv, sa, _sam = _meter_static_yuv(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct,
+                                             ch0, tick_w, bar_w, gap)
+    y = sy.copy(); u = su.copy(); v = sv.copy(); a8 = sa.copy()
     a_bar = int(220 * opacity_pct / 100); a_hold = int(255 * opacity_pct / 100)
     bars_mh = max(20, mh - 12); bars_bottom = rmy + bars_mh
     to_frac, green_top, yellow_top = _meter_scale_params(scale)
     green_top_px = int(round(green_top * bars_mh)); yellow_top_px = int(round(yellow_top * bars_mh))
+    _g = _met_yuv(_MET_GREEN); _yl = _met_yuv(_MET_YELLOW)
+    _r = _met_yuv(_MET_RED);   _w = _met_yuv(_MET_WHITE)
     for ch in range(n):
         bx = rmx + tick_w + ch * (bar_w + gap)
         peak_h = int(round(to_frac(peaks_db[ch]) * bars_mh))
@@ -755,19 +759,24 @@ def _meter_tile_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacit
         # NB : PIL d.rectangle est INCLUSIF sur (x1,y1) → bas +1 ici pour égaler les hauteurs.
         gh = min(peak_h, green_top_px)
         if gh > 0:
-            _meter_comp_rect(tile, bx, bars_bottom - gh, bx + bar_w, bars_bottom + 1, _MET_GREEN, a_bar)
+            _meter_paint_rect(y, u, v, a8, bx, bars_bottom - gh, bx + bar_w, bars_bottom + 1, _g, a_bar)
         if peak_h > green_top_px:
             yh = min(peak_h, yellow_top_px) - green_top_px
             if yh > 0:
-                _meter_comp_rect(tile, bx, bars_bottom - green_top_px - yh, bx + bar_w, bars_bottom - green_top_px + 1, _MET_YELLOW, a_bar)
+                _meter_paint_rect(y, u, v, a8, bx, bars_bottom - green_top_px - yh, bx + bar_w, bars_bottom - green_top_px + 1, _yl, a_bar)
         if peak_h > yellow_top_px:
             rh = peak_h - yellow_top_px
             if rh > 0:
-                _meter_comp_rect(tile, bx, bars_bottom - yellow_top_px - rh, bx + bar_w, bars_bottom - yellow_top_px + 1, _MET_RED, a_bar)
+                _meter_paint_rect(y, u, v, a8, bx, bars_bottom - yellow_top_px - rh, bx + bar_w, bars_bottom - yellow_top_px + 1, _r, a_bar)
         if hold_h > 0:
             yh = bars_bottom - hold_h
-            _meter_comp_rect(tile, bx, yh, bx + bar_w, yh + 1, _MET_WHITE, a_hold)
-    return _rgba_to_yuv_xp(tile)
+            _meter_paint_rect(y, u, v, a8, bx, yh, bx + bar_w, yh + 1, _w, a_hold)
+    # alpha sous-échantillonnée : RECALCULÉE (max du bloc) depuis l'alpha pleine résolution qu'on
+    # vient de peindre → EXACTE, et contiguë (contrat mvk, cf. 0.39.3).
+    am = a8
+    if _CW == 2: am = np.maximum(am[:, 0::2], am[:, 1::2])
+    if _CH == 2: am = np.maximum(am[0::2, :], am[1::2, :])
+    return y, u, v, a8, np.ascontiguousarray(am)
 
 # état tally : {{"<idx>_L": "red"|"green"|"amber"|"off", "<idx>_R": ...}}
 tally_state = {{}}
@@ -854,17 +863,22 @@ def _refresh_lat_metrics():
     # plein cadre (PIL + rgba_to_yuv + upload) et se noyait dans la moyenne `overlays`.
     _now_r = time.time(); _dt_r = _now_r - _bake_ctr["t0"]
     if _dt_r >= 1.0:
+        _bake_ctr["hist"] = _hist_bake_ctr[0]; _hist_bake_ctr[0] = 0
         _bake_rate.clear()
         _bake_rate.update({{k: round(_bake_ctr[k] / _dt_r, 1)
-                            for k in ("chrome", "bg", "tally", "geom", "info", "frames")}})
-        for k in ("chrome", "bg", "tally", "geom", "info", "frames"):
+                            for k in ("chrome", "bg", "tally", "geom", "info", "hist", "frames")}})
+        for k in ("chrome", "bg", "tally", "geom", "info", "hist", "frames"):
             _bake_ctr[k] = 0
         _bake_ctr["t0"] = _now_r
     metrics["bakes_per_s"] = dict(_bake_rate)
     metrics["mvk_host"] = _MVK_HOST
     metrics["mvk_miss"] = dict(_mvk_miss)
     metrics["mvk_why"] = dict(_mvk_why)
-    metrics["hist_bake_ms"] = dict(_hist_bake)
+    # `hist_bake_ms` = coût UNITAIRE d'un re-bake de frise. ★ 0.40.0 : il est désormais payé par le
+    # THREAD BOULANGER, plus par la boucle de composition → il ne coûte PLUS DE TRAME. `async: true`
+    # le dit explicitement (sur une version antérieure, ce même chiffre était un pic DANS la trame).
+    # Le coût réellement vu par la trame est `compose_breakdown_ms.ov_hist` — il doit être ~0,05 ms.
+    metrics["hist_bake_ms"] = dict(_hist_bake, **{{"async": True}})
 # debug TSL : dernier paquet reçu (mis à jour par _handle_tsl_client)
 tsl_debug = {{"last_raw_hex": None, "last_ver": None, "last_index": None,
               "last_control": None, "last_text": None, "last_error": None,
@@ -1420,11 +1434,12 @@ def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status,
     if bx1 <= bx0 or by1 <= by0:
         return
     if not METERS_PIL:
-        # Chemin TUILE (défaut CPU **ET** GPU depuis 0.31.0 — lot PIL) : statique (fond/
-        # graduations/labels) rendu PIL UNE fois puis caché résident backend, barres+peak-hold
-        # PEINTS par trame en RGBA (xp), conversion _rgba_to_yuv_xp — AUCUNE PIL par trame.
-        # Prouvé pixel-identique au chemin PIL (max|Δ|=0, validation 0.20.0 re-jouée en 0.31.0).
-        oy, ou, ov, oa, oa2 = _meter_tile_gpu(bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, n,
+        # Chemin TUILE (défaut CPU **ET** GPU) : statique (fond/graduations/labels) rendu PIL UNE
+        # fois puis caché ★ EN YUV ★, barres+peak-hold peints par trame DIRECTEMENT dans les plans
+        # YUV (0.40.0) — aucune PIL et AUCUNE conversion RGBA→YUV par trame. Luma/alpha bit-exactes,
+        # chroma des bords de barre « franc » au lieu de moyenné (cf. _meter_paint_rect).
+        # Repli bit-exact intégral : `meters_pil=true` (chemin PIL d'origine, ci-dessous).
+        oy, ou, ov, oa, oa2 = _meter_tile_yuv(bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, n,
                                               peaks, holds, scale, opacity_pct, ch0, tick_w, bar_w, gap)
     else:
         # Repli `meters_pil` : chemin PIL historique VERBATIM (redéployer avec meters_pil=true
@@ -1663,9 +1678,15 @@ VH_TICK_S      = 0.2                   # période d'échantillonnage vidéo (5 H
 # de gathers qu'en 0.37.0) ; seules la détection d'événement et la sonde de noir restent à 5 Hz.
 VH_CELL_MIN_W  = 48                    # plancher : sous ~48 px de large une vignette n'apprend plus rien
 VH_CELL_GAP    = 2                     # garde entre deux vignettes (px)
-VH_THUMB_H     = 54                    # hauteur de vignette STOCKÉE ; la largeur suit le RATIO SOURCE
-VH_THUMB_W_MAX = 160                   # (bornes de largeur : anamorphoses/portrait restent sains)
+VH_THUMB_H     = 144                   # hauteur de vignette STOCKÉE ; la largeur suit le RATIO SOURCE
+VH_THUMB_W_MAX = 256                   # (bornes de largeur : anamorphoses/portrait restent sains)
 VH_THUMB_W_MIN = 24
+# ★ 0.40.0 — DÉFINITION REMONTÉE (54 → 144 px de haut). Les cases d'une frise pleine largeur font
+# ~160 px de haut : une vignette de 54 px y était AGRANDIE ×3, au plus proche voisin, à partir d'un
+# prélèvement déjà crénelé. On stockait donc du flou pixellisé et on l'étirait. 144 px couvre la
+# hauteur de case usuelle → le redimensionnement d'affichage devient marginal (cf. _vh_render).
+# Coût : le prélèvement et la recomposition sont TOUS DEUX hors de la boucle de composition
+# (thread d'échantillonnage + thread boulanger) — vérifié au mur 333, own_latency inchangé.
 VH_PROBE_W     = 32                    # sonde de LUMA (noir) — prélevée à 5 Hz, plan Y seul : 576
 VH_PROBE_H     = 18                    # points, ~10× moins cher qu'une vignette complète
 VH_BLACK_MEAN  = 16.0                  # luma moyenne (échelle 8 bits) sous laquelle l'image est « noire »
@@ -1697,7 +1718,31 @@ _HIST_CLIP     = (236, 72, 60)         # colonne saturée (rouge)
 _hist_lock  = threading.Lock()
 _vh         = {{}}   # nom de flux vidéo → état d'historique (ring de vignettes + ruban)
 _ah         = {{}}   # nom de flux audio → état d'historique (rings de crêtes/saturation)
-_hist_cache = {{}}   # clé d'unité → (signature, [tuiles YUV]) — recomposé au changement seulement
+_hist_cache = {{}}   # clé d'unité → (signature, [tuiles YUV]) — LU/ÉCRIT par la boucle de compo SEULE
+
+# ★ 0.40.0 — LA RECOMPOSITION DES FRISES SORT DE LA BOUCLE DE COMPOSITION.
+# Le re-bake d'une frise (dessin RGBA + conversion YUV) coûte 6 à 27 ms (mesuré `hist_bake_ms.max`
+# = 26,8 ms sur le mur 333) et tombait ENTIER dans la trame qui le déclenchait, ~5×/s : 5 trames
+# perdues par seconde sur 50 → le mur plafonnait à ~45 fps sans jamais être compute-bound en
+# moyenne (own_latency 11 ms pour un budget de 20). Il n'était pas lent : il était ASSOMMÉ
+# PÉRIODIQUEMENT. Dégrader la frise n'aurait rien réglé (le pic aurait juste été plus petit).
+# Modèle : un thread BOULANGER fabrique la tuile hors trame ; la boucle de compo ne fait plus que
+# (a) déposer une DEMANDE quand la signature change, (b) ramasser la tuile PRÊTE, (c) blender.
+#   • Cohérence : une tuile est un tuple de tableaux numpy NEUFS, publié par UNE affectation de
+#     dict (atomique sous le GIL) — la boucle ne peut jamais voir une tuile à moitié écrite.
+#   • Pas de course sur `_hist_cache` : le boulanger n'y touche PAS (il publie dans `_hist_ready`,
+#     que la boucle draine elle-même). Un seul écrivain par structure.
+#   • Vol de CPU : le conteneur a 3 cœurs (cpuset) pour UN thread de compo → il reste de la place.
+#     Le vrai risque est le GIL : un boulanger qui le garde 5 ms (switchinterval par défaut) ferait
+#     attendre la compo. On descend donc l'intervalle de commutation à 0,5 ms — la compo ne peut
+#     plus être bloquée plus longtemps que ça, et le pic de 27 ms disparaît de la trame.
+# Entre la demande et la livraison (une trame ou deux), la boucle réutilise la tuile PÉRIMÉE : sur
+# une frise de 30-120 s, 20-40 ms de retard sont rigoureusement invisibles.
+sys.setswitchinterval(0.0005)
+_hb_cv     = threading.Condition()   # garde `_hist_want` / `_hist_ready`
+_hist_want = {{}}   # clé d'unité → demande de bake (sig, kind, unit, rect, cfg_src, name, now)
+_hist_ready = {{}}  # clé d'unité → (signature, [tuiles YUV]) publiées par le boulanger
+_hist_bake_ctr = [0]   # nombre de bakes livrés (→ bakes_per_s.hist)
 
 _hist_errs = {{}}   # (clé d'unité, signature d'erreur) → {{kind, rect, err, n, t}} — THROTTLÉ
 
@@ -1867,15 +1912,29 @@ def _vh_luma(src, view):
 
 def _vh_thumb(src, view, tw, th):
     """Vignette RGB (th×tw×3), au RATIO DE LA SOURCE (cf. _vh_thumb_dims) — jamais anamorphosée.
-    Gather de tw×th POINTS sur les plans du grain (vue zéro-copie) — pas un resize de trame."""
+    ★ 0.40.0 — VRAI REDIMENSIONNEMENT FILTRÉ (PIL) au lieu du gather de tw×th POINTS (plus proche
+    voisin) d'avant. Le sous-échantillonnage brutal d'un 1920×1080 vers 160×54 crénelait tout :
+    moiré sur les mires, texte des bandeaux illisible, scintillement d'une vignette à l'autre. On
+    avait dégradé la qualité en croyant que le PRÉLÈVEMENT faisait tomber le mur — c'était FAUX :
+    le coupable était le PIC de recomposition, sorti de la trame en 0.40.0. Le prélèvement vit dans
+    le THREAD d'échantillonnage (jamais dans la boucle de mix, et à ~1/6 Hz par source) : la
+    qualité ne coûte donc RIEN à la trame.
+    Chaque plan est réduit SÉPARÉMENT par PIL en 8 bits ('L') — LANCZOS sur la luma (qui porte le
+    détail), BILINEAR sur la chroma (déjà molle, sous-échantillonnée) — et la conversion YUV→RGB
+    se fait sur la PETITE image (tw×th), pas sur la trame. PIL relâche le GIL pendant le
+    rééchantillonnage : le thread de composition n'est pas retenu."""
     y, u, v, in_w, in_h = _vh_planes(src, view)
-    ry = (np.arange(th) * in_h) // th
-    rx = (np.arange(tw) * in_w) // tw
-    cy = (np.arange(th) * (in_h // _CH)) // th
-    cx = (np.arange(tw) * (in_w // _CW)) // tw
-    ty = y[np.ix_(ry, rx)].astype(np.float32) / _SCALE          # échelle 8 bits (10/12 bits ramenés)
-    tu = u[np.ix_(cy, cx)].astype(np.float32) / _SCALE - 128.0
-    tv = v[np.ix_(cy, cx)].astype(np.float32) / _SCALE - 128.0
+    def _dn(p, flt, gap=None):
+        if p.dtype != np.uint8:                 # 10/12 bits → échelle 8 bits
+            p = (p // _SCALE).astype(np.uint8)
+        im = Image.fromarray(np.ascontiguousarray(p), "L")
+        return np.asarray(im.resize((tw, th), flt, reducing_gap=gap), dtype=np.float32)
+    # `reducing_gap=3` : PIL pré-réduit en BOX (aire) jusqu'à 3× la cible avant la convolution
+    # LANCZOS. Mesuré sur un 1920×1080 : 11,7 → 5,3 ms pour un écart MOYEN de 0,28/255 avec le
+    # LANCZOS plein (max 7) — invisible. Deux fois moins de CPU pour la même image.
+    ty = _dn(y, Image.LANCZOS, 3.0)
+    tu = _dn(u, Image.BILINEAR) - 128.0
+    tv = _dn(v, Image.BILINEAR) - 128.0
     r = ty + 1.402 * tv
     g = ty - 0.344136 * tu - 0.714136 * tv
     b = ty + 1.772 * tu
@@ -2288,10 +2347,14 @@ def _vh_render(unit, rect, name, now):
         th = max(2, min(sh, int(round(ih * zf))))
         ox = x0 + (box_w - tw) // 2
         oy = (sh - th) // 2
-        # Agrandissement PLUS PROCHE VOISIN (Image.NEAREST, C) + écriture d'un BLOC RGBA CONTIGU :
-        # 0,55 ms contre 1,8 ms pour un gather np.ix_ écrit dans une vue stridée (mesuré). La
-        # qualité n'a aucune importance ici — le crénelage est assumé.
-        up = np.asarray(Image.fromarray(img).resize((tw, th), Image.NEAREST))
+        # Mise à l'échelle FILTRÉE (Image.LANCZOS, C) + écriture d'un BLOC RGBA CONTIGU.
+        # ★ 0.40.0 : c'était un Image.NEAREST « la qualité n'a aucune importance ici, le crénelage
+        # est assumé » — hérité de l'époque où l'on croyait que le coût des frises faisait tomber le
+        # mur. C'était FAUX (le coupable était le PIC de recomposition, désormais hors trame) : ce
+        # redimensionnement est payé par le THREAD BOULANGER, pas par la trame. Avec des vignettes
+        # stockées à 144 px (VH_THUMB_H), le facteur d'échelle est proche de 1 → LANCZOS est à la
+        # fois net et bon marché.
+        up = np.asarray(Image.fromarray(img).resize((tw, th), Image.LANCZOS))
         blk = np.empty((th, tw, 4), dtype=np.uint8)
         blk[..., 0:3] = up
         blk[..., 3] = a_bg
@@ -2444,20 +2507,65 @@ def _hist_tile(rect, arr):
     oy, ou, ov, oa, oa2 = rgba_to_yuv(sub)   # rgba_to_yuv accepte un ndarray RGBA (np.array(img))
     return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
 
+def _hist_bake_one(key, kind, unit, rect, cfg_src, name, now):
+    """Fabrique la tuile YUV d'UNE frise (dessin RGBA + conversion). ★ APPELÉ PAR LE THREAD
+    BOULANGER SEULEMENT ★ — jamais par la boucle de composition (c'est tout l'objet de la 0.40.0).
+    Coût 6-27 ms : hors trame, il ne fait plus tomber d'image."""
+    _ts_hb = time.time_ns()
+    try:
+        img = (_vh_render(unit, rect, name, now) if kind == "video"
+               else _ah_render(unit, rect, cfg_src, now))
+        t = _hist_tile(rect, img)
+        if t is None:
+            _hist_warn(key, kind, rect, "tuile vide (rect hors canvas ou dégénéré)")
+    except Exception as _e:
+        # ⛔ JAMAIS d'échec muet : une frise qui ne peut pas se rendre le DIT (c'est l'avalage
+        # silencieux d'ici qui a masqué le bug de tuile vide de la 0.37.0). Loggé UNE fois par
+        # (frise, signature d'erreur) — jamais 50×/s.
+        _hist_warn(key, kind, rect, repr(_e), trace=True)
+        t = None
+    # Coût UNITAIRE du bake (c'est un PIC, la moyenne le dilue) — désormais payé HORS trame.
+    _hb = (time.time_ns() - _ts_hb) / 1e6
+    _hist_bake["last"] = round(_hb, 2)
+    if _hb > _hist_bake["max"]:
+        _hist_bake["max"] = round(_hb, 2)
+    _hist_bake_ctr[0] += 1
+    return [t] if t is not None else []
+
+def _hist_baker_loop():
+    """Thread BOULANGER : fabrique les tuiles de frise demandées par la boucle de composition et
+    les publie, PRÊTES, dans `_hist_ready`. Une seule à la fois (sérialisé) — inutile d'en faire
+    plus : à 5 Hz de recomposition, son taux d'occupation est de quelques pour cent, et rester
+    mono-thread garantit qu'il ne dispute jamais deux cœurs à la compo."""
+    while True:
+        with _hb_cv:
+            while not _hist_want:
+                _hb_cv.wait()
+            key = next(iter(_hist_want))
+            sig, kind, unit, rect, cfg_src, name, now = _hist_want.pop(key)
+        tiles = _hist_bake_one(key, kind, unit, rect, cfg_src, name, now)
+        with _hb_cv:
+            # Publication ATOMIQUE (une affectation de dict) d'un tuple de tableaux NEUFS : la
+            # boucle de compo ne peut pas ramasser une tuile à moitié écrite.
+            _hist_ready[key] = (sig, tiles)
+
 def render_history_tiles(now):
     """Tuiles YUV des historiques vidéo/audio (composants de PiP + blocs de mur), ou None.
-    CACHÉES : la bande vidéo n'est recomposée qu'à l'arrivée d'une vignette (1 Hz) ou à une
-    transition d'événement (`ver`) ; l'enveloppe audio, qu'au changement de COLONNE (rw/durée Hz,
-    typiquement 10-20 Hz). Entre deux, le coût par trame se réduit au blend de la tuile."""
+    ★ NE FABRIQUE PLUS RIEN ★ (0.40.0) : elle ramasse les tuiles prêtes du boulanger, calcule les
+    signatures (quelques dizaines de µs) et dépose une DEMANDE quand une frise a changé. Le pic de
+    recomposition (6-27 ms) ne tombe plus JAMAIS dans la trame — la boucle ne paie que le blend."""
     if not (VHIST_BLOCKS or AHIST_BLOCKS or _hist_cache or FLUX_CONFIG):
         return None
+    # (a) RAMASSAGE des tuiles prêtes → elles deviennent la nouvelle référence de la boucle.
+    if _hist_ready:
+        with _hb_cv:
+            _fresh = list(_hist_ready.items())
+            _hist_ready.clear()
+        for _k, _v in _fresh:
+            _hist_cache[_k] = _v
     tiles = []
     live = set()
-    # AMORTISSEMENT : au plus UNE frise recomposée par trame (la recomposition tombe DANS le
-    # budget de 20 ms de la trame). Les autres gardent leur tuile cachée un tour de plus (20 ms
-    # de retard sur une frise à la seconde = invisible) → jamais de pic cumulé qui ferait tomber
-    # une trame quand plusieurs frises basculent en même temps (ex. la seconde qui roule).
-    budget = 1
+    want = []
     for kind in ("video", "audio"):
         for key, unit, rect, cfg_src, _wi in _hist_units(kind):
             rw = rect[2]
@@ -2465,6 +2573,7 @@ def render_history_tiles(now):
                 continue
             live.add(key)
             dur = _hist_dur(unit)
+            name = ""
             if kind == "video":
                 name = (cfg_src.get("path") or "").removeprefix("/dev/shm/")
                 if not name:
@@ -2486,36 +2595,20 @@ def render_history_tiles(now):
                        int(unit.get("channels") or 2), int(unit.get("ch_start") or 1),
                        _audio_name_for(cfg_src, 0) or "")
             hit = _hist_cache.get(key)
-            if hit is not None and hit[0] != sig and budget <= 0:
-                tiles.extend(hit[1])          # tuile légèrement périmée : recomposée à la trame suivante
-                continue
             if hit is None or hit[0] != sig:
-                budget -= 1
-                _ts_hb = time.time_ns()
-                try:
-                    img = (_vh_render(unit, rect, sig[-1], now) if kind == "video"
-                           else _ah_render(unit, rect, cfg_src, now))
-                    t = _hist_tile(rect, img)
-                    if t is None:
-                        _hist_warn(key, kind, rect, "tuile vide (rect hors canvas ou dégénéré)")
-                except Exception as _e:
-                    # ⛔ JAMAIS d'échec muet : une frise qui ne peut pas se rendre le DIT (c'est
-                    # l'avalage silencieux d'ici qui a masqué le bug de tuile vide de la 0.37.0).
-                    # Loggé UNE fois par (frise, signature d'erreur) — jamais 50×/s.
-                    _hist_warn(key, kind, rect, repr(_e), trace=True)
-                    t = None
-                # Le RE-BAKE d'une frise (dessin + conversion YUV) tombe ENTIER dans la trame qui le
-                # déclenche : c'est un PIC, pas un coût lissé. La moyenne `ov_hist` le dilue (il n'a
-                # lieu qu'à 5 Hz) — on expose donc son coût unitaire (dernier / max) sur :8080.
-                _hb = (time.time_ns() - _ts_hb) / 1e6
-                _hist_bake["last"] = round(_hb, 2)
-                if _hb > _hist_bake["max"]:
-                    _hist_bake["max"] = round(_hb, 2)
-                hit = (sig, [t] if t is not None else [])
-                _hist_cache[key] = hit
-            tiles.extend(hit[1])
+                # (b) DEMANDE de bake. En attendant la livraison, on réutilise la tuile PÉRIMÉE
+                # (une ou deux trames de retard sur une frise de 30-120 s : invisible). Au tout
+                # premier passage il n'y a rien à afficher — la frise apparaît une trame plus tard.
+                want.append((key, (sig, kind, unit, rect, cfg_src, name, now)))
+            if hit is not None:
+                tiles.extend(hit[1])
     for k in [k for k in _hist_cache if k not in live]:
         _hist_cache.pop(k, None)
+    if want:
+        with _hb_cv:
+            for k, req in want:
+                _hist_want[k] = req      # une demande par frise ; la plus récente écrase l'ancienne
+            _hb_cv.notify()
     return tiles or None
 
 
@@ -4237,6 +4330,9 @@ threading.Thread(target=_proxy_scan_loop, daemon=True).start()
 # configurée → les boucles ne font que dormir (coût strictement nul sur les murs existants).
 threading.Thread(target=_vhist_loop, daemon=True).start()
 threading.Thread(target=_ahist_loop, daemon=True).start()
+# ★ BOULANGER des frises (0.40.0) : la RECOMPOSITION (6-27 ms) sort de la boucle de composition —
+# elle ne fait plus tomber de trame. Voir le bloc de commentaire sur `_hist_want`.
+threading.Thread(target=_hist_baker_loop, daemon=True).start()
 
 # Sortie MXL : index tai en genlock-grille, sinon compteur libre (input-locked / cadence libre).
 _out_mode  = "tai" if (GENLOCK and not INPUT_LOCKED) else "free"
