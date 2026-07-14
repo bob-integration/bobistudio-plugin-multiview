@@ -3144,6 +3144,21 @@ async function enregistrerLayout() {
             scale: b.scale || 'dbfs', opacity: b.opacity ?? 70,
             align: b.align || 'left', width_mode: b.width_mode || 'auto',
             label: b.label || ''
+        })),
+        // Frises d'HISTORIQUE (vidéo/audio) : même convention que les blocs VU-mètres —
+        // géométrie + style mémorisés, SOURCE OMISE (elle appartient au conteneur, pas au
+        // layout ; restaurée par index à l'apply). Sans ça, un layout ne les décrivait pas et
+        // le rappel les laissait en place : elles SURVIVAIENT à tous les changements de layout.
+        video_history_blocks: (editorParams.video_history_blocks || []).filter(b => !b.hidden).map(b => ({
+            x: b.x, y: b.y, w: b.w, h: b.h,
+            duration: b.duration ?? 30, opacity: b.opacity ?? 85,
+            events: b.events !== false, label: b.label || ''
+        })),
+        audio_history_blocks: (editorParams.audio_history_blocks || []).filter(b => !b.hidden).map(b => ({
+            x: b.x, y: b.y, w: b.w, h: b.h,
+            duration: b.duration ?? 30, opacity: b.opacity ?? 85,
+            channels: b.channels ?? 2, ch_start: b.ch_start ?? 1,
+            label: b.label || ''
         }))
     };
     let r = null;
@@ -3204,6 +3219,21 @@ function appliquerLayout(lid) {
             id: prev.id || ('mb' + i + '_' + Date.now().toString(36)),
             audio_path: prev.audio_path || '',
             hidden: false,
+        });
+    });
+    // Frises d'HISTORIQUE : REMPLACÉES par celles du layout (une liste absente du layout ⇒ liste
+    // VIDE, sinon elles survivraient à tous les rappels — c'était le bug). Source préservée par
+    // index depuis l'éditeur courant, comme pour les fenêtres et les blocs VU-mètres.
+    [['video', 'video_history_blocks', 'path'],
+     ['audio', 'audio_history_blocks', 'audio_path']].forEach(([kind, key, srcField]) => {
+        const prevList = editorParams[key] || [];
+        editorParams[key] = (cfg[key] || []).map((b, i) => {
+            const prev = prevList[i] || {};
+            return Object.assign(newHistBlock(kind), b, {
+                id: prev.id || ('hb' + kind + i + '_' + Date.now().toString(36)),
+                [srcField]: prev[srcField] || '',
+                hidden: false,
+            });
         });
     });
     padBank();

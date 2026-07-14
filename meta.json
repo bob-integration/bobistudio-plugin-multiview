@@ -1,7 +1,11 @@
 {
-  "version": "0.40.0",
+  "version": "0.40.1",
   "date": "2026-07-14",
   "changes": {
+    "Layout : les frises d'historique font enfin partie du layout (0.40.1)": [
+      "Sauvegarder/rappeler un layout ne décrivait PAS les frises d'historique (`video_history_blocks`/`audio_history_blocks`, ajoutées après le mécanisme de layout) : au rappel elles n'étaient jamais remplacées et SURVIVAIENT à tous les changements de layout.",
+      "Elles suivent désormais la convention des blocs VU-mètres : géométrie + style mémorisés dans le layout, SOURCE OMISE (elle appartient au conteneur) et restaurée par index à l'application. Une liste absente du layout ⇒ liste vide (le rappel les retire vraiment)."
+    ],
     "★★ La recomposition des frises SORT de la boucle de composition — le mur 333 repasse à 50 fps (0.40.0)": [
       "CAUSE RACINE d'un mur GPU coincé à 46 fps alors qu'il n'était PAS compute-bound (own_latency 11,4 ms pour un budget de 20,0 ms — de quoi tenir 87 fps) : la RECOMPOSITION d'une frise d'historique (dessin RGBA + conversion YUV) coûte 6 à 30 ms et tombait ENTIÈRE dans la trame qui la déclenchait, ~5 à 7 fois par seconde. 5 trames assommées par seconde sur 50 → 45,9 fps. Le mur n'était pas lent : il était ASSOMMÉ PÉRIODIQUEMENT. Dégrader la frise n'aurait fait que rétrécir le pic.",
       "La recomposition est désormais faite par un THREAD BOULANGER dédié (`_hist_baker_loop`), qui publie la tuile PRÊTE ; la boucle de composition ne fait plus que déposer une demande quand la signature change et ramasser la tuile (publication par une affectation de dict = atomique sous le GIL, sur des tableaux numpy NEUFS → jamais de tuile à moitié écrite ; le boulanger ne touche PAS `_hist_cache`, un seul écrivain par structure). L'intervalle de commutation du GIL est descendu à 0,5 ms pour que le boulanger ne puisse jamais retenir la compo plus longtemps que ça.",
