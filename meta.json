@@ -1,7 +1,12 @@
 {
-  "version": "0.40.2",
+  "version": "0.40.3",
   "date": "2026-07-14",
   "changes": {
+    "Historique audio : une PISTE PAR CANAL (0.40.3)": [
+      "Le choix `channels` était bien actif, mais les canaux étaient FUSIONNÉS en une seule enveloppe (max) : impossible de distinguer la gauche de la droite. Chaque canal suivi a désormais sa propre bande horizontale (stéréo : canal 1 en haut, canal 2 en bas), avec son enveloppe, son axe zéro, ses colonnes de SATURATION et ses plages de SILENCE — la saturation d'un canal ne peint plus la colonne de l'autre.",
+      "Repli explicite : si la hauteur disponible ne laisse pas au moins AH_LANE_MIN_PX (10 px) par piste, on revient à UNE piste fusionnée (max des canaux) plutôt que d'empiler des traits d'un pixel illisibles.",
+      "Perf inchangée : une réduction par canal (≤ 8 tours) au lieu d'un max global, et le même motif d'écritures contiguës par canal de couleur (1,3 ms contre 8,8 ms en indexation avancée, mesuré)."
+    ],
     "Layout : le layout décrit TOUT le mur + opacité 100 % par défaut (0.40.2)": [
       "Un layout ne mémorisait que 6 clés sur les 21 poussées au déploiement : les OVERLAYS (texte/horloge/image) en étaient absents, comme les frises — ils SURVIVAIENT donc à tous les rappels de layout. Le layout embarque désormais TOUT (format de sortie, orientation, scan, genlock, réglages d'affichage, TSL, overlays, blocs, frises, modèle de PiP par défaut) — SAUF `shm_out`, identité de sortie du conteneur sur laquelle les consommateurs aval sont câblés.",
       "Les listes absentes d'un layout donnent des listes VIDES au rappel (overlays et frises sont réellement retirés) ; les clés absentes d'un layout ANCIEN laissent la valeur courante (pas de régression).",

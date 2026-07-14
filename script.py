@@ -1699,6 +1699,9 @@ AH_COL_PX      = 1                     # ENVELOPPE : une colonne PAR PIXEL (fine
                                        # Cran de repli si un jour on veut épaissir le trait.
 AH_RECOMPOSE_S = 0.2                   # …redessinée au changement de colonne, 5 Hz max (~2,3 ms/passe)
 AH_MAX         = int(HIST_MAX_S / AH_TICK_S)   # 6000 relevés (120 s) par flux audio
+AH_LANE_MIN_PX = 10                    # hauteur MINIMALE d'une piste de canal : en dessous, on
+                                       # replie sur une piste unique (max des canaux) plutôt que
+                                       # d'empiler des traits d'un pixel illisibles.
 # SATURATION (critère retenu, défendable et documenté) : un échantillon est « pleine échelle » si
 # |x| ≥ AH_CLIP_LEVEL (≈ −0,009 dBFS, soit le dernier LSB en 20 bits) ; une colonne est marquée
 # SATURÉE si un canal suivi présente AH_CLIP_RUN échantillons pleine échelle CONSÉCUTIFS — la
@@ -2402,9 +2405,13 @@ def _ah_render(unit, rect, cfg_src, now):
     # L'agrégation est un MAX (jamais une moyenne) sur la tranche de temps de la colonne, et la
     # saturation un OU logique → une saturation de 3 ms peint TOUTE sa colonne en rouge.
     ncol = max(8, int(rw // max(1, AH_COL_PX)))
-    peak = np.full(ncol, METER_MIN_DB, dtype=np.float32)
-    clip = np.zeros(ncol, dtype=bool)
-    seen = np.zeros(ncol, dtype=bool)
+    # PISTES PAR CANAL : une bande horizontale par canal suivi (stéréo → canal 1 en haut, canal 2 en
+    # bas). Avant, les canaux étaient FUSIONNÉS en une seule enveloppe (max) : on ne pouvait pas
+    # distinguer la gauche de la droite. Repli sur une piste unique (fusion, comportement d'avant) si
+    # la place manque — une piste sous ~10 px n'apprend plus rien.
+    peak = np.full((n, ncol), METER_MIN_DB, dtype=np.float32)
+    clip = np.zeros((n, ncol), dtype=bool)
+    seen = np.zeros((n, ncol), dtype=bool)
     t0 = now - dur
     need = min(AH_MAX, int(dur / AH_TICK_S) + 8)        # on ne relit QUE la fenêtre affichée…
     snap = []
@@ -2427,61 +2434,85 @@ def _ah_render(unit, rect, cfg_src, now):
         a = max(s0, f0); b = min(s0 + n, f0 + A_CHANNELS_MAX)     # canaux suivis DANS ce flux
         if a >= b or ts.size == 0:
             continue
-        sel = slice(a - f0, b - f0)
-        vals = pks[:, sel].max(axis=1)
-        cl = cls[:, sel].any(axis=1)
         st_i = np.searchsorted(ts, edges, side="left")            # début de chaque colonne
         cnt = np.diff(np.append(st_i, ts.size))
         keep = (cnt > 0) & (st_i < ts.size)
         if not keep.any():
             continue
         starts = st_i[keep]
-        pk_col = np.maximum.reduceat(vals, starts)
-        cl_col = np.maximum.reduceat(cl.astype(np.uint8), starts).astype(bool)
-        peak[keep] = np.maximum(peak[keep], pk_col)
-        clip[keep] |= cl_col
-        seen[keep] = True
+        # Une réduction PAR CANAL (≤ 8 tours) au lieu d'un max qui écrasait les canaux entre eux.
+        for g in range(a, b):
+            lane = g - s0                                          # piste = rang du canal dans l'unité
+            vals = pks[:, g - f0]
+            cl = cls[:, g - f0]
+            pk_col = np.maximum.reduceat(vals, starts)
+            cl_col = np.maximum.reduceat(cl.astype(np.uint8), starts).astype(bool)
+            peak[lane][keep] = np.maximum(peak[lane][keep], pk_col)
+            clip[lane][keep] |= cl_col
+            seen[lane][keep] = True
     if ncol != rw:      # colonnes → pixels (plus proche voisin, AUCUN lissage : un clip reste PLEIN)
         _px = (np.arange(rw) * ncol) // rw
-        peak = peak[_px]; clip = clip[_px]; seen = seen[_px]
+        peak = peak[:, _px]; clip = clip[:, _px]; seen = seen[:, _px]
     silence = seen & (peak <= SILENCE_DB)
     # FOND = un GABARIT DE LIGNE (rw, 4) qui porte DÉJÀ les plages de silence (grisées) → une seule
     # écriture contiguë `arr[:] = row` (0,11 ms) au lieu d'une passe stridée + une passe colonnes.
     arr = np.empty((rh, rw, 4), dtype=np.uint8)
     row = np.empty((rw, 4), dtype=np.uint8)
     row[:] = (_HIST_BG[0], _HIST_BG[1], _HIST_BG[2], a_bg)
-    if silence.any():
-        row[silence] = (_HIST_SILENCE[0], _HIST_SILENCE[1], _HIST_SILENCE[2], a_bg)
     arr[:] = row
     # Graduations : MÊMES pas et MÊMES abscisses que la frise vidéo (elles se lisent l'une sous
     # l'autre) — cachées, donc gratuites par trame.
     sc = _hist_scales(arr, rw, rh, dur, a_bg, now)
-    wy0, wy1 = sc, rh - sc                                        # bande utile de l'enveloppe
+    wy0, wy1 = sc, rh - sc                                        # bande utile des enveloppes
     wh = max(2, wy1 - wy0)
-    cy = wy0 + wh // 2
-    half = max(1, wh // 2 - 1)
-    frac = np.clip((peak - METER_MIN_DB) / (0.0 - METER_MIN_DB), 0.0, 1.0)   # dBFS → 0..1 (linéaire en dB)
-    hgt = (frac * half).astype(np.int16)
-    hgt[~seen] = 0
-    yy = np.abs(np.arange(wy0, wy1, dtype=np.int16) - cy)
-    band = yy[:, None] <= hgt[None, :]
-    # ⚠ PERF : peindre CANAL PAR CANAL sous le masque (3 écritures uint8 contiguës) au lieu de
-    # `rgb[band] = (r, g, b)` (indexation avancée sur une vue stridée) : 1,3 ms contre 8,8 ms sur
-    # une frise 1720×202 — mesuré. Même résultat au pixel près.
-    wav = arr[wy0:wy1]
-    for _c, _v in enumerate(_HIST_WAVE):
-        wav[..., _c][band] = _v
-    for _c, _v in enumerate((90, 96, 108)):                       # axe zéro
-        np.maximum(arr[cy, :, _c], _v, out=arr[cy, :, _c])
-    # SATURATION : colonne ROUGE sur TOUTE la hauteur → le marqueur PERSISTE tant que la colonne
-    # est dans la fenêtre de temps (une saturation de 3 ms reste lisible pendant 30 s), et reste
-    # visible même si la crête de la tranche est basse. Élargie à 2 px : à 120 s de profondeur une
-    # colonne fait moins d'un pixel de temps — un trait de 1 px se rate à l'œil.
-    if clip.any():
-        wide = clip.copy()
-        wide[1:] |= clip[:-1]
-        for _c, _v in enumerate(_HIST_CLIP):
-            arr[wy0:wy1, wide, _c] = _v
+
+    # Une PISTE par canal si chacune reste lisible ; sinon repli sur UNE piste fusionnée (max des
+    # canaux) — dégradation explicite plutôt qu'un empilement de traits d'un pixel illisibles.
+    nlane = n if (wh // max(1, n)) >= AH_LANE_MIN_PX else 1
+    if nlane == 1 and n > 1:
+        peak = peak.max(axis=0)[None, :]
+        clip = clip.any(axis=0)[None, :]
+        seen = seen.any(axis=0)[None, :]
+        silence = seen & (peak <= SILENCE_DB)
+
+    lane_h = wh // nlane
+    for lane in range(nlane):
+        ly0 = wy0 + lane * lane_h
+        ly1 = ly0 + lane_h if lane < nlane - 1 else wy1           # la dernière piste absorbe le reste
+        lh = max(2, ly1 - ly0)
+        cy = ly0 + lh // 2
+        half = max(1, lh // 2 - 1)
+        pk, cl, sn, si = peak[lane], clip[lane], seen[lane], silence[lane]
+        # Silence : grisé sur la HAUTEUR DE LA PISTE (chaque canal a le sien).
+        if si.any():
+            for _c, _v in enumerate(_HIST_SILENCE):
+                arr[ly0:ly1, si, _c] = _v
+        frac = np.clip((pk - METER_MIN_DB) / (0.0 - METER_MIN_DB), 0.0, 1.0)  # dBFS → 0..1 (linéaire en dB)
+        hgt = (frac * half).astype(np.int16)
+        hgt[~sn] = 0
+        yy = np.abs(np.arange(ly0, ly1, dtype=np.int16) - cy)
+        band = yy[:, None] <= hgt[None, :]
+        # ⚠ PERF : peindre CANAL PAR CANAL sous le masque (3 écritures uint8 contiguës) au lieu de
+        # `rgb[band] = (r, g, b)` (indexation avancée sur une vue stridée) : 1,3 ms contre 8,8 ms sur
+        # une frise 1720×202 — mesuré. Même résultat au pixel près.
+        wav = arr[ly0:ly1]
+        for _c, _v in enumerate(_HIST_WAVE):
+            wav[..., _c][band] = _v
+        for _c, _v in enumerate((90, 96, 108)):                   # axe zéro de la piste
+            np.maximum(arr[cy, :, _c], _v, out=arr[cy, :, _c])
+        # SATURATION : colonne ROUGE sur toute la hauteur DE LA PISTE → le marqueur PERSISTE tant que
+        # la colonne est dans la fenêtre de temps (une saturation de 3 ms reste lisible 30 s), et reste
+        # visible même si la crête de la tranche est basse. Élargie à 2 px : à 120 s de profondeur une
+        # colonne fait moins d'un pixel de temps — un trait de 1 px se rate à l'œil.
+        if cl.any():
+            wide = cl.copy()
+            wide[1:] |= cl[:-1]
+            for _c, _v in enumerate(_HIST_CLIP):
+                arr[ly0:ly1, wide, _c] = _v
+        # Séparateur entre pistes (discret) : sans lui, deux enveloppes voisines se confondent.
+        if lane < nlane - 1 and ly1 < wy1:
+            for _c, _v in enumerate((58, 60, 68)):
+                arr[ly1 - 1, :, _c] = _v
     return arr
 
 def _hist_tile(rect, arr):
