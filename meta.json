@@ -1,7 +1,12 @@
 {
-  "version": "0.40.1",
+  "version": "0.40.2",
   "date": "2026-07-14",
   "changes": {
+    "Layout : le layout décrit TOUT le mur + opacité 100 % par défaut (0.40.2)": [
+      "Un layout ne mémorisait que 6 clés sur les 21 poussées au déploiement : les OVERLAYS (texte/horloge/image) en étaient absents, comme les frises — ils SURVIVAIENT donc à tous les rappels de layout. Le layout embarque désormais TOUT (format de sortie, orientation, scan, genlock, réglages d'affichage, TSL, overlays, blocs, frises, modèle de PiP par défaut) — SAUF `shm_out`, identité de sortie du conteneur sur laquelle les consommateurs aval sont câblés.",
+      "Les listes absentes d'un layout donnent des listes VIDES au rappel (overlays et frises sont réellement retirés) ; les clés absentes d'un layout ANCIEN laissent la valeur courante (pas de régression).",
+      "Opacité par défaut d'un ÉLÉMENT (blocs VU-mètres, frises d'historique, VU-mètres de fenêtre) portée à 100 % — il n'y a aucune raison qu'ils soient translucides. Les `bg_opacity` des FONDS derrière du texte (bandeau UMD, bandeau ANC) restent volontairement translucides : on veut voir la vidéo au travers. Les éléments existants gardent leur valeur enregistrée."
+    ],
     "Layout : les frises d'historique font enfin partie du layout (0.40.1)": [
       "Sauvegarder/rappeler un layout ne décrivait PAS les frises d'historique (`video_history_blocks`/`audio_history_blocks`, ajoutées après le mécanisme de layout) : au rappel elles n'étaient jamais remplacées et SURVIVAIENT à tous les changements de layout.",
       "Elles suivent désormais la convention des blocs VU-mètres : géométrie + style mémorisés dans le layout, SOURCE OMISE (elle appartient au conteneur) et restaurée par index à l'application. Une liste absente du layout ⇒ liste vide (le rappel les retire vraiment)."

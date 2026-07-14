@@ -393,7 +393,7 @@ async function chargerMw(vmid) {
         channels: b.channels ?? 2,
         ch_start: b.ch_start ?? 1,
         scale: b.scale || 'dbfs',
-        opacity: b.opacity ?? 70,
+        opacity: b.opacity ?? 100,
         align: b.align || 'left',
         width_mode: b.width_mode || 'auto',
         audio_path: b.audio_path || '',
@@ -694,7 +694,7 @@ function newEntry(idx, hidden) {
         meter_channels: 0,           // 0 = désactivé ; sinon 2/4/6/8
         meter_position: 'right',     // left | right
         meter_inside: false,         // false = à côté (réduit la vidéo), true = overlay
-        meter_opacity: 70,           // 10..100 (utilisé si inside=true)
+        meter_opacity: 100,          // 10..100 (utilisé si inside=true)
         meter_scale: 'dbfs',         // dbfs | ppm (EBU)
         // Métadonnées ANC incrustées sur l'image de la cellule — TOUT À FALSE par défaut :
         // rien ne s'affiche tant que l'utilisateur n'a rien coché (port ANC à câbler par ailleurs).
@@ -870,7 +870,7 @@ function newMeterBlock() {
     return {
         id: 'mb' + Date.now().toString(36) + Math.floor(Math.random() * 1000),
         x: Math.round((ow - w) / 2) & ~1, y: Math.round((oh - h) / 2) & ~1, w, h,
-        channels: 2, ch_start: 1, scale: 'dbfs', opacity: 70, align: 'left',
+        channels: 2, ch_start: 1, scale: 'dbfs', opacity: 100, align: 'left',
         width_mode: 'auto', audio_path: '', label: '', hidden: false,
     };
 }
@@ -907,7 +907,7 @@ function newHistBlock(kind) {
         id: 'hb' + Date.now().toString(36) + Math.floor(Math.random() * 1000),
         kind,
         x: Math.round((ow - w) / 2) & ~1, y: Math.round((oh - h) / 2) & ~1, w, h,
-        duration: 30, opacity: 85, label: '', hidden: false,
+        duration: 30, opacity: 100, label: '', hidden: false,
     };
     if (kind === 'audio') { b.audio_path = ''; b.channels = 2; b.ch_start = 1; }
     else { b.path = ''; b.events = true; }
@@ -1058,7 +1058,7 @@ function refreshHistPanel() {
     _hbSetVal('hb_x', b.x); _hbSetVal('hb_y', b.y);
     _hbSetVal('hb_w', b.w); _hbSetVal('hb_h', b.h);
     _hbSetVal('hb_duration', String(b.duration ?? 30));
-    _hbSetVal('hb_opacity', b.opacity ?? 85);
+    _hbSetVal('hb_opacity', b.opacity ?? 100);
     _hbSetVal('hb_label', b.label || '');
     const hbHid = document.getElementById('hb_hidden');
     if (hbHid) hbHid.checked = !!b.hidden;
@@ -1208,7 +1208,7 @@ function refreshEntryPanel() {
     document.getElementById('ed_meter_channels').value = String(f.meter_channels ?? 0);
     document.getElementById('ed_meter_position').value = f.meter_position || 'right';
     document.getElementById('ed_meter_inside').value   = (f.meter_inside ? '1' : '0');
-    document.getElementById('ed_meter_opacity').value  = f.meter_opacity ?? 70;
+    document.getElementById('ed_meter_opacity').value  = f.meter_opacity ?? 100;
     document.getElementById('ed_meter_scale').value    = f.meter_scale || 'dbfs';
     // Métadonnées ANC (par fenêtre)
     ANC_FLAGS.forEach(k => { document.getElementById('ed_' + k).checked = !!f[k]; });
@@ -2046,7 +2046,7 @@ function hotApplyWindow(idx) {
             meter_channels: f.meter_channels ?? 0,
             meter_position: f.meter_position || 'right',
             meter_inside:   !!f.meter_inside,
-            meter_opacity:  f.meter_opacity ?? 70,
+            meter_opacity:  f.meter_opacity ?? 100,
             meter_scale:    f.meter_scale || 'dbfs',
             // Métadonnées ANC par fenêtre (absentes du hot-apply avant 0.29.0 — les cases
             // cochées dans le composer n'atteignaient jamais le container).
@@ -2347,7 +2347,7 @@ function refreshBlockPanel() {
     _mbSetVal('mb_channels', String(b.channels ?? 2));
     _mbSetVal('mb_ch_start', b.ch_start ?? 1);
     _mbSetVal('mb_scale', b.scale || 'dbfs');
-    _mbSetVal('mb_opacity', b.opacity ?? 70);
+    _mbSetVal('mb_opacity', b.opacity ?? 100);
     _mbSetVal('mb_align', b.align || 'left');
     _mbSetVal('mb_width_mode', b.width_mode || 'auto');
     _mbSetVal('mb_label', b.label || '');
@@ -3112,10 +3112,28 @@ async function enregistrerLayout() {
         return;
     }
     // Sérialise la config courante (sans champs internes color/ratio)
+    // Un layout décrit TOUT le mur (décision utilisateur 2026-07-14) — SAUF `shm_out`, qui est
+    // l'identité de SORTIE du conteneur (ses consommateurs aval sont câblés dessus : la changer par
+    // un rappel de layout casserait le câblage). Tout le reste suit : format, habillage, overlays,
+    // blocs, frises, réglages d'affichage, TSL.
     const config = {
         out_width:     editorParams.out_width,
         out_height:    editorParams.out_height,
+        orientation:   editorParams.orientation || 'landscape',
+        fps:           editorParams.fps,
+        scan:          editorParams.scan || 'p',
+        genlock:       editorParams.genlock,
+        fps_target:    editorParams.fps_target || 0,
+        show_no_signal:  editorParams.show_no_signal !== false,
+        freeze_detect_s: editorParams.freeze_detect_s ?? 2,
+        show_proxy:      !!editorParams.show_proxy,
+        tsl_mode:      editorParams.tsl_mode || 'central',
+        tsl_port:      editorParams.tsl_port ?? 4801,
         max_inputs:    editorParams.max_inputs,
+        // Overlays du mur (texte, horloge, image) : ils font partie du layout au même titre que le
+        // reste. Sans ça ils SURVIVAIENT à tous les rappels (même oubli que les frises). Aucune
+        // source à préserver : un overlay est autonome (l'image est embarquée).
+        overlays:      serializeOverlays(),
         // Modèle de PiP par défaut du mur (héritage) : fait partie de l'habillage du layout.
         default_template:     editorParams.default_template || null,
         default_template_ref: editorParams.default_template_ref || '',
@@ -3141,7 +3159,7 @@ async function enregistrerLayout() {
         meter_blocks: (editorParams.meter_blocks || []).filter(b => !b.hidden).map(b => ({
             x: b.x, y: b.y, w: b.w, h: b.h,
             channels: b.channels ?? 2, ch_start: b.ch_start ?? 1,
-            scale: b.scale || 'dbfs', opacity: b.opacity ?? 70,
+            scale: b.scale || 'dbfs', opacity: b.opacity ?? 100,
             align: b.align || 'left', width_mode: b.width_mode || 'auto',
             label: b.label || ''
         })),
@@ -3151,12 +3169,12 @@ async function enregistrerLayout() {
         // le rappel les laissait en place : elles SURVIVAIENT à tous les changements de layout.
         video_history_blocks: (editorParams.video_history_blocks || []).filter(b => !b.hidden).map(b => ({
             x: b.x, y: b.y, w: b.w, h: b.h,
-            duration: b.duration ?? 30, opacity: b.opacity ?? 85,
+            duration: b.duration ?? 30, opacity: b.opacity ?? 100,
             events: b.events !== false, label: b.label || ''
         })),
         audio_history_blocks: (editorParams.audio_history_blocks || []).filter(b => !b.hidden).map(b => ({
             x: b.x, y: b.y, w: b.w, h: b.h,
-            duration: b.duration ?? 30, opacity: b.opacity ?? 85,
+            duration: b.duration ?? 30, opacity: b.opacity ?? 100,
             channels: b.channels ?? 2, ch_start: b.ch_start ?? 1,
             label: b.label || ''
         }))
@@ -3189,6 +3207,15 @@ function appliquerLayout(lid) {
     editorParams.out_width     = cfg.out_width  || editorParams.out_width;
     editorParams.out_height    = cfg.out_height || editorParams.out_height;
     editorParams.max_inputs    = cfg.max_inputs || editorParams.max_inputs;
+    // Le layout décrit TOUT le mur (sauf shm_out, cf. sauvegarde). Les clés absentes d'un layout
+    // ANCIEN (enregistré avant 0.40.2) laissent la valeur courante — pas de régression.
+    ['orientation', 'fps', 'scan', 'genlock', 'fps_target',
+     'show_no_signal', 'freeze_detect_s', 'show_proxy', 'tsl_mode', 'tsl_port'].forEach(k => {
+        if (cfg[k] !== undefined) editorParams[k] = cfg[k];
+    });
+    // Overlays : REMPLACÉS par ceux du layout (liste absente ⇒ liste vide, sinon ils survivraient
+    // à tous les rappels). Autonomes : rien à préserver depuis l'éditeur courant.
+    if (cfg.overlays !== undefined) editorParams.overlays = cfg.overlays.map(o => Object.assign({}, o));
     editorParams.default_template     = cfg.default_template || null;
     editorParams.default_template_ref = cfg.default_template_ref || '';
     populateDefaultTemplateSelect();
