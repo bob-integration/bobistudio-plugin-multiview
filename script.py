@@ -4604,21 +4604,34 @@ class MvControlHandler(BaseHTTPRequestHandler):
         # (_vh/_ah) sont keyés par NOM DE FLUX, pas par indice → ils survivent au réordonnement ; les
         # threads d'échantillonnage ferment d'eux-mêmes ceux qui ne sont plus demandés. Seul le cache
         # de TUILES (keyé par indice de bloc) est purgé.
+        # ★ IDEMPOTENT : ne purger le cache QUE si les blocs ont RÉELLEMENT changé. Le tissu
+        # repousse la config au mur toutes les ~30 s même quand rien ne bouge ; purger à chaque
+        # fois faisait DISPARAÎTRE les frises pendant la ou les trames que met le boulanger à les
+        # refabriquer → CLIGNOTEMENT périodique du bas de l'image, observé en prod (mur 333 : les
+        # 3 frises à 0 pendant 1 trame, toutes les ~35 s, mesuré sur le flux de sortie décodé).
         if "video_history_blocks" in b or "audio_history_blocks" in b:
+            _nv = b.get("video_history_blocks") or []
+            _na = b.get("audio_history_blocks") or []
+            _change = (_nv != list(VHIST_BLOCKS)) or (_na != list(AHIST_BLOCKS))
+            if _change:
+                with state_lock:
+                    VHIST_BLOCKS[:] = _nv
+                    AHIST_BLOCKS[:] = _na
+                _hist_cache.clear()
+        # ★ IDEMPOTENT (même raison que les frises) : rouvrir les Readers audio des blocs VU à chaque
+        # poussée du tissu ferait retomber les VU-mètres à zéro le temps de la réouverture. On ne
+        # touche à rien si la liste est identique.
+        if new_mb != list(METER_BLOCKS):
             with state_lock:
-                VHIST_BLOCKS[:] = b.get("video_history_blocks") or []
-                AHIST_BLOCKS[:] = b.get("audio_history_blocks") or []
-            _hist_cache.clear()
-        with state_lock:
-            METER_BLOCKS[:] = new_mb
-            for k in list(audio_states):
-                if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], tuple) and k[0] and k[0][0] == "mb":
-                    st = audio_states.pop(k, None)
-                    try:
-                        if st and st.get("ar"):
-                            st["ar"].close()
-                    except Exception:
-                        pass
+                METER_BLOCKS[:] = new_mb
+                for k in list(audio_states):
+                    if isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], tuple) and k[0] and k[0][0] == "mb":
+                        st = audio_states.pop(k, None)
+                        try:
+                            if st and st.get("ar"):
+                                st["ar"].close()
+                        except Exception:
+                            pass
         with state_lock:
             # PRÉSERVATION des Readers inchangés : un ajout/déplacement/retrait de PiP ne doit PAS
             # figer les AUTRES tuiles. L'ancien code fermait TOUS les Readers + remettait sources à

@@ -1,7 +1,11 @@
 {
-  "version": "0.42.0",
+  "version": "0.42.1",
   "date": "2026-07-14",
   "changes": {
+    "Fin du clignotement des frises (0.42.1)": [
+      "Le tissu repousse la config au mur toutes les ~30 s même quand RIEN ne change ; le gestionnaire /reconfigure purgeait le cache des tuiles de frise à chaque fois → les 3 frises DISPARAISSAIENT pendant la ou les trames que met le thread boulanger à les refabriquer. Mesuré sur le flux de sortie décodé du mur 333 (prod) : bandes des 3 frises à 0 pendant 1 trame, toutes les ~35 s.",
+      "/reconfigure devient IDEMPOTENT : le cache des frises n'est purgé que si les blocs ont réellement changé. Idem pour les blocs VU-mètres (rouvrir leurs Readers audio à chaque poussée faisait retomber les VU à zéro le temps de la réouverture)."
+    ],
     "La métrique `fps` ne ment plus (0.42.0)": [
       "`fps` était calculé sur une fenêtre à NOMBRE DE TRAMES FIXE (tous les 25 composes) : le compteur était juste, mais la DURÉE de la fenêtre variait — un seul tick en retard (GC, hoquet de grille, pic hôte) gonflait la fenêtre de 0,5 s et faisait « chuter » fps à 46-48, pendant que la fenêtre suivante rattrapait à 52. Le tableau de bord (poll 5 s) tombait sur une fenêtre creuse ~1 fois sur 4. Mesuré sur le mur 333 (60 relevés) : fps min 47,9 / méd 50,0 / moy 49,78 — quand `bakes_per_s.frames` (fenêtre ≥ 1 s, MÊME compteur) donnait min 48,9 / méd 49,9 / moy 49,73. Les deux comptaient exactement la même chose : l'écart était 100 % un artefact de FENÊTRE.",
       "`fps` est désormais un débit sur une fenêtre de TEMPS (2 s) calculé à partir de compteurs MONOTONES, et évalué AU MOMENT DU SCRAPE (bord droit = maintenant) : une boucle de composition morte fait DÉCROÎTRE le chiffre vers 0 au lieu de le figer sur sa dernière belle valeur.",
