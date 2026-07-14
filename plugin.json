@@ -1,0 +1,352 @@
+{
+  "license": "GPL-3.0-or-later",
+  "type": "multiview",
+  "runtime": "docker",
+  "label": "Multiviewer",
+  "badge": {
+    "label": "Multiviewer",
+    "class": "mode-multiview",
+    "oklch": "0.77 0.07 306"
+  },
+  "skaarhoj": {
+    "mode": "multiview",
+    "desc_i18n": "settings.js.skh_desc_multiview"
+  },
+  "deploy_order": 1,
+  "resources": {
+    "cores": 3,
+    "memory": 2048,
+    "pin": true,
+    "gpu": 1
+  },
+  "version": "0.40.3",
+  "settings_panel": false,
+  "adapts_input": true,
+  "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
+  "nav": {
+    "section": "traitements",
+    "label": "Traitements",
+    "route": "/traitements/multiview",
+    "order": 10
+  },
+  "script_template": "script.py",
+  "ui": {
+    "control_html": "control.html",
+    "control_js": "control.js",
+    "extra_js": "multiview.js",
+    "extra_css": "multiview.css",
+    "monitoring_html": "monitoring.html",
+    "monitoring_js": "monitoring.js"
+  },
+  "monitoring": {
+    "label": "Détail Multiviews",
+    "order": 10,
+    "when": "instances"
+  },
+  "deploy_defaults": {
+    "flux_config": [],
+    "meter_blocks": [],
+    "video_history_blocks": [],
+    "audio_history_blocks": [],
+    "overlays": [],
+    "shm_out": "mxl_mix",
+    "genlock": true,
+    "tsl_mode": "central",
+    "tsl_port": 0,
+    "max_inputs": 4,
+    "show_no_signal": true,
+    "freeze_detect_s": 2.0,
+    "show_proxy": false,
+    "orientation": "landscape"
+  },
+  "config_schema": [
+    {
+      "key": "orientation",
+      "type": "select",
+      "label": "Orientation",
+      "default": "landscape",
+      "options": [
+        {
+          "value": "landscape",
+          "label": "Paysage"
+        },
+        {
+          "value": "portrait_cw",
+          "label": "Portrait ↻ (horaire)"
+        },
+        {
+          "value": "portrait_ccw",
+          "label": "Portrait ↺ (anti-horaire)"
+        }
+      ]
+    },
+    {
+      "key": "shm_out",
+      "type": "text",
+      "label": "SHM sortie",
+      "placeholder": "mxl_mix",
+      "default": "mxl_mix"
+    },
+    {
+      "key": "max_inputs",
+      "type": "number",
+      "label": "Max entrées",
+      "min": 1,
+      "max": 16,
+      "default": 4
+    },
+    {
+      "key": "show_no_signal",
+      "type": "bool",
+      "label": "Afficher « NO SIGNAL » quand la source manque",
+      "default": true,
+      "scope": "user"
+    },
+    {
+      "key": "freeze_detect_s",
+      "type": "number",
+      "label": "Détection image figée (s, 0 = off)",
+      "min": 0,
+      "max": 30,
+      "default": 2,
+      "scope": "user"
+    },
+    {
+      "key": "tsl_mode",
+      "type": "select",
+      "label": "Source du tally/UMD",
+      "options": [
+        {
+          "value": "central",
+          "label": "Centralisé (service TSL orchestrateur)"
+        },
+        {
+          "value": "direct",
+          "label": "TSL Direct (serveur local du multiview)"
+        }
+      ],
+      "default": "central"
+    },
+    {
+      "key": "tsl_port",
+      "type": "number",
+      "label": "Port TSL 5.0 local (mode Direct uniquement)",
+      "min": 0,
+      "max": 65535,
+      "default": 0
+    },
+    {
+      "key": "cadence",
+      "hidden": true,
+      "type": "select",
+      "label": "Cadence de composition",
+      "help": "genlock : attend la grille PTP (défaut). input : émet dès qu'une entrée a une nouvelle trame (étage intermédiaire d'un tissu, whole-frame). flow : tissu en tranches — cible l'index d'epoch, exige le mode tranche éligible.",
+      "default": "genlock",
+      "scope": "system",
+      "options": [
+        {
+          "value": "genlock",
+          "label": "Genlock (grille PTP — défaut)"
+        },
+        {
+          "value": "input",
+          "label": "Input (data-driven, étage intermédiaire)"
+        },
+        {
+          "value": "flow",
+          "label": "Flow (tissu en tranches)"
+        }
+      ]
+    },
+    {
+      "key": "slice_mode",
+      "hidden": true,
+      "type": "checkbox",
+      "label": "Mode tranche (latence sous-image)",
+      "help": "La vidéo est publiée bande par bande sur le bus MXL : l'aval démarre sur la première bande sans attendre l'image complète (latence sous-image). Entrelacé ou hauteur non divisible → repli image entière. Désactivé (défaut) = comportement historique. CPU (GPU : voir Tranche GPU), paysage seulement.",
+      "default": false,
+      "scope": "system"
+    },
+    {
+      "key": "slice_lines",
+      "hidden": true,
+      "type": "number",
+      "label": "Lignes par tranche",
+      "help": "Hauteur des bandes (lignes). Doit être un diviseur de la hauteur d'image (36 pour 1080p) — sinon repli image entière.",
+      "min": 4,
+      "max": 540,
+      "default": 36,
+      "scope": "system",
+      "visible_if": {
+        "slice_mode": true
+      }
+    },
+    {
+      "key": "gpu_slice",
+      "hidden": true,
+      "type": "checkbox",
+      "label": "Tranche GPU (opt-in banc)",
+      "help": "Lève l'exclusion GPU du mode tranche : composition bande par bande en VRAM. Ne pas activer en prod sans le verdict du banc gate (TISSU_SLICE_GPU.md).",
+      "default": false,
+      "scope": "system",
+      "visible_if": {
+        "slice_mode": true
+      }
+    },
+    {
+      "key": "gpu_batch_bands",
+      "hidden": true,
+      "type": "number",
+      "label": "Bandes par lot GPU (micro-batch)",
+      "help": "Nombre de bandes MXL par lot GPU (verdict banc GO-MEGA-135 : 4 ≈ méga-bandes 144 lignes à 1080p/36). 1 = bande à bande.",
+      "min": 1,
+      "max": 8,
+      "default": 4,
+      "scope": "system",
+      "visible_if": {
+        "gpu_slice": true
+      }
+    }
+  ],
+  "wiring": {
+    "produces": [
+      {
+        "essence": "video",
+        "shm": "{shm_out}"
+      }
+    ],
+    "consumes": [
+      {
+        "from_list": "flux_config",
+        "essence": "video",
+        "shm_field": "path",
+        "shm_prefix": "/dev/shm/",
+        "name_field": "name",
+        "dims_fields": [
+          "in_w",
+          "in_h"
+        ],
+        "existing_only": true,
+        "input_key": "idx"
+      },
+      {
+        "from_list": "flux_config",
+        "essence": "audio",
+        "shm_field": "audio_path",
+        "shm_prefix": "/dev/shm/",
+        "existing_only": true,
+        "input_key": "idx",
+        "optional": true,
+        "label": "Audio {i1}"
+      },
+      {
+        "from_list": "flux_config",
+        "essence": "data",
+        "shm_field": "anc_path",
+        "shm_prefix": "/dev/shm/",
+        "existing_only": true,
+        "input_key": "idx",
+        "optional": true,
+        "label": "ANC {i1}"
+      },
+      {
+        "from_list": "meter_blocks",
+        "essence": "audio",
+        "shm_field": "audio_path",
+        "shm_prefix": "/dev/shm/",
+        "existing_only": true,
+        "input_key": "block_idx",
+        "optional": true,
+        "label": "VU mur {i1}"
+      },
+      {
+        "from_list": "video_history_blocks",
+        "essence": "video",
+        "shm_field": "path",
+        "shm_prefix": "/dev/shm/",
+        "existing_only": true,
+        "input_key": "vh_idx",
+        "optional": true,
+        "label": "Hist. vidéo {i1}"
+      },
+      {
+        "from_list": "audio_history_blocks",
+        "essence": "audio",
+        "shm_field": "audio_path",
+        "shm_prefix": "/dev/shm/",
+        "existing_only": true,
+        "input_key": "ah_idx",
+        "optional": true,
+        "label": "Hist. audio {i1}"
+      }
+    ],
+    "mode": "hot-wire",
+    "state_endpoint": "/input"
+  },
+  "control": {
+    "endpoints": [
+      "/input",
+      "/state",
+      "/window",
+      "/style",
+      "/reconfigure",
+      "/overlays",
+      "/chrono"
+    ],
+    "recall": {
+      "source": "layouts",
+      "scope": "global",
+      "endpoint": "/window"
+    }
+  },
+  "actions": [
+    {
+      "id": "tally",
+      "label": "Tally d'une fenêtre",
+      "endpoint": "/tally",
+      "port": 8080,
+      "params": [
+        {
+          "key": "flux_idx",
+          "label": "Fenêtre",
+          "type": "number",
+          "default": 0,
+          "options_from": "inputs"
+        },
+        {
+          "key": "color",
+          "label": "Couleur",
+          "type": "text",
+          "default": "red",
+          "options": [
+            {
+              "value": "red",
+              "label": "Rouge (antenne)"
+            },
+            {
+              "value": "green",
+              "label": "Vert (préparation)"
+            },
+            {
+              "value": "off",
+              "label": "Éteint"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recall_layout",
+      "label": "Rappeler un layout",
+      "core": "recall",
+      "params": [
+        {
+          "key": "memory",
+          "label": "Layout",
+          "type": "number",
+          "options_from": "recall"
+        }
+      ]
+    }
+  ]
+}

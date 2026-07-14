@@ -2,9 +2,10 @@
   "version": "0.40.3",
   "date": "2026-07-14",
   "changes": {
-    "Historique audio : une PISTE PAR CANAL (0.40.3)": [
-      "Le choix `channels` était bien actif, mais les canaux étaient FUSIONNÉS en une seule enveloppe (max) : impossible de distinguer la gauche de la droite. Chaque canal suivi a désormais sa propre bande horizontale (stéréo : canal 1 en haut, canal 2 en bas), avec son enveloppe, son axe zéro, ses colonnes de SATURATION et ses plages de SILENCE — la saturation d'un canal ne peint plus la colonne de l'autre.",
-      "Repli explicite : si la hauteur disponible ne laisse pas au moins AH_LANE_MIN_PX (10 px) par piste, on revient à UNE piste fusionnée (max des canaux) plutôt que d'empiler des traits d'un pixel illisibles.",
+    "Historique audio : demi-enveloppe par canal, par PAIRES (0.40.3)": [
+      "Le choix `channels` était actif, mais les canaux étaient FUSIONNÉS en une seule enveloppe (max) : impossible de distinguer la gauche de la droite, et la saturation d'un canal peignait la colonne de l'autre.",
+      "Une forme d'onde étant symétrique, une MOITIÉ suffit : une bande porte désormais DEUX canaux autour d'un axe commun — le premier vers le HAUT, le second vers le BAS (stéréo : canal 1 en haut, canal 2 en bas, sur la même hauteur qu'avant). 4 canaux → 2 bandes, 6 → 3, 8 → 4. Un canal seul reste symétrique. Chaque canal a ses colonnes de SATURATION et ses plages de SILENCE dans SA moitié : on voit lequel a fauté.",
+      "Repli explicite : si la hauteur ne laisse pas au moins AH_LANE_MIN_PX (10 px) par bande, on revient à UNE enveloppe fusionnée plutôt que d'empiler des traits d'un pixel illisibles.",
       "Perf inchangée : une réduction par canal (≤ 8 tours) au lieu d'un max global, et le même motif d'écritures contiguës par canal de couleur (1,3 ms contre 8,8 ms en indexation avancée, mesuré)."
     ],
     "Layout : le layout décrit TOUT le mur + opacité 100 % par défaut (0.40.2)": [

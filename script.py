@@ -2466,53 +2466,66 @@ def _ah_render(unit, rect, cfg_src, now):
     wy0, wy1 = sc, rh - sc                                        # bande utile des enveloppes
     wh = max(2, wy1 - wy0)
 
-    # Une PISTE par canal si chacune reste lisible ; sinon repli sur UNE piste fusionnée (max des
-    # canaux) — dégradation explicite plutôt qu'un empilement de traits d'un pixel illisibles.
-    nlane = n if (wh // max(1, n)) >= AH_LANE_MIN_PX else 1
-    if nlane == 1 and n > 1:
+    # DEMI-ENVELOPPE PAR CANAL, autour d'un axe commun : une forme d'onde est symétrique, donc une
+    # MOITIÉ suffit à voir les problèmes. Une bande porte donc DEUX canaux — le pair vers le HAUT,
+    # l'impair vers le BAS (stéréo : canal 1 en haut, canal 2 en bas, sur la même hauteur qu'avant).
+    # 4 canaux → 2 bandes, 8 canaux → 4 bandes. Un canal SEUL reste symétrique (haut + bas).
+    nband = (n + 1) // 2
+    if (wh // max(1, nband)) < AH_LANE_MIN_PX:      # place insuffisante → tout fusionner (max)
         peak = peak.max(axis=0)[None, :]
         clip = clip.any(axis=0)[None, :]
         seen = seen.any(axis=0)[None, :]
         silence = seen & (peak <= SILENCE_DB)
+        n, nband = 1, 1
 
-    lane_h = wh // nlane
-    for lane in range(nlane):
-        ly0 = wy0 + lane * lane_h
-        ly1 = ly0 + lane_h if lane < nlane - 1 else wy1           # la dernière piste absorbe le reste
-        lh = max(2, ly1 - ly0)
-        cy = ly0 + lh // 2
-        half = max(1, lh // 2 - 1)
-        pk, cl, sn, si = peak[lane], clip[lane], seen[lane], silence[lane]
-        # Silence : grisé sur la HAUTEUR DE LA PISTE (chaque canal a le sien).
-        if si.any():
-            for _c, _v in enumerate(_HIST_SILENCE):
-                arr[ly0:ly1, si, _c] = _v
-        frac = np.clip((pk - METER_MIN_DB) / (0.0 - METER_MIN_DB), 0.0, 1.0)  # dBFS → 0..1 (linéaire en dB)
-        hgt = (frac * half).astype(np.int16)
-        hgt[~sn] = 0
-        yy = np.abs(np.arange(ly0, ly1, dtype=np.int16) - cy)
-        band = yy[:, None] <= hgt[None, :]
-        # ⚠ PERF : peindre CANAL PAR CANAL sous le masque (3 écritures uint8 contiguës) au lieu de
-        # `rgb[band] = (r, g, b)` (indexation avancée sur une vue stridée) : 1,3 ms contre 8,8 ms sur
-        # une frise 1720×202 — mesuré. Même résultat au pixel près.
-        wav = arr[ly0:ly1]
-        for _c, _v in enumerate(_HIST_WAVE):
-            wav[..., _c][band] = _v
-        for _c, _v in enumerate((90, 96, 108)):                   # axe zéro de la piste
+    band_h = wh // nband
+    for bi in range(nband):
+        by0 = wy0 + bi * band_h
+        by1 = by0 + band_h if bi < nband - 1 else wy1             # la dernière bande absorbe le reste
+        bh = max(2, by1 - by0)
+        cy = by0 + bh // 2
+        yy = np.arange(by0, by1, dtype=np.int16) - cy             # SIGNÉ : <0 au-dessus de l'axe
+        up, dn = (yy <= 0), (yy >= 0)
+        wav = arr[by0:by1]
+        for side in (0, 1):                                       # 0 = moitié HAUTE, 1 = moitié BASSE
+            ch = 2 * bi + side
+            if ch >= n:
+                break
+            lone = (side == 0 and 2 * bi + 1 >= n)                # canal seul → enveloppe symétrique
+            mask_h = np.ones(bh, dtype=bool) if lone else (up if side == 0 else dn)
+            half = max(1, (bh // 2 if not lone else bh // 2) - 1)
+            pk, cl, sn = peak[ch], clip[ch], seen[ch]
+            si = silence[ch]
+            # Silence : grisé sur la MOITIÉ du canal concerné (chaque canal a le sien).
+            if si.any():
+                sub = arr[by0:by1]
+                for _c, _v in enumerate(_HIST_SILENCE):
+                    sub[..., _c][np.ix_(mask_h, si)] = _v
+            frac = np.clip((pk - METER_MIN_DB) / (0.0 - METER_MIN_DB), 0.0, 1.0)  # dBFS → 0..1 (linéaire en dB)
+            hgt = (frac * half).astype(np.int16)
+            hgt[~sn] = 0
+            dist = np.abs(yy)
+            band = (dist[:, None] <= hgt[None, :]) & mask_h[:, None]
+            # ⚠ PERF : peindre CANAL DE COULEUR PAR CANAL DE COULEUR sous le masque (écritures uint8
+            # contiguës) au lieu de `rgb[band] = (r, g, b)` (indexation avancée sur une vue stridée) :
+            # 1,3 ms contre 8,8 ms sur une frise 1720×202 — mesuré. Même résultat au pixel près.
+            for _c, _v in enumerate(_HIST_WAVE):
+                wav[..., _c][band] = _v
+            # SATURATION : colonne ROUGE sur la MOITIÉ du canal → on voit LEQUEL a saturé. Le marqueur
+            # PERSISTE tant que la colonne est dans la fenêtre (une saturation de 3 ms reste lisible
+            # 30 s). Élargi à 2 px : à 120 s de profondeur une colonne fait moins d'un pixel de temps.
+            if cl.any():
+                wide = cl.copy()
+                wide[1:] |= cl[:-1]
+                sub = arr[by0:by1]
+                for _c, _v in enumerate(_HIST_CLIP):
+                    sub[..., _c][np.ix_(mask_h, wide)] = _v
+        for _c, _v in enumerate((90, 96, 108)):                   # axe zéro (frontière des 2 canaux)
             np.maximum(arr[cy, :, _c], _v, out=arr[cy, :, _c])
-        # SATURATION : colonne ROUGE sur toute la hauteur DE LA PISTE → le marqueur PERSISTE tant que
-        # la colonne est dans la fenêtre de temps (une saturation de 3 ms reste lisible 30 s), et reste
-        # visible même si la crête de la tranche est basse. Élargie à 2 px : à 120 s de profondeur une
-        # colonne fait moins d'un pixel de temps — un trait de 1 px se rate à l'œil.
-        if cl.any():
-            wide = cl.copy()
-            wide[1:] |= cl[:-1]
-            for _c, _v in enumerate(_HIST_CLIP):
-                arr[ly0:ly1, wide, _c] = _v
-        # Séparateur entre pistes (discret) : sans lui, deux enveloppes voisines se confondent.
-        if lane < nlane - 1 and ly1 < wy1:
+        # Séparateur entre bandes (discret) : sans lui, deux bandes voisines se confondent.
+        if bi < nband - 1 and by1 < wy1:
             for _c, _v in enumerate((58, 60, 68)):
-                arr[ly1 - 1, :, _c] = _v
+                arr[by1 - 1, :, _c] = _v
     return arr
 
 def _hist_tile(rect, arr):
