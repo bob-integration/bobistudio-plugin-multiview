@@ -3122,6 +3122,8 @@ function appliquerTemplate(key) {
 // ─── Layouts (presets) ───────────────────────────────────────
 
 let savedLayouts = [];
+// Layout en cours d'édition en place (bouton « Modifier ») : null = mode « enregistrer nouveau ».
+let editingLayoutId = null;
 
 async function rafraichirListeLayouts() {
     const ul = document.getElementById('layout-saved-list');
@@ -3146,6 +3148,7 @@ async function rafraichirListeLayouts() {
             <canvas data-layout-preview="${l.id}"></canvas>
             <div class="actions">
                 <button class="btn btn-blue" onclick="appliquerLayout(${l.id})">${escapeHtml(T('plugin.multiview.apply'))}</button>
+                <button class="btn" onclick="modifierLayout(${l.id})" title="${escapeHtml(T('plugin.multiview.edit_layout_title'))}">${escapeHtml(T('plugin.multiview.edit'))}</button>
                 <button class="btn" onclick="exporterLayout(${l.id})" title="${escapeHtml(T('plugin.multiview.export_title'))}">${escapeHtml(T('plugin.multiview.export'))}</button>
                 <button class="btn btn-red" onclick="supprimerLayout(${l.id})">${escapeHtml(T('plugin.multiview.delete'))}</button>
             </div>
@@ -3162,14 +3165,7 @@ function escapeHtml(s) {
     }[c]));
 }
 
-async function enregistrerLayout() {
-    const nameEl = document.getElementById('layout-save-name');
-    const name = (nameEl.value || '').trim();
-    if (!name) { mwFlash(T('plugin.multiview.flash_layout_name')); return; }
-    if (!editorParams) {
-        mwFlash(T('plugin.multiview.flash_select_mv_first'));
-        return;
-    }
+function _serialiserLayoutCourant() {
     // Sérialise la config courante (sans champs internes color/ratio)
     // Un layout décrit TOUT le mur (décision utilisateur 2026-07-14) — SAUF `shm_out`, qui est
     // l'identité de SORTIE du conteneur (ses consommateurs aval sont câblés dessus : la changer par
@@ -3238,6 +3234,25 @@ async function enregistrerLayout() {
             label: b.label || ''
         }))
     };
+    return config;
+}
+
+// Enregistre l'éditeur courant comme NOUVEAU layout. `nameOverride` (bouton « Enregistrer comme
+// nouveau » du bandeau d'édition) court-circuite le champ #layout-save-name.
+async function enregistrerLayout(nameOverride) {
+    let nameEl = null, name;
+    if (nameOverride != null) {
+        name = (nameOverride || '').trim();
+    } else {
+        nameEl = document.getElementById('layout-save-name');
+        name = (nameEl.value || '').trim();
+    }
+    if (!name) { mwFlash(T('plugin.multiview.flash_layout_name')); return; }
+    if (!editorParams) {
+        mwFlash(T('plugin.multiview.flash_select_mv_first'));
+        return;
+    }
+    const config = _serialiserLayoutCourant();
     let r = null;
     try {
         r = await fetch('/api/layouts', {
@@ -3246,7 +3261,8 @@ async function enregistrerLayout() {
         });
     } catch(e) {}
     if (r && r.ok) {
-        nameEl.value = '';
+        if (nameEl) nameEl.value = '';
+        quitterEditionLayout();
         mwFlash(T('plugin.multiview.flash_layout_saved').replace('{name}', () => name));
         rafraichirListeLayouts();
     } else {
@@ -3254,13 +3270,34 @@ async function enregistrerLayout() {
     }
 }
 
-function appliquerLayout(lid) {
+// Écrase le layout en cours d'édition (PUT) — bouton « Enregistrer les modifications ».
+async function enregistrerModifsLayout() {
+    if (editingLayoutId == null) { enregistrerLayout(); return; }
+    const nameEl = document.getElementById('layout-edit-name');
+    const name = ((nameEl && nameEl.value) || '').trim();
+    if (!name) { mwFlash(T('plugin.multiview.flash_layout_name')); return; }
     if (!editorParams) {
         mwFlash(T('plugin.multiview.flash_select_mv_first'));
         return;
     }
-    const l = savedLayouts.find(x => x.id === lid);
-    if (!l) return;
+    const config = _serialiserLayoutCourant();
+    let r = null;
+    try {
+        r = await fetch('/api/layouts/' + editingLayoutId, {
+            method: 'PUT', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, config})
+        });
+    } catch(e) {}
+    if (r && r.ok) {
+        quitterEditionLayout();
+        mwFlash(T('plugin.multiview.flash_layout_saved').replace('{name}', () => name));
+        rafraichirListeLayouts();
+    } else {
+        mwFlash(T('plugin.multiview.flash_layout_save_failed'));
+    }
+}
+
+function _chargerLayoutDansEditeur(l) {
     const cfg = l.config || {};
     // shm_out conservé tel quel (lié au container, pas au layout)
     editorParams.out_width     = cfg.out_width  || editorParams.out_width;
@@ -3329,7 +3366,47 @@ function appliquerLayout(lid) {
     const hostnameEl = document.getElementById('ed_hostname');
     const hostname = hostnameEl ? hostnameEl.textContent.trim() : '';
     renderEditor(hostname);
+}
+
+function appliquerLayout(lid) {
+    if (!editorParams) {
+        mwFlash(T('plugin.multiview.flash_select_mv_first'));
+        return;
+    }
+    const l = savedLayouts.find(x => x.id === lid);
+    if (!l) return;
+    _chargerLayoutDansEditeur(l);
     deployerEditor();
+}
+
+// ─── Édition en place d'un layout enregistré (bouton « Modifier ») ──
+function modifierLayout(lid) {
+    if (!editorParams) {
+        mwFlash(T('plugin.multiview.flash_select_mv_first'));
+        return;
+    }
+    const l = savedLayouts.find(x => x.id === lid);
+    if (!l) return;
+    // Charge la géométrie/l'habillage du layout dans l'éditeur SANS déployer : on édite un
+    // preset, on ne perturbe pas le mur live. Les sources courantes (par index) restent en place
+    // pour la prévisualisation ; elles ne font de toute façon pas partie du layout.
+    _chargerLayoutDansEditeur(l);
+    editingLayoutId = lid;
+    const nameEl = document.getElementById('layout-edit-name');
+    if (nameEl) nameEl.value = l.name || '';
+    const saveBar = document.getElementById('layout-save-bar');
+    const editBar = document.getElementById('layout-edit-bar');
+    if (saveBar) saveBar.hidden = true;
+    if (editBar) editBar.hidden = false;
+    mwFlash(T('plugin.multiview.flash_editing_layout').replace('{name}', () => l.name || ''));
+}
+
+function quitterEditionLayout() {
+    editingLayoutId = null;
+    const saveBar = document.getElementById('layout-save-bar');
+    const editBar = document.getElementById('layout-edit-bar');
+    if (saveBar) saveBar.hidden = false;
+    if (editBar) editBar.hidden = true;
 }
 
 async function supprimerLayout(lid) {

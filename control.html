@@ -362,10 +362,17 @@
     </section>
     <section class="layout-list" aria-labelledby="layout-list-title">
         <h2 id="layout-list-title" data-i18n="plugin.multiview.layouts_title">Layouts enregistrés</h2>
-        <div class="save-layout-form">
+        <div class="save-layout-form" id="layout-save-bar">
             <label for="layout-save-name" data-i18n="plugin.multiview.layout_name">Nom du layout</label>
             <input type="text" id="layout-save-name" placeholder="ex. 2×2 mosaïque…" autocomplete="off" data-i18n-ph="plugin.multiview.layout_name_ph">
             <button type="button" class="btn btn-green" onclick="enregistrerLayout()" data-i18n="plugin.multiview.save_layout">Enregistrer l'éditeur actuel</button>
+        </div>
+        <div class="save-layout-form layout-edit-bar" id="layout-edit-bar" hidden>
+            <label for="layout-edit-name" data-i18n="plugin.multiview.editing_layout">Édition du layout</label>
+            <input type="text" id="layout-edit-name" autocomplete="off">
+            <button type="button" class="btn btn-green" onclick="enregistrerModifsLayout()" data-i18n="plugin.multiview.save_changes">Enregistrer les modifications</button>
+            <button type="button" class="btn" onclick="enregistrerLayout(document.getElementById('layout-edit-name').value)" data-i18n="plugin.multiview.save_as_new">Enregistrer comme nouveau</button>
+            <button type="button" class="btn btn-red" onclick="quitterEditionLayout()" data-i18n="plugin.multiview.cancel_edit">Annuler</button>
         </div>
         <div class="save-layout-form">
             <button type="button" class="btn" onclick="importerLayout()" data-i18n="plugin.multiview.import_layout">Importer un fichier…</button>
