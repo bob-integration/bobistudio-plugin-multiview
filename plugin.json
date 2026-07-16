@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.42.2",
+  "version": "0.43.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -291,7 +291,13 @@
       "/style",
       "/reconfigure",
       "/overlays",
-      "/chrono"
+      "/chrono",
+      "/overlay_text"
+    ],
+    "read_endpoints": [
+      "/state",
+      "/chronos",
+      "/texts"
     ],
     "recall": {
       "source": "layouts",
@@ -299,7 +305,73 @@
       "endpoint": "/window"
     }
   },
+  "param_tree": {
+    "boxes": { "count_from": "n_windows", "path_prefix": "windows", "idx": "idx", "label": "PiP" },
+    "box_groups": [
+      { "label": "Position / taille", "endpoint": "/window", "caps": "window_fields",
+        "fields": {
+          "x": { "label": "Position X", "type": "pixels" },
+          "y": { "label": "Position Y", "type": "pixels" },
+          "w": { "label": "Largeur", "type": "pixels" },
+          "h": { "label": "Hauteur", "type": "pixels" } } },
+      { "label": "Affichage", "endpoint": "/window",
+        "fields": {
+          "show_label": { "label": "Afficher le nom", "type": "bool", "default": true },
+          "show_tally": { "label": "Afficher le tally", "type": "bool", "default": true },
+          "hidden": { "label": "Masquer la fenêtre", "type": "bool", "default": false } } },
+      { "label": "VU-mètres", "endpoint": "/window", "caps": "window_fields",
+        "fields": {
+          "meter_opacity": { "label": "Opacité des VU", "type": "percent" },
+          "meter_inside": { "label": "VU à l'intérieur de l'image", "type": "bool", "default": false } } },
+      { "label": "TSL", "endpoint": "/window", "caps": "window_fields",
+        "fields": {
+          "tsl_index": { "label": "Index TSL", "type": "number" } } }
+    ],
+    "global_groups": [
+      { "label": "Affichage des sources", "endpoint": "/style",
+        "fields": {
+          "show_no_signal": { "label": "Afficher « NO SIGNAL » si source absente", "type": "bool", "default": true },
+          "freeze_detect_s": { "label": "Détection image figée (s, 0 = off)", "type": "number", "min": 0, "max": 30, "default": 2 },
+          "show_proxy": { "label": "Badge proxy (pyramide)", "type": "bool", "default": false } } }
+    ]
+  },
   "actions": [
+    {
+      "id": "chrono_start",
+      "label": "Démarrer l'horloge",
+      "endpoint": "/chrono",
+      "body": { "action": "start" },
+      "params": [
+        { "key": "id", "label": "Horloge", "options_endpoint": "/chronos" }
+      ]
+    },
+    {
+      "id": "chrono_stop",
+      "label": "Arrêter l'horloge",
+      "endpoint": "/chrono",
+      "body": { "action": "stop" },
+      "params": [
+        { "key": "id", "label": "Horloge", "options_endpoint": "/chronos" }
+      ]
+    },
+    {
+      "id": "chrono_reset",
+      "label": "Remettre l'horloge à zéro",
+      "endpoint": "/chrono",
+      "body": { "action": "reset" },
+      "params": [
+        { "key": "id", "label": "Horloge", "options_endpoint": "/chronos" }
+      ]
+    },
+    {
+      "id": "set_text",
+      "label": "Changer le texte",
+      "endpoint": "/overlay_text",
+      "params": [
+        { "key": "id", "label": "Champ texte", "options_endpoint": "/texts" },
+        { "key": "text", "label": "Texte", "type": "text" }
+      ]
+    },
     {
       "id": "tally",
       "label": "Tally d'une fenêtre",

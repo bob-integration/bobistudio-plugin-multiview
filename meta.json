@@ -1,7 +1,11 @@
 {
-  "version": "0.42.2",
-  "date": "2026-07-14",
+  "version": "0.43.0",
+  "date": "2026-07-16",
   "changes": {
+    "Pilotage par macros : PiP, horloges, textes (0.43.0)": [
+      "/state publie désormais la LISTE DES FENÊTRES (PiP) avec leurs params courants + n_windows + canvas + caps.window_fields, ET la liste des overlays (id/type/texte). read_endpoints /state ajouté. → l'éditeur de macros expose CHAQUE PiP en arbre de paramètres (position/taille bornées au canvas, affichage nom/tally/masquer, VU-mètres, index TSL) + 3 réglages globaux (/style).",
+      "Nouvel endpoint POST /overlay_text {id, text} (écrit dans la couche overlay_central) + listes GET /chronos et /texts pour les sélecteurs d'action. Actions curatées ajoutées : Démarrer/Arrêter/RàZ horloge (/chrono) et Changer le texte (/overlay_text). REDÉPLOIEMENT requis (nouveaux endpoints dans le conteneur)."
+    ],
     "Fix flowDef menteur — dépendance bobi-compute ≥ 0.14 (0.42.2)": [
       "AUCUN changement de script.py : le vrai bug était dans le binding partagé bobimxl.py, pas dans le script multiview (qui calcule/loggue correctement SCAN/INTERLACED/IL_MODE depuis 0.41.0 — vérifié dans /var/log/mxl-script.log du mur mvi50, qui imprime bien « sortie ENTRELACÉE 1920x1080tff » à chaque redémarrage). Le flow MXL de sortie, lui, réattachait SILENCIEUSEMENT sur l'ANCIEN flowDef (créé avant le fix scan) car `mxlCreateFlowWriter` ignore le flowDef fourni quand un flow du même nom existe déjà (created=false, cf. flow.h). Résultat mesuré : mvi50 configuré 1080i50 en DB, script chargé avec le code correct, mais `Reader.format()` du flux `mvi50` rendait `interlace_mode=progressive, frame_height=1080, fps_num=50` (mensonge producteur persistant depuis le tout premier déploiement du mur).",
       "Fix à la racine dans script_templates/bobimxl.py (`Writer.__init__`) : purge le répertoire du flow existant AVANT `mxlCreateFlowWriter` si son flow_def diverge du nouveau sur les champs structurants (media_type/interlace_mode/frame_width/frame_height/grain_rate/components/slice_height) — cf. bobi-compute 0.14. Ce bump de version multiview est UNIQUEMENT le déclencheur d'un redéploiement (image bobi-compute:0.14 requise) ; tout autre mur multiview reconfiguré depuis son 1er déploiement (résolution/scan/chroma/cadence changés sans purge manuelle du flow) est potentiellement touché par la même racine — et pas seulement multiview : TOUT producteur bobimxl.Writer (streamer, recorder, v210_bridge, color_corrector, stills, pyramide…) partage le même binding."

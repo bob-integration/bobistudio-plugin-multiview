@@ -4421,6 +4421,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
             return self._do_overlays()
         if self.path == "/chrono":
             return self._do_chrono()
+        if self.path == "/overlay_text":
+            return self._do_overlay_text()
         if self.path != "/input":
             self.send_response(404); self.end_headers(); return
         b = self._json()
@@ -4709,10 +4711,56 @@ class MvControlHandler(BaseHTTPRequestHandler):
         self.send_response(200 if ok else 400)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": ok}}).encode())
-    def do_GET(self):
-        with state_lock: inp = list(mv_state["inputs"])
+    def _do_overlay_text(self):
+        # Change le TEXTE d'un overlay texte (par id) via la couche overlay_central (même
+        # mécanisme que le push TSL). Pilotable par macro/déclencheur : {{id, text}}.
+        b = self._json()
+        oid = str(b.get("id") or "")
+        if not oid:
+            self.send_response(400); self.end_headers(); return
+        with state_lock:
+            overlay_central[oid] = {{"text": str(b.get("text") or ""), "active": True}}
+        overlay_dirty.set()
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
-        self.wfile.write(json.dumps({{"inputs": inp}}).encode())
+        self.wfile.write(json.dumps({{"ok": True}}).encode())
+    def do_GET(self):
+        # Listes pour les sélecteurs d'action (horloges / champs texte) : {{items:[{{value,label}}]}}.
+        if self.path in ("/chronos", "/texts"):
+            want = "clock" if self.path == "/chronos" else "text"
+            with state_lock:
+                items = [{{"value": ov.get("id"), "label": ov.get("name") or ov.get("id")}}
+                         for ov in OVERLAYS if ov.get("kind") == want and ov.get("id")]
+            _b = json.dumps({{"items": items}}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.end_headers(); self.wfile.write(_b); return
+        # /state : entrées câblées + LISTE DES FENÊTRES (PiP) avec leurs params courants +
+        # OVERLAYS (texte/horloge) + bornes (caps) → l'éditeur de macros expose chaque
+        # élément. Handler rare (pas la boucle de rendu) ; snapshot sous state_lock.
+        with state_lock:
+            inp = list(mv_state["inputs"])
+            wins = [dict(c) for c in FLUX_CONFIG]
+            ovs = [{{"id": ov.get("id"), "kind": ov.get("kind"),
+                     "label": ov.get("name") or ov.get("id"),
+                     "text": overlay_central.get(str(ov.get("id") or ""), {{}}).get("text")
+                             or ov.get("text") or ""}}
+                   for ov in OVERLAYS if ov.get("id")]
+        payload = {{
+            "inputs":    inp,
+            "n_windows": len(wins),
+            "canvas":    [OUT_WIDTH, OUT_HEIGHT],
+            "windows":   wins,
+            "overlays":  ovs,
+            # Bornes des champs de fenêtre (l'UI lit caps, rien en dur) : pixels bornés au
+            # canvas de sortie, opacités en %, index TSL entier.
+            "caps": {{"window_fields": {{
+                "x": [0, OUT_WIDTH, 0],          "y": [0, OUT_HEIGHT, 0],
+                "w": [2, OUT_WIDTH, OUT_WIDTH],  "h": [2, OUT_HEIGHT, OUT_HEIGHT],
+                "meter_opacity": [0, 100, 100],  "anc_opacity": [0, 100, 100],
+                "tsl_index": [0, 255, 0],
+            }}}},
+        }}
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(json.dumps(payload).encode())
     def log_message(self, *a): pass
 
 threading.Thread(
