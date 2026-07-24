@@ -430,8 +430,13 @@ async function chargerMw(vmid) {
         else await _mvEnsureVideoFormats();
     } catch (e) { /* palette indisponible → on retombe sur le repli ci-dessous */ }
     const _sysf = systemDefaultFormat();
-    editorParams.out_width  = editorParams.out_width  || _sysf.w;
-    editorParams.out_height = editorParams.out_height || _sysf.h;
+    // out_width/out_height = résolution de SORTIE (le script émet à ces dims). Repli sur width/height
+    // AVANT le format système : un multiview créé via la palette pose width/height mais pas
+    // out_width ; sans ce repli l'éditeur écrasait out_width avec le défaut système (ex. 640×360),
+    // désynchronisant la sortie réelle du width/height voulu (sortie en 640 alors que la page Câbles
+    // affichait le width). Le format système ne sert que si NI out_width NI width ne sont posés.
+    editorParams.out_width  = editorParams.out_width  || editorParams.width  || _sysf.w;
+    editorParams.out_height = editorParams.out_height || editorParams.height || _sysf.h;
     editorParams.fps        = editorParams.fps        || _sysf.fps;
     editorParams.scan       = editorParams.scan       || _sysf.scan;
     // Couleurs locales pour le rendu (non sauvegardé)
