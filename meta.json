@@ -1,7 +1,11 @@
 {
-  "version": "0.43.0",
-  "date": "2026-07-16",
+  "version": "0.43.1",
+  "date": "2026-07-25",
   "changes": {
+    "Anti-churn habillage : re-bake chrome UNIQUEMENT sur changement réel (0.43.1)": [
+      "Handler /tally : ne marque plus l'habillage « sale » que si la couleur de lampe change RÉELLEMENT (comparaison ancienne≠nouvelle, comme /tally_bulk depuis 0.39.2). Un ré-envoi identique (action/macro rejouée) ne déclenche plus de re-bake plein cadre.",
+      "Hot-apply _do_reconfigure : le tissu repousse la config au mur toutes les ~30 s même sans changement ; geom_dirty/tally_dirty n'étaient armés qu'INCONDITIONNELLEMENT en fin de fonction → re-bake chrome (~25 ms) toutes les 30 s pour rien. Désormais armés seulement si le flux, les blocs VU ou les frises ont réellement changé. Élimine un churn CPU périodique résiduel (pertinent surtout sur nœuds pauvres en CPU). Aucun nouvel endpoint : redéploiement simple, pas de restart requis pour le contrat."
+    ],
     "Pilotage par macros : PiP, horloges, textes (0.43.0)": [
       "/state publie désormais la LISTE DES FENÊTRES (PiP) avec leurs params courants + n_windows + canvas + caps.window_fields, ET la liste des overlays (id/type/texte). read_endpoints /state ajouté. → l'éditeur de macros expose CHAQUE PiP en arbre de paramètres (position/taille bornées au canvas, affichage nom/tally/masquer, VU-mètres, index TSL) + 3 réglages globaux (/style).",
       "Nouvel endpoint POST /overlay_text {id, text} (écrit dans la couche overlay_central) + listes GET /chronos et /texts pour les sélecteurs d'action. Actions curatées ajoutées : Démarrer/Arrêter/RàZ horloge (/chrono) et Changer le texte (/overlay_text). REDÉPLOIEMENT requis (nouveaux endpoints dans le conteneur)."

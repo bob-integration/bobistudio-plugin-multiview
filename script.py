@@ -1029,18 +1029,31 @@ class Handler(BaseHTTPRequestHandler):
                 color = str(data.get("color", "off")).lower()
                 if color not in TALLY_COLORS:
                     raise ValueError("color invalide")
+                # ★ PERF : comme /tally_bulk, ne marquer sale QUE sur changement réel de valeur
+                # (un ré-envoi identique — action/macro rejouée — ne doit pas re-baker l'habillage).
+                _ch = False
                 if "slot" in data:
                     # Forme par-lampe (service TSL) : une lampe L/R, une couleur.
                     slot = str(data["slot"]).upper()
                     if slot not in ("L", "R"):
                         raise ValueError("slot invalide")
-                    tally_state[f"{{idx}}_{{slot}}"] = color
+                    _k = f"{{idx}}_{{slot}}"
+                    if tally_state.get(_k) != color:
+                        tally_state[_k] = color
+                        _ch = True
                 else:
                     # Forme simple (action shotbox/macro, sans slot) : couleur DOMINANTE
                     # de la fenêtre — red (antenne), green (préparation), off (éteint).
-                    tally_state[f"{{idx}}_L"] = color if color in ("red", "amber") else "off"
-                    tally_state[f"{{idx}}_R"] = "green" if color in ("green", "amber") else "off"
-                tally_dirty.set()
+                    _l = color if color in ("red", "amber") else "off"
+                    _r = "green" if color in ("green", "amber") else "off"
+                    if tally_state.get(f"{{idx}}_L") != _l:
+                        tally_state[f"{{idx}}_L"] = _l
+                        _ch = True
+                    if tally_state.get(f"{{idx}}_R") != _r:
+                        tally_state[f"{{idx}}_R"] = _r
+                        _ch = True
+                if _ch:
+                    tally_dirty.set()
                 self._send_json({{"status": "ok"}})
             except Exception as e:
                 self.send_response(400); self.end_headers()
@@ -4611,11 +4624,17 @@ class MvControlHandler(BaseHTTPRequestHandler):
         # fois faisait DISPARAÎTRE les frises pendant la ou les trames que met le boulanger à les
         # refabriquer → CLIGNOTEMENT périodique du bas de l'image, observé en prod (mur 333 : les
         # 3 frises à 0 pendant 1 trame, toutes les ~35 s, mesuré sur le flux de sortie décodé).
+        # ★ PERF : le tissu repousse cette config au mur toutes les ~30 s MÊME sans changement.
+        # On accumule ici si QUELQUE CHOSE a réellement bougé (frises, blocs VU, flux) et on
+        # n'arme geom_dirty/tally_dirty (→ re-bake chrome PLEIN CADRE ≈ 25 ms) qu'à ce prix —
+        # sinon chaque poussée identique re-bakait l'habillage pour rien (churn CPU périodique).
+        _reconf_changed = False
         if "video_history_blocks" in b or "audio_history_blocks" in b:
             _nv = b.get("video_history_blocks") or []
             _na = b.get("audio_history_blocks") or []
             _change = (_nv != list(VHIST_BLOCKS)) or (_na != list(AHIST_BLOCKS))
             if _change:
+                _reconf_changed = True
                 with state_lock:
                     VHIST_BLOCKS[:] = _nv
                     AHIST_BLOCKS[:] = _na
@@ -4624,6 +4643,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
         # poussée du tissu ferait retomber les VU-mètres à zéro le temps de la réouverture. On ne
         # touche à rien si la liste est identique.
         if new_mb != list(METER_BLOCKS):
+            _reconf_changed = True
             with state_lock:
                 METER_BLOCKS[:] = new_mb
                 for k in list(audio_states):
@@ -4641,6 +4661,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
             # pas toujours seule → re-câblage manuel). On ne ferme désormais QUE les Readers dont la
             # source (chemin câblé) a changé ou qui disparaissent ; les tuiles inchangées gardent
             # leur Reader VIVANT. Les indices de banque sont stables (0.9.0) → appariement par index.
+            # Changement réel du flux (positions/tailles/sources/labels) → re-bake légitime.
+            _fc_changed = (new_fc != list(FLUX_CONFIG))
             old_sources = list(sources)
             old_inputs  = list(mv_state["inputs"])
             new_inputs  = [cfg.get("path", "") for cfg in new_fc]
@@ -4659,8 +4681,9 @@ class MvControlHandler(BaseHTTPRequestHandler):
             sources[:] = new_sources
             _in_track.clear()
             _stale_since.clear()
-            geom_dirty.set()
-            tally_dirty.set()
+            if _fc_changed or _reconf_changed:
+                geom_dirty.set()
+                tally_dirty.set()
         self.send_response(200)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": True}}).encode())
