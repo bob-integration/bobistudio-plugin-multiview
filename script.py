@@ -1166,23 +1166,41 @@ threading.Thread(
 
 # ─── Helpers ─────────────────────────────────────────────────
 
-def open_source(cfg):
+def open_source(cfg, own_instance=False):
     """Ouvre une source comme flux MXL (Reader). Le NOM = chemin sans le préfixe /dev/shm/.
-    Format LU DU flow_def du producteur (source de vérité) → in_w/in_h/chroma/bit_depth."""
+    Format LU DU flow_def du producteur (source de vérité) → in_w/in_h/chroma/bit_depth.
+
+    `own_instance=True` ouvre le Reader sur une Instance MXL **DÉDIÉE** au lieu de l'Instance
+    globale du process. C'est l'ÉCHAPPATOIRE du décrochage de génération (cf. _drop_input) : MXL
+    met les flux en cache PAR INSTANCE et `garbage_collect()` ne réclame PAS un flux encore
+    RÉFÉRENCÉ DANS CETTE INSTANCE — s'il reste un reader ouvert sur la génération morte (autre
+    tuile sur le même flux, handle non libéré), le ré-open retombe sur l'orphelin, indéfiniment
+    (mesuré au banc). Une Instance neuve n'a aucun cache : elle résout le flux sur disque, donc
+    sur la génération VIVANTE. (Un lecteur d'un AUTRE process, lui, ne bloque PAS le GC : vérifié
+    au banc — close+GC+reopen suffit tant que notre propre handle est bien lâché.)"""
+    _own = None
     try:
         name = cfg["path"].removeprefix("/dev/shm/")
-        rd = bobimxl.Reader(inst, name)        # lève si le flux n'existe pas encore
+        _own = bobimxl.Instance() if own_instance else None
+        rd = bobimxl.Reader(_own or inst, name)   # lève si le flux n'existe pas encore
         fmt = rd.format()
         if not fmt:
-            rd.close(); return None
+            rd.close()
+            if _own is not None:
+                try: _own.close()
+                except Exception: pass
+            return None
         # ENTRELACÉ NATIF : un grain = 1 CHAMP (½ hauteur ; in_h = hauteur de CHAMP via format()).
         # Le multiview sort TOUJOURS en PROGRESSIF (mur de monitoring) → on « bobe » : un champ scalé
         # à la hauteur de tuile (resize_plane) = désentrelacement par champ, suffisant pour un preview.
         in_w, in_h = fmt["width"], fmt["height"]
         frame_size = (in_w * in_h + 2 * (in_w // _CW) * (in_h // _CH)) * _BPS
         return {{"reader": rd, "in_w": in_w, "in_h": in_h, "frame_size": frame_size,
-                 "interlaced": bool(fmt.get("interlaced"))}}
+                 "interlaced": bool(fmt.get("interlaced")), "own_inst": _own}}
     except Exception:
+        try:
+            if _own is not None: _own.close()
+        except Exception: pass
         return None
 
 def resize_plane(plane, target_h, target_w):
@@ -2062,8 +2080,7 @@ def _vh_thumb_dims(src):
 def _vh_close(st):
     src = st.get("src")
     if src is not None:
-        try: src["reader"].close()
-        except Exception: pass
+        _close_source(src)
     st["src"] = None; st["path"] = ""
     try: inst.garbage_collect()
     except Exception: pass
@@ -4284,6 +4301,10 @@ geom_dirty = threading.Event()
 mv_state = {{"inputs": [cfg.get("path", "") for cfg in FLUX_CONFIG]}}
 sources = [None] * len(FLUX_CONFIG)
 _in_track = {{}}  # i → {{"path", "fi", "t"}} : dernier avancement du frame_index source (détection freeze)
+# i → nb de reconnexions CONSÉCUTIVES sans lecture fraîche derrière. Remis à 0 dès qu'une lecture
+# fraîche revient. ≥ 2 ⇒ le close+GC+reopen n'a pas suffi (il reste une référence sur la génération
+# morte DANS NOTRE Instance) ⇒ ensure_input escalade sur une Instance MXL dédiée à cette entrée.
+_stale_drops = {{}}
 
 def ensure_input(i, want_path=None, want_w=None, want_h=None):
     """Ouvre/maintient la source de la fenêtre i. Si (want_path,want_w,want_h) est fourni
@@ -4300,31 +4321,45 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
             cfg_ih = FLUX_CONFIG[i].get("in_h", 640) if i < len(FLUX_CONFIG) else 360
     if not wanted:
         if cur is not None:
-            try: cur["reader"].close()
-            except Exception: pass
+            _close_source(cur)
             with state_lock:
                 if i < len(sources): sources[i] = None
         return None
     if cur is not None and cur.get("path") == wanted:
         return cur
     if cur is not None:
-        try: cur["reader"].close()
-        except Exception: pass
+        _close_source(cur)
         with state_lock:
             if i < len(sources): sources[i] = None
-    src = open_source({{"path": wanted, "in_w": cfg_iw, "in_h": cfg_ih}})
+    # ESCALADE : au 2ᵉ décrochage consécutif de la MÊME entrée, on ouvre sur une Instance dédiée
+    # — cache vierge, donc résolution du flux SUR DISQUE (banc : seul chemin qui récupère quand le
+    # GC est bloqué par une référence résiduelle de notre propre Instance).
+    src = open_source({{"path": wanted, "in_w": cfg_iw, "in_h": cfg_ih}},
+                      own_instance=(_stale_drops.get(i, 0) >= 2))
     if src is not None:
         src["path"] = wanted
         with state_lock:
             if i < len(sources): sources[i] = src
     return src
 
-def _drop_input(i, rd):
+def _close_source(src):
+    """Ferme le Reader d'une source ET son Instance dédiée s'il en a une (sinon on fuit une
+    Instance MXL par escalade — et la génération qu'elle référence ne serait jamais collectée)."""
+    try: src["reader"].close()
+    except Exception: pass
+    own = src.get("own_inst")
+    if own is not None:
+        try: own.close()
+        except Exception: pass
+
+
+def _drop_input(i, rd, raison=""):
     """Ferme le Reader de l'entrée i et oublie la source (→ ensure_input la ROUVRE à la frame
     suivante sur la génération courante du flux). Utilisé pour reconnecter un Reader périmé
     (flux amont recréé sous le même nom) que le cache de ensure_input ne rouvrirait jamais."""
-    try: rd.close()
-    except Exception: pass
+    with state_lock:
+        _cur = sources[i] if i < len(sources) else None
+    _close_source(_cur if isinstance(_cur, dict) else {{"reader": rd}})
     # GC OBLIGATOIRE entre close et réouverture (même parade que le moteur, tx_reopen_if_stale) :
     # le flux périmé reste résolvable PAR NOM tant qu'il n'est pas collecté — sans GC, la
     # réouverture retombe sur L'ORPHELIN qu'on vient de lâcher (mesuré : boucle drop/reopen à
@@ -4333,6 +4368,19 @@ def _drop_input(i, rd):
     except Exception: pass
     with state_lock:
         if i < len(sources): sources[i] = None
+    # TRACE OBLIGATOIRE (niveau « warning » : passe même en log_level=info, et ce n'est PAS une
+    # métrique — c'est un événement rare qui signe une recréation de flux amont). Sans elle on ne
+    # peut pas distinguer « jamais déclenché » de « boucle sans effet » : c'est exactement ce qui a
+    # coûté le plus de temps sur l'incident du 2026-07-26 (shards totalement muets).
+    _n = _stale_drops.get(i, 0) + 1
+    _stale_drops[i] = _n
+    # Source réellement absente/arrêtée → on retente indéfiniment : on ne garde en « warning » que
+    # les 3 premières tentatives puis une ligne par centaine (RÈGLE 3 : pas de rafale au journal).
+    log("multiview: entrée %d (%s) — Reader PÉRIMÉ%s, reconnexion (tentative %d)%s"
+        % (i, _cur.get("path", "?") if isinstance(_cur, dict) else "?",
+           (" : " + raison) if raison else "", _n,
+           " → Instance DÉDIÉE" if _n >= 2 else ""),
+        "warning" if (_n <= 3 or _n % 100 == 0) else "debug")
     _in_track.pop(i, None)
     _stale_since.pop(i, None)
 
@@ -4731,12 +4779,11 @@ class MvControlHandler(BaseHTTPRequestHandler):
                     old_sources[i] = None             # marqué conservé → pas fermé ci-dessous
             for src in old_sources:                   # Readers non conservés (source changée/retirée)
                 if src is not None:
-                    try: src["reader"].close()
-                    except Exception: pass
+                    _close_source(src)
             FLUX_CONFIG[:] = new_fc
             mv_state["inputs"][:] = new_inputs
             sources[:] = new_sources
-            _in_track.clear()
+            _in_track.clear(); _stale_drops.clear()
             _stale_since.clear()
             if _fc_changed or _reconf_changed:
                 geom_dirty.set()
@@ -5301,6 +5348,12 @@ _last_emit_m = time.monotonic()   # mode input-locked : instant (monotone) de la
 # on retentera au prochain palier. Couvre la disparition silencieuse (recréation sans SIGBUS).
 _stale_since = {{}}   # i → instant monotone où l'entrée est devenue stale (None tant qu'elle lit)
 REOPEN_STALE_S = 2.0
+# Âge MAXIMAL toléré de la dernière écriture producteur (now_tai − lastWriteTime) avant de
+# considérer le Reader décroché et de le reconnecter. Critère INDÉPENDANT du format (contrairement
+# au retard de tête sur la grille FLOW, qui ne vaut qu'en mode tranche progressif) — cf. le
+# garde-fou de la boucle de composition. 5 s = ~250 trames à 50 Hz : au-delà, plus aucune source
+# vivante n'est plausible, et une source réellement arrêtée ne perd rien à être rouverte.
+STALE_REOPEN_MS = 5000.0
 
 # GC CPython DISCIPLINÉ (chantier tissu slice — grain tardif de l'assembleur) : le collect gen2
 # AUTOMATIQUE tombe N'IMPORTE OÙ dans le cycle (mesuré au banc dl360-1 : pause strictement
@@ -5329,10 +5382,9 @@ while True:
         with state_lock:
             for _s in sources:
                 if _s is not None:
-                    try: _s["reader"].close()
-                    except Exception: pass
+                    _close_source(_s)
             sources[:] = [None] * len(sources)
-            _in_track.clear()
+            _in_track.clear(); _stale_drops.clear()
         time.sleep(0.02)
         continue   # source(s) refermée(s) → ensure_input rouvre proprement à la frame suivante
     if INPUT_LOCKED:
@@ -5466,6 +5518,24 @@ while True:
             in_w    = src["in_w"]
             in_h    = src["in_h"]
             frame_size = src["frame_size"]
+            # GÉNÉRATION PÉRIMÉE — DÉTECTION INDÉPENDANTE DU FORMAT. Le producteur amont recrée son
+            # flux SOUS LE MÊME NOM (changement de source d'un slot RX, redeploy…) : notre Reader
+            # reste collé à la génération morte, dont les grains restent LISIBLES → ni « got is
+            # None », ni SIGBUS, et l'index figé ne suffit pas (parité entrelacée, grille FLOW).
+            # Le seul critère fiable ET sanctionné par la spec MXL est `lastWriteTime` : sur un
+            # lecteur décroché il ne bouge plus pendant que now_tai() avance (mesuré en prod :
+            # 3 h 20 d'âge sur un shard, tuile figée à vie). Vaut pour TOUS les flux — progressif
+            # ou entrelacé, mode tranche ou non. `lw = 0` = info indisponible (producteur qui ne
+            # maintient pas lastWriteTime, ex. audio) → on laisse les garde-fous historiques.
+            _lw = rd.last_write_time()
+            _age_ms = (bobimxl.now_tai() - _lw) / 1e6 if _lw else 0.0
+            if _lw and _age_ms > STALE_REOPEN_MS:
+                _drop_input(i, rd, "aucune écriture depuis %.1f s" % (_age_ms / 1000.0))
+                canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
+                _tile_status[i] = "nosignal"
+                if SHOW_NO_SIGNAL:
+                    _statuses.append((i, "nosignal", "", None))
+                continue
             if SLICE_ON and not src.get("interlaced"):
                 # MODE TRANCHE : viser le grain de TÊTE (peut être EN COURS d'écriture — un RX
                 # 2110 slice committe progressivement). On n'attend ICI que la 1ʳᵉ tranche ; les
@@ -5487,7 +5557,8 @@ while True:
                     # flux à index libre est reconnu par sa tête qui AVANCE, pas par sa valeur).
                     if (_hi != bobimxl.MXL_UNDEFINED_INDEX and _fi_out - _hi > 250
                             and _hi == _in_track.get(i, {{}}).get("fi")):
-                        _drop_input(i, rd)
+                        _drop_input(i, rd, "tête figée %d, %d trames de retard sur la grille"
+                                    % (_hi, _fi_out - _hi))
                         canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
                         if SHOW_NO_SIGNAL:
                             _statuses.append((i, "nosignal", "", None))
@@ -5524,12 +5595,14 @@ while True:
                 if _t0 is None:
                     _stale_since[i] = now_m
                 elif now_m - _t0 > REOPEN_STALE_S:
-                    _drop_input(i, rd)
+                    _drop_input(i, rd, "aucun grain lisible depuis %.1f s" % (now_m - _t0))
                 continue
             _stale_since.pop(i, None)   # lecture réussie → réarme le compteur de péremption
+            _stale_drops.pop(i, None)   # … et l'escalade Instance dédiée (reconnexion réussie)
             fi = got[0]; src_view = got[2]
-            # TRANSIT (arrivée) = âge de la trame d'entrée (now_tai − dernière écriture producteur).
-            ts_in_per_input[src.get("path", cfg["path"])] = (bobimxl.now_tai() - rd.last_write_time()) / 1e6
+            # TRANSIT (arrivée) = âge de la trame d'entrée (now_tai − dernière écriture producteur),
+            # déjà mesuré plus haut pour le garde-fou de péremption (une seule lecture par trame).
+            ts_in_per_input[src.get("path", cfg["path"])] = _age_ms if _lw else None
             # Suivi freeze : t = dernier instant où l'index de grain a avancé.
             tr = _in_track.get(i)
             if tr is None or tr.get("path") != src["path"]:
@@ -5547,7 +5620,7 @@ while True:
             # Sans danger pour une source légitimement statique : elle relit simplement son dernier
             # grain après ré-ouverture. (drop = continue : la tuile garde sa dernière trame.)
             if FREEZE_DETECT_S > 0 and now_m - tr["t"] > FREEZE_DETECT_S + REOPEN_STALE_S:
-                _drop_input(i, rd)
+                _drop_input(i, rd, "image figée depuis %.1f s" % (now_m - tr["t"]))
                 continue
 
             _yb  = in_w * in_h * _BPS               # octets du plan Y

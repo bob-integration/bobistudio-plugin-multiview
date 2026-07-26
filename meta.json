@@ -1,7 +1,15 @@
 {
-  "version": "0.44.0",
+  "version": "0.45.0",
   "date": "2026-07-26",
   "changes": {
+    "Reconnexion d'un Reader décroché : détection INDÉPENDANTE DU FORMAT + escalade Instance dédiée (0.45.0)": [
+      "Incident prod : un slot RX du moteur change de source → mtl_rx fusionne/dégroupe les sessions (deux slots sur le même multicast = UNE session à N cibles) et DÉTRUIT/RECRÉE les flux MXL concernés sous le même nom. Un shard du tissu est resté collé à la génération morte 3 h 20 (mesuré : `now_tai − lastWriteTime` = 11 983 205 ms, 11 mappings d'un répertoire de flux SUPPRIMÉ), tuile figée à vie.",
+      "Cause de l'échec de l'auto-guérison existante : le garde-fou « génération périmée » (tête très en retard ET figée) était enfermé dans `if SLICE_ON and not interlaced` — donc COURT-CIRCUITÉ pour toute source ENTRELACÉE (les sources de l'incident étaient en 1080i25). Restait le seul chemin freeze, muet et non concluant.",
+      "Détection désormais posée sur `lastWriteTime` (la primitive sanctionnée par la spec MXL, maintenue par mtl_rx sur la vidéo) : un Reader décroché voit son âge croître pendant que now_tai() avance. Vaut pour TOUS les flux — progressif ou entrelacé, mode tranche ou non — au-delà de STALE_REOPEN_MS (5 s). Les garde-fous historiques (tête sur la grille, freeze, got is None) sont conservés pour les flux sans lastWriteTime.",
+      "Escalade : au 2ᵉ décrochage consécutif de la même entrée, le Reader est rouvert sur une INSTANCE MXL DÉDIÉE. MXL met les flux en cache par Instance et `garbage_collect()` ne réclame PAS un flux encore référencé DANS CETTE Instance → le ré-open retombe sur l'orphelin ; une Instance neuve n'a aucun cache et résout la génération vivante. Banc (domaine scratch, nœud dl360-1) : GC avec l'ancien reader ENCORE ouvert → reader frais DÉCROCHÉ (tête gen1) ; close+GC+reopen → VIVANT (gen2) même avec un lecteur d'un AUTRE process resté décroché (le verrou inter-process supposé n'existe pas) ; Instance dédiée → VIVANT. L'Instance dédiée est fermée avec la source (`_close_source`).",
+      "Toute reconnexion est désormais TRACÉE (niveau « anomalies », donc visible au niveau par défaut) avec la raison et le n° de tentative — 3 premières lignes puis une par centaine (pas de rafale). L'absence totale de trace côté shards est ce qui a coûté le plus de temps sur l'incident.",
+      "Aucun nouvel endpoint : redéploiement simple (le script ET bobimxl.py sont poussés par l'orchestrateur, pas d'image à reconstruire)."
+    ],
     "Niveau de log par plugin — événements par défaut, métriques hors du journal (0.44.0)": [
       "Nouveau réglage `log_level` (détaillé / événements / anomalies / erreurs, défaut « Événements »). Principe : le journal PAR DÉFAUT doit permettre de reconstituer une panne après coup — on ne coupe pas l'information, on coupe la redondance.",
       "La ligne « Mix frame … frames/s » (2/s à 50 fps, ~24 Mo de journal Docker NON roté mesurés au banc) est une MÉTRIQUE, pas un événement : fps, trames perdues et compteurs slice sont déjà publiés sur :8080 et échantillonnés par l'orchestrateur. Reléguée en `debug` — elle ne brûle plus la fenêtre de rétention.",
