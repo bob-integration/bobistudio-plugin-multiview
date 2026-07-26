@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.43.1",
+  "version": "0.44.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -57,7 +57,8 @@
     "show_no_signal": true,
     "freeze_detect_s": 2.0,
     "show_proxy": false,
-    "orientation": "landscape"
+    "orientation": "landscape",
+    "log_level": "info"
   },
   "config_schema": [
     {
@@ -206,6 +207,32 @@
       "visible_if": {
         "gpu_slice": true
       }
+    },
+    {
+      "key": "log_level",
+      "type": "select",
+      "label": "Niveau de log",
+      "help": "Verbosité du journal du conteneur. Défaut « Événements » : les faits marquants (démarrage/arrêt, changement de format, reconnexion, repli sur un chemin dégradé, entrée qui apparaît ou disparaît) sont TOUJOURS écrits — après une panne le journal doit permettre de reconstituer l'histoire, et élever le niveau après coup ne récupère rien. Les métriques périodiques (fps, compteurs) ne sont PAS journalisées : elles sont déjà publiées sur :8080. « Détaillé » = lance-flammes par trame, à n'activer que le temps d'un diagnostic (le journal Docker n'est pas roté).",
+      "options": [
+        {
+          "value": "debug",
+          "label": "Détaillé (par trame — diagnostic ponctuel)"
+        },
+        {
+          "value": "info",
+          "label": "Événements (défaut)"
+        },
+        {
+          "value": "warning",
+          "label": "Anomalies seules"
+        },
+        {
+          "value": "error",
+          "label": "Erreurs seules"
+        }
+      ],
+      "default": "info",
+      "scope": "user"
     }
   ],
   "wiring": {
@@ -292,7 +319,8 @@
       "/reconfigure",
       "/overlays",
       "/chrono",
-      "/overlay_text"
+      "/overlay_text",
+      "/log_level"
     ],
     "read_endpoints": [
       "/state",
@@ -306,33 +334,127 @@
     }
   },
   "param_tree": {
-    "boxes": { "count_from": "n_windows", "path_prefix": "windows", "idx": "idx", "label": "PiP" },
+    "boxes": {
+      "count_from": "n_windows",
+      "path_prefix": "windows",
+      "idx": "idx",
+      "label": "PiP"
+    },
     "box_groups": [
-      { "label": "Position / taille", "endpoint": "/window", "caps": "window_fields",
+      {
+        "label": "Position / taille",
+        "endpoint": "/window",
+        "caps": "window_fields",
         "fields": {
-          "x": { "label": "Position X", "type": "pixels" },
-          "y": { "label": "Position Y", "type": "pixels" },
-          "w": { "label": "Largeur", "type": "pixels" },
-          "h": { "label": "Hauteur", "type": "pixels" } } },
-      { "label": "Affichage", "endpoint": "/window",
+          "x": {
+            "label": "Position X",
+            "type": "pixels"
+          },
+          "y": {
+            "label": "Position Y",
+            "type": "pixels"
+          },
+          "w": {
+            "label": "Largeur",
+            "type": "pixels"
+          },
+          "h": {
+            "label": "Hauteur",
+            "type": "pixels"
+          }
+        }
+      },
+      {
+        "label": "Affichage",
+        "endpoint": "/window",
         "fields": {
-          "show_label": { "label": "Afficher le nom", "type": "bool", "default": true },
-          "show_tally": { "label": "Afficher le tally", "type": "bool", "default": true },
-          "hidden": { "label": "Masquer la fenêtre", "type": "bool", "default": false } } },
-      { "label": "VU-mètres", "endpoint": "/window", "caps": "window_fields",
+          "show_label": {
+            "label": "Afficher le nom",
+            "type": "bool",
+            "default": true
+          },
+          "show_tally": {
+            "label": "Afficher le tally",
+            "type": "bool",
+            "default": true
+          },
+          "hidden": {
+            "label": "Masquer la fenêtre",
+            "type": "bool",
+            "default": false
+          }
+        }
+      },
+      {
+        "label": "VU-mètres",
+        "endpoint": "/window",
+        "caps": "window_fields",
         "fields": {
-          "meter_opacity": { "label": "Opacité des VU", "type": "percent" },
-          "meter_inside": { "label": "VU à l'intérieur de l'image", "type": "bool", "default": false } } },
-      { "label": "TSL", "endpoint": "/window", "caps": "window_fields",
+          "meter_opacity": {
+            "label": "Opacité des VU",
+            "type": "percent"
+          },
+          "meter_inside": {
+            "label": "VU à l'intérieur de l'image",
+            "type": "bool",
+            "default": false
+          }
+        }
+      },
+      {
+        "label": "TSL",
+        "endpoint": "/window",
+        "caps": "window_fields",
         "fields": {
-          "tsl_index": { "label": "Index TSL", "type": "number" } } }
+          "tsl_index": {
+            "label": "Index TSL",
+            "type": "number"
+          }
+        }
+      }
     ],
     "global_groups": [
-      { "label": "Affichage des sources", "endpoint": "/style",
+      {
+        "label": "Affichage des sources",
+        "endpoint": "/style",
         "fields": {
-          "show_no_signal": { "label": "Afficher « NO SIGNAL » si source absente", "type": "bool", "default": true },
-          "freeze_detect_s": { "label": "Détection image figée (s, 0 = off)", "type": "number", "min": 0, "max": 30, "default": 2 },
-          "show_proxy": { "label": "Badge proxy (pyramide)", "type": "bool", "default": false } } }
+          "show_no_signal": {
+            "label": "Afficher « NO SIGNAL » si source absente",
+            "type": "bool",
+            "default": true
+          },
+          "freeze_detect_s": {
+            "label": "Détection image figée (s, 0 = off)",
+            "type": "number",
+            "min": 0,
+            "max": 30,
+            "default": 2
+          },
+          "show_proxy": {
+            "label": "Badge proxy (pyramide)",
+            "type": "bool",
+            "default": false
+          }
+        }
+      },
+      {
+        "label": "Journal (diagnostic)",
+        "endpoint": "/log_level",
+        "fields": {
+          "level": {
+            "label": "Niveau de log",
+            "type": "enum",
+            "options": [
+              "debug",
+              "info",
+              "warning",
+              "error"
+            ],
+            "default": "info",
+            "path": "log_level"
+          }
+        }
+      }
     ]
   },
   "actions": [
@@ -340,27 +462,45 @@
       "id": "chrono_start",
       "label": "Démarrer l'horloge",
       "endpoint": "/chrono",
-      "body": { "action": "start" },
+      "body": {
+        "action": "start"
+      },
       "params": [
-        { "key": "id", "label": "Horloge", "options_endpoint": "/chronos" }
+        {
+          "key": "id",
+          "label": "Horloge",
+          "options_endpoint": "/chronos"
+        }
       ]
     },
     {
       "id": "chrono_stop",
       "label": "Arrêter l'horloge",
       "endpoint": "/chrono",
-      "body": { "action": "stop" },
+      "body": {
+        "action": "stop"
+      },
       "params": [
-        { "key": "id", "label": "Horloge", "options_endpoint": "/chronos" }
+        {
+          "key": "id",
+          "label": "Horloge",
+          "options_endpoint": "/chronos"
+        }
       ]
     },
     {
       "id": "chrono_reset",
       "label": "Remettre l'horloge à zéro",
       "endpoint": "/chrono",
-      "body": { "action": "reset" },
+      "body": {
+        "action": "reset"
+      },
       "params": [
-        { "key": "id", "label": "Horloge", "options_endpoint": "/chronos" }
+        {
+          "key": "id",
+          "label": "Horloge",
+          "options_endpoint": "/chronos"
+        }
       ]
     },
     {
@@ -368,8 +508,16 @@
       "label": "Changer le texte",
       "endpoint": "/overlay_text",
       "params": [
-        { "key": "id", "label": "Champ texte", "options_endpoint": "/texts" },
-        { "key": "text", "label": "Texte", "type": "text" }
+        {
+          "key": "id",
+          "label": "Champ texte",
+          "options_endpoint": "/texts"
+        },
+        {
+          "key": "text",
+          "label": "Texte",
+          "type": "text"
+        }
       ]
     },
     {
@@ -417,6 +565,37 @@
           "label": "Layout",
           "type": "number",
           "options_from": "recall"
+        }
+      ]
+    },
+    {
+      "id": "log_level",
+      "label": "Niveau de log (à chaud)",
+      "endpoint": "/log_level",
+      "params": [
+        {
+          "key": "level",
+          "label": "Niveau",
+          "type": "text",
+          "default": "info",
+          "options": [
+            {
+              "value": "debug",
+              "label": "Détaillé"
+            },
+            {
+              "value": "info",
+              "label": "Événements (défaut)"
+            },
+            {
+              "value": "warning",
+              "label": "Anomalies seules"
+            },
+            {
+              "value": "error",
+              "label": "Erreurs seules"
+            }
+          ]
         }
       ]
     }

@@ -1,7 +1,14 @@
 {
-  "version": "0.43.1",
-  "date": "2026-07-25",
+  "version": "0.44.0",
+  "date": "2026-07-26",
   "changes": {
+    "Niveau de log par plugin — événements par défaut, métriques hors du journal (0.44.0)": [
+      "Nouveau réglage `log_level` (détaillé / événements / anomalies / erreurs, défaut « Événements »). Principe : le journal PAR DÉFAUT doit permettre de reconstituer une panne après coup — on ne coupe pas l'information, on coupe la redondance.",
+      "La ligne « Mix frame … frames/s » (2/s à 50 fps, ~24 Mo de journal Docker NON roté mesurés au banc) est une MÉTRIQUE, pas un événement : fps, trames perdues et compteurs slice sont déjà publiés sur :8080 et échantillonnés par l'orchestrateur. Reléguée en `debug` — elle ne brûle plus la fenêtre de rétention.",
+      "« FRAME LENTE » (précurseur d'incident) n'est plus une rafale d'1 ligne/s : AGRÉGÉE sur 1 min et émise en UNE ligne au niveau par défaut — « N frame(s) lente(s) sur la dernière minute — pire own=…ms tick_late=…ms, segment dominant = inputs (N×) ». Le détail par occurrence reste en `debug` ; total cumulé exposé sur :8080 (`slow_frames_total`). Un mur sain n'écrit rien.",
+      "Endpoint POST /log_level {level} : bascule la verbosité À CHAUD, sans redéployer. Niveau courant publié dans /state (lisible en condition de macro).",
+      "Exposé aux macros : réglage persistant via le config_schema (étape « config »), bascule à chaud via le param_tree (groupe « Journal (diagnostic) ») et l'action « Niveau de log (à chaud) ». REDÉPLOIEMENT requis (nouvel endpoint dans le conteneur)."
+    ],
     "Anti-churn habillage : re-bake chrome UNIQUEMENT sur changement réel (0.43.1)": [
       "Handler /tally : ne marque plus l'habillage « sale » que si la couleur de lampe change RÉELLEMENT (comparaison ancienne≠nouvelle, comme /tally_bulk depuis 0.39.2). Un ré-envoi identique (action/macro rejouée) ne déclenche plus de re-bake plein cadre.",
       "Hot-apply _do_reconfigure : le tissu repousse la config au mur toutes les ~30 s même sans changement ; geom_dirty/tally_dirty n'étaient armés qu'INCONDITIONNELLEMENT en fin de fonction → re-bake chrome (~25 ms) toutes les 30 s pour rien. Désormais armés seulement si le flux, les blocs VU ou les frises ont réellement changé. Élimine un churn CPU périodique résiduel (pertinent surtout sur nœuds pauvres en CPU). Aucun nouvel endpoint : redéploiement simple, pas de restart requis pour le contrat."

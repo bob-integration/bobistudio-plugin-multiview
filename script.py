@@ -72,6 +72,51 @@ CONFIG         = {config}
 HOSTNAME       = "{hostname}"
 PLUGIN_VERSION = "{plugin_version}"
 
+# ─── Niveau de log ─────────────────────────────────────────────────────────
+# `log_level` (config_schema du plugin, défaut « info ») filtre les impressions du script.
+# Le critère n'est PAS « verbeux vs silencieux » mais ÉVÉNEMENT vs MÉTRIQUE :
+#   debug   — le lance-flammes : par trame, par bande, décisions internes
+#   info    — ÉVÉNEMENTS rares et signifiants  ← DÉFAUT (toujours visible) : démarrage/
+#             arrêt, session ouverte/fermée, changement de format, reconnexion, repli sur
+#             un chemin dégradé, entrée qui apparaît/disparaît, rebascule.
+#   warning — anomalies et replis subis
+#   error   — échecs
+# RÈGLE 1 : après une panne, le journal PAR DÉFAUT doit permettre de RECONSTITUER
+#   l'histoire. Élever le niveau après coup ne récupère RIEN : ce qui n'a pas été écrit
+#   est perdu. On ne coupe donc pas l'information, on coupe la redondance.
+# RÈGLE 2 : une MÉTRIQUE PÉRIODIQUE (fps, compteurs) ne se journalise PAS — elle est déjà
+#   publiée sur :8080 et échantillonnée par l'orchestrateur. La journaliser duplique la
+#   mesure ET consomme la fenêtre de rétention (journal Docker non roté : le bruit purge
+#   les lignes utiles anciennes). Au mieux `debug`.
+# RÈGLE 3 : un événement qui peut partir EN RAFALE s'AGRÈGE sur une fenêtre et sort en UNE
+#   ligne périodique (« N frames lentes sur la dernière minute, pire … ») — le signal
+#   reste, le spam disparaît.
+# Réglable à chaud, sans redéployer, quand le plugin expose l'endpoint de contrôle :
+# POST :8082/log_level {{"level": "debug"}} (exposé aux macros via param_tree/actions).
+_LOG_ORDER = {{"debug": 10, "info": 20, "warning": 30, "error": 40}}
+LOG_LEVEL = str(CONFIG.get("log_level") or "info").strip().lower()
+if LOG_LEVEL not in _LOG_ORDER:
+    LOG_LEVEL = "info"
+_LOG_MIN = _LOG_ORDER[LOG_LEVEL]
+
+
+def log(msg, niveau="info"):
+    """Impression gatée par le niveau de log courant (défaut du message : « info »)."""
+    if _LOG_ORDER.get(niveau, 20) >= _LOG_MIN:
+        print(msg, flush=True)
+
+
+def set_log_level(niveau):
+    """Change le niveau à chaud. Renvoie True si le niveau est reconnu."""
+    global LOG_LEVEL, _LOG_MIN
+    lv = str(niveau or "").strip().lower()
+    if lv not in _LOG_ORDER:
+        return False
+    LOG_LEVEL, _LOG_MIN = lv, _LOG_ORDER[lv]
+    return True
+
+
+
 # Filet anti-régression : `force_cpu` force le chemin numpy ÉPROUVÉ (xp=np) MÊME sur un nœud GPU,
 # sans changer d'image. Réassigne les globals AVANT toute boucle de rendu → repli instantané identique
 # au multiview 100% CPU si le chemin GPU posait souci. Absent/false → aucun effet (auto-détection).
@@ -310,11 +355,12 @@ try:
 except Exception:
     pass
 if SLICE_MODE and not SLICE_ON:
-    print(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} sans gpu_slice "
-          f"portrait={{_PORTRAIT}} h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame")
+    log(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} sans gpu_slice "
+        f"portrait={{_PORTRAIT}} h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame", "warning")
 if GPU_SLICE:
-    print(f"multiview: GPU SLICE actif (opt-in banc, TISSU_SLICE_GPU.md) — bandes de "
-          f"{{SLICE_LINES}} lignes sur {{_GPU_NAME}}, micro-batch {{GPU_BATCH_BANDS}} bande(s)/lot")
+    log(f"multiview: GPU SLICE actif (opt-in banc, TISSU_SLICE_GPU.md) — bandes de "
+        f"{{SLICE_LINES}} lignes sur {{_GPU_NAME}}, micro-batch {{GPU_BATCH_BANDS}} bande(s)/lot",
+        "info")
 # ── CADENCE « flow » (tissu en tranches, TISSU_SLICE.md) ──────────────────────────────────────
 # Data-flow ALIGNÉ SUR LA GRILLE : pas de barrière (le point fixe deadline/période de l'input-
 # locked disparaît structurellement — le tick d'epoch EST le déclencheur, aligné à ~1,6 ms sur
@@ -326,7 +372,7 @@ if GPU_SLICE:
 # tuile (0.24.1). Exige le mode tranche + genlock possible ; sinon dégrade en genlock whole-frame.
 FLOW = (CADENCE == "flow") and SLICE_ON
 if CADENCE == "flow" and not FLOW:
-    print("multiview: cadence=flow exige le mode tranche éligible — repli genlock")
+    log("multiview: cadence=flow exige le mode tranche éligible — repli genlock", "warning")
 if FLOW:
     INPUT_LOCKED = False      # pacing = grille (branche genlock) ; la spécificité flow est dans
                               # le CIBLAGE d'index (collecte + open_grain(fi_out)), pas le pacing
@@ -1902,8 +1948,8 @@ def _hist_warn(key, kind, rect, err, trace=False):
     if e is None:
         e = {{"kind": kind, "rect": list(rect), "err": err, "n": 0, "t": now}}
         _hist_errs[k] = e
-        print(f"multiview: HISTORIQUE {{kind}} {{key}} rect={{rect}} — RENDU IMPOSSIBLE : {{err}}",
-              flush=True)
+        log(f"multiview: HISTORIQUE {{kind}} {{key}} rect={{rect}} — RENDU IMPOSSIBLE : {{err}}",
+            "warning")
         if trace:
             try:
                 import traceback as _tb
@@ -3175,7 +3221,7 @@ def _materialize_font_library():
     try:
         os.makedirs(_FONT_LIB_DIR, exist_ok=True)
     except OSError as e:
-        print("[fonts] répertoire de travail impossible (%s) → repli DejaVu" % e, flush=True)
+        log("[fonts] répertoire de travail impossible (%s) → repli DejaVu" % e, "warning")
         return
     ok = 0
     for ent in lib:
@@ -3200,10 +3246,10 @@ def _materialize_font_library():
             _FONT_FILES[key] = [path]
             ok += 1
         except Exception as e:
-            print("[fonts] police %s (%s) illisible : %s → repli DejaVu"
-                  % (key, ent.get("name") or "?", e), flush=True)
-    print("[fonts] bibliothèque matérialisée : %d/%d police(s) dans %s"
-          % (ok, len(lib), _FONT_LIB_DIR), flush=True)
+            log("[fonts] police %s (%s) illisible : %s → repli DejaVu"
+                % (key, ent.get("name") or "?", e), "warning")
+    log("[fonts] bibliothèque matérialisée : %d/%d police(s) dans %s"
+        % (ok, len(lib), _FONT_LIB_DIR), "info")   # une seule ligne au démarrage → `info`
 
 _materialize_font_library()
 
@@ -4212,7 +4258,7 @@ def _chrome_baker_loop():
             _chrome_dirty_retry = time.time()
             if _chrome_dirty_retry - _bake_errs[0] > 5.0:
                 _bake_errs[0] = _chrome_dirty_retry
-                print(f"multiview: boulanger chrome — échec de re-bake : {{_e!r}}")
+                log(f"multiview: boulanger chrome — échec de re-bake : {{_e!r}}", "warning")
             tally_dirty.set()
             time.sleep(0.05)
         _bake_wake.wait(0.005)
@@ -4436,6 +4482,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
             return self._do_chrono()
         if self.path == "/overlay_text":
             return self._do_overlay_text()
+        if self.path == "/log_level":
+            return self._do_log_level()
         if self.path != "/input":
             self.send_response(404); self.end_headers(); return
         b = self._json()
@@ -4596,6 +4644,15 @@ class MvControlHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": True}}).encode())
+    def _do_log_level(self):
+        # Verbosité À CHAUD (pas de redéploiement) : passer un mur en `debug` pendant un
+        # incident, puis le remettre en `warning`. Le niveau persistant reste le champ
+        # `log_level` du config_schema (celui-ci est volatil, perdu au redéploiement).
+        b = self._json()
+        ok = set_log_level(b.get("level") or b.get("log_level"))
+        self.send_response(200 if ok else 400)
+        self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(json.dumps({{"ok": ok, "log_level": LOG_LEVEL}}).encode())
     def _do_reconfigure(self):
         # Remplacement atomique de toute la liste de sources + géométrie.
         # Permet l'ajout/suppression de fenêtres à chaud depuis l'éditeur.
@@ -4769,6 +4826,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
                    for ov in OVERLAYS if ov.get("id")]
         payload = {{
             "inputs":    inp,
+            "log_level": LOG_LEVEL,   # lisible en CONDITION de macro (« si le mur est en debug »)
             "n_windows": len(wins),
             "canvas":    [OUT_WIDTH, OUT_HEIGHT],
             "windows":   wins,
@@ -4805,7 +4863,7 @@ threading.Thread(target=_hist_baker_loop, daemon=True).start()
 try:
     _chrome_bake_pass()
 except Exception as _e:
-    print(f"multiview: amorce du chrome échouée ({{_e!r}}) — le boulanger réessaiera")
+    log(f"multiview: amorce du chrome échouée ({{_e!r}}) — le boulanger réessaiera", "warning")
 threading.Thread(target=_chrome_baker_loop, daemon=True).start()
 
 # Sortie MXL : index tai en genlock-grille, sinon compteur libre (input-locked / cadence libre).
@@ -4818,12 +4876,12 @@ out_writer = bobimxl.Writer(inst, SHM_OUT_NAME, OUTPUT_W, OUTPUT_H, CHROMA, BIT_
 if INTERLACED:
     # Le mur COMPOSE toujours une trame PLEINE (OUTPUT_H) : tout le rendu (tuiles, habillage,
     # VU, frises) est inchangé. Seule l'ÉCRITURE change : la trame est découpée en 2 champs.
-    print(f"multiview: sortie ENTRELACÉE {{OUTPUT_W}}x{{OUTPUT_H}}{{FIELD_ORDER}} — "
-          f"{{_FN}}/{{_FD}} trames/s, 2 grains-champs de {{OUT_FIELD_SIZE}} o par trame")
+    log(f"multiview: sortie ENTRELACÉE {{OUTPUT_W}}x{{OUTPUT_H}}{{FIELD_ORDER}} — "
+        f"{{_FN}}/{{_FD}} trames/s, 2 grains-champs de {{OUT_FIELD_SIZE}} o par trame", "info")
 _il_frame = 0        # compteur de TRAME (cadence libre / input-locked) → index champ = ×2 + parité
 if SLICE_ON:
-    print(f"multiview: MODE TRANCHE actif — {{SLICE_LINES}} lignes/bande "
-          f"({{OUT_HEIGHT // SLICE_LINES}} tranches/trame)")
+    log(f"multiview: MODE TRANCHE actif — {{SLICE_LINES}} lignes/bande "
+        f"({{OUT_HEIGHT // SLICE_LINES}} tranches/trame)", "info")
     metrics["slice_mode"] = True
 out_frame_index = 0
 start_time = time.time()
@@ -5227,6 +5285,11 @@ try:
 except (ValueError, OSError):
     pass   # pas dans le thread principal / plateforme sans SIGBUS
 _last_frame_err = 0.0   # throttle du log du garde-fou de boucle (try/except du corps per-frame)
+# Agrégat FRAME LENTE sur fenêtre glissante d'1 min (cf. règle 3 du bloc « Niveau de log ») :
+# les frames lentes sont un PRÉCURSEUR d'incident → visibles au niveau par défaut, mais en UNE
+# ligne de synthèse par minute au lieu d'une rafale. `seg` = histogramme du segment dominant.
+_slow_acc = {{"n": 0, "worst_own": 0.0, "worst_tick": 0.0, "t0": time.time(),
+              "seg": {{"tick": 0, "inputs": 0, "overlays": 0, "output": 0, "waited": 0}}}}
 _last_emit_m = time.monotonic()   # mode input-locked : instant (monotone) de la dernière émission
 # RÉ-OUVERTURE des Readers PÉRIMÉS : un producteur amont (2110_io RX (re)sub/relock, redeploy d'une
 # source…) DÉTRUIT puis RECRÉE son flux MXL SOUS LE MÊME NOM. ensure_input garde alors le handle en
@@ -5670,7 +5733,7 @@ while True:
         # et la cadence avance normalement ci-dessous. Log throttlé pour ne pas inonder.
         _nowe = time.time()
         if _nowe - _last_frame_err > 5.0:
-            print(f"multiview: erreur de rendu ignorée (frame {{out_frame_index}}) : {{_e}}")
+            log(f"multiview: erreur de rendu ignorée (frame {{out_frame_index}}) : {{_e}}", "warning")
             _last_frame_err = _nowe
     # Latence par PiP : TRANSIT (arrivée) déjà calculé à la lecture (ts_read − ts_in producteur).
     for path, transit_ms in ts_in_per_input.items():
@@ -5683,23 +5746,46 @@ while True:
     # EXCLUES — le tissu (décisions de sharding) et le monitoring y lisent la saturation du
     # worker, pas la période de la source (même contrat que la pyramide / cap réactif).
     own_lat.push((ts_out - ts_cycle_start - _sl_waited) / 1e6)
-    # Diagnostic FRAME LENTE (grain tardif) : attribue une pause > seuil au bon SEGMENT du cycle
-    # (tick raté avant le cycle / gather des entrées / habillage / écriture sortie / attentes
-    # get_slice). Throttlé à 1 ligne/s pour ne pas inonder le log docker.
+    # FRAME LENTE = PRÉCURSEUR d'incident : reste visible au niveau par défaut (`info`) — mais
+    # AGRÉGÉE (règle 3 du bloc « Niveau de log »). L'ancienne version sortait jusqu'à 1 ligne/s
+    # en régime dégradé (spam de rafale, la rétention du journal y passait) ; on accumule
+    # désormais sur une fenêtre d'1 min et on émet UNE ligne : combien, la pire, et le segment
+    # DOMINANT (tick raté avant le cycle / gather des entrées / habillage / écriture sortie).
+    # Le détail par occurrence reste disponible en `debug`.
     _own_ms_dbg = (ts_out - ts_cycle_start - _sl_waited) / 1e6
     if _own_ms_dbg > 15.0 or _tick_late_ms > 10.0:
-        _nowd = time.time()
-        if _nowd - globals().get('_last_slow_log', 0.0) > 1.0:
-            globals()['_last_slow_log'] = _nowd
-            try:
-                _seg_in = (_t_after_inputs - ts_cycle_start) / 1e6
-                _seg_ov = (_t_after_overlays - _t_after_inputs) / 1e6
-                _seg_out = (ts_out - _t_after_overlays) / 1e6
-            except Exception:
-                _seg_in = _seg_ov = _seg_out = -1.0
-            print(f"multiview: FRAME LENTE own={{_own_ms_dbg:.1f}}ms tick_late={{_tick_late_ms:.1f}}ms "
-                  f"inputs={{_seg_in:.1f}} overlays={{_seg_ov:.1f}} output={{_seg_out:.1f}} "
-                  f"waited={{_sl_waited / 1e6:.1f}} fi={{out_frame_index}}")
+        try:
+            _seg_in = (_t_after_inputs - ts_cycle_start) / 1e6
+            _seg_ov = (_t_after_overlays - _t_after_inputs) / 1e6
+            _seg_out = (ts_out - _t_after_overlays) / 1e6
+        except Exception:
+            _seg_in = _seg_ov = _seg_out = -1.0
+        _slow_acc["n"] += 1
+        if _own_ms_dbg > _slow_acc["worst_own"]:
+            _slow_acc["worst_own"] = _own_ms_dbg
+        if _tick_late_ms > _slow_acc["worst_tick"]:
+            _slow_acc["worst_tick"] = _tick_late_ms
+        # Segment dominant de CETTE occurrence (le plus cher des quatre) → histogramme de la fenêtre.
+        _segs = (("tick", _tick_late_ms), ("inputs", _seg_in), ("overlays", _seg_ov),
+                 ("output", _seg_out), ("waited", _sl_waited / 1e6))
+        _slow_acc["seg"][max(_segs, key=lambda kv: kv[1])[0]] += 1
+        log(f"multiview: FRAME LENTE own={{_own_ms_dbg:.1f}}ms tick_late={{_tick_late_ms:.1f}}ms "
+            f"inputs={{_seg_in:.1f}} overlays={{_seg_ov:.1f}} output={{_seg_out:.1f}} "
+            f"waited={{_sl_waited / 1e6:.1f}} fi={{out_frame_index}}", "debug")
+    # Émission de la ligne AGRÉGÉE : au plus 1/min, et UNIQUEMENT si la fenêtre a vu des frames
+    # lentes (un mur sain n'écrit RIEN). Compteur cumulé aussi exposé sur :8080 (métrique).
+    _nowd = time.time()
+    if _slow_acc["n"] and _nowd - _slow_acc["t0"] >= 60.0:
+        _dom = max(_slow_acc["seg"].items(), key=lambda kv: kv[1])
+        log(f"multiview: {{_slow_acc['n']}} frame(s) lente(s) sur la dernière minute — "
+            f"pire own={{_slow_acc['worst_own']:.1f}}ms tick_late={{_slow_acc['worst_tick']:.1f}}ms, "
+            f"segment dominant = {{_dom[0]}} ({{_dom[1]}}×)", "info")
+        metrics["slow_frames_total"] = metrics.get("slow_frames_total", 0) + _slow_acc["n"]
+        _slow_acc.update({{"n": 0, "worst_own": 0.0, "worst_tick": 0.0, "t0": _nowd}})
+        for _k in _slow_acc["seg"]:
+            _slow_acc["seg"][_k] = 0
+    elif _nowd - _slow_acc["t0"] >= 60.0:
+        _slow_acc["t0"] = _nowd
     out_frame_index += 1
     if GENLOCK:
         next_frame_time += FRAME_INTERVAL
@@ -5734,10 +5820,16 @@ while True:
             metrics["slice"] = {{"tiles": _sd[0], "valid0": _sd[1], "waits": _sd[2],
                                "fallbacks": _sd[3], "dormant": _sd[4],
                                "backoff": len(_sl_backoff)}}
-        print(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} {{metrics['fps_unit']}}/s"
-              + (f" ({{metrics['frames_per_s']}} trames/s)" if INTERLACED else "")
-              + (f" [perdues: {{_rate_total['missed']}}]" if _rate_total["missed"] else "")
-              + (f" [slice: tuiles={{_sd[0]}} valid0={{_sd[1]}} waits={{_sd[2]}} replis={{_sd[3]}} dorm={{_sd[4]}}]" if _sd else ""))
+        # ⚠ MÉTRIQUE, PAS UN ÉVÉNEMENT (règle 2 du bloc « Niveau de log ») : fps, trames
+        # perdues et compteurs slice sont DÉJÀ publiés sur :8080 et échantillonnés par
+        # l'orchestrateur. Cette ligne (2/s à 50 fps) ne faisait que dupliquer la mesure et
+        # BRÛLER la fenêtre de rétention du journal — c'est elle qui produisait les 24 Mo
+        # mesurés au banc, purgeant les lignes utiles anciennes. Reléguée en `debug`.
+        log(f"Mix frame {{out_frame_index}} — {{metrics['fps']}} {{metrics['fps_unit']}}/s"
+            + (f" ({{metrics['frames_per_s']}} trames/s)" if INTERLACED else "")
+            + (f" [perdues: {{_rate_total['missed']}}]" if _rate_total["missed"] else "")
+            + (f" [slice: tuiles={{_sd[0]}} valid0={{_sd[1]}} waits={{_sd[2]}} replis={{_sd[3]}} dorm={{_sd[4]}}]" if _sd else ""),
+            "debug")
     # Point sûr GC (cf. bloc gc.disable() avant la boucle) : la dernière bande de la trame est
     # committée (l'aval a déjà tout), on est dans le temps mort avant le tick suivant. gen0+gen1
     # chaque trame ; gen2 cadencé et MESURÉ (gc_full_ms sur :8080 — recette : doit rester à
