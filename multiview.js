@@ -1138,7 +1138,11 @@ function refreshHistPanel() {
         const list = isVideo ? videoSources : audioSources;
         const cur = (isVideo ? b.path : b.audio_path) || '';
         const opts = list.map(s => {
-            const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})` : `${s.hostname} → ${s.shm}`;
+            const base = s.label ? `${s.hostname} → ${s.label} (${s.shm})` : `${s.hostname} → ${s.shm}`;
+            // Libellé d'exploitation du niveau courant devant le nom technique (window.SourceLabels,
+            // sélecteur global de la barre de navigation) — l'opérateur choisit sa source sous le nom
+            // qu'il lui donne, pas sous « 2110-io-dl360_3 ».
+            const txt = window.SourceLabels ? window.SourceLabels.display(s.shm, base) : base;
             return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
         });
         opts.unshift('<option value="">' + escapeHtml(T('plugin.multiview.mb_audio_none_option')) + '</option>');
@@ -1283,8 +1287,9 @@ function refreshEntryPanel() {
     const pathSel = document.getElementById('ed_path');
     // Une <option> par sortie vidéo individuelle (libellé hostname → label (shm)).
     const opts = videoSources.map(s => {
-        const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
-                            : `${s.hostname} → ${s.shm}`;
+        const base = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
+                             : `${s.hostname} → ${s.shm}`;
+        const txt = window.SourceLabels ? window.SourceLabels.display(s.shm, base) : base;
         return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
     });
     // PiP vide : option explicite « aucune source » en tête (path = '').
@@ -1302,8 +1307,9 @@ function refreshEntryPanel() {
     const audioSel = document.getElementById('ed_audio_path');
     if (audioSel) {
         const audioOpts = audioSources.map(s => {
-            const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
-                                : `${s.hostname} → ${s.shm}`;
+            const base = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
+                                 : `${s.hostname} → ${s.shm}`;
+            const txt = window.SourceLabels ? window.SourceLabels.display(s.shm, base) : base;
             return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
         });
         audioOpts.unshift('<option value="' + escapeHtml(AUDIO_PATH_NONE) + '">'
@@ -2422,7 +2428,8 @@ function refreshBlockPanel() {
     const sel = document.getElementById('mb_audio_path');
     if (sel) {
         const opts = audioSources.map(s => {
-            const txt = s.label ? `${s.hostname} → ${s.label} (${s.shm})` : `${s.hostname} → ${s.shm}`;
+            const base = s.label ? `${s.hostname} → ${s.label} (${s.shm})` : `${s.hostname} → ${s.shm}`;
+            const txt = window.SourceLabels ? window.SourceLabels.display(s.shm, base) : base;
             return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
         });
         opts.unshift('<option value="">' + escapeHtml(T('plugin.multiview.mb_audio_none_option')) + '</option>');
