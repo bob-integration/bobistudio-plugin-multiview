@@ -1,7 +1,12 @@
 {
-  "version": "0.46.0",
+  "version": "0.47.0",
   "date": "2026-07-27",
   "changes": {
+    "Index de sortie : un seul point de calcul, dans bobimxl (0.47.0)": [
+      "L'index des grains de sortie n'est plus calculé dans le plugin : il vient de bobimxl.Writer.next_index, LE point unique pour toute la flotte — grille TAI, strictement croissante, holdover. Chaque plugin réinventait sa version (compteur maison, appel direct à mxlGetCurrentIndex, convention de repli propre), avec les divergences que ça implique.",
+      "Un index de grain est une COORDONNÉE DE TEMPS, pas un numéro de séquence : docs/Timing.md du SDK MXL est normatif (GrainIndex = Timestamp / GrainDurationNs, epoch SMPTE 2059-1). Un compteur parti de 0 casse l'alignement inter-flux et rend le flux irréplicable entre nœuds.",
+      "PROPAGATION de l'origin timestamp : un plugin qui TRAITE un grain source passe open_grain(src_index=...) — le grain de sortie porte la coordonnée de son origine, ce qui garde alignées les branches de latences différentes. Pas de source (entrée absente, trame de garde) → repli sur la grille décidé par bobimxl, plus par chaque plugin."
+    ],
     "Index de sortie sur la grille TAI en toute cadence (0.46.0)": [
       "L'index des grains de sortie est désormais TOUJOURS pris sur la grille TAI, y compris en cadence input-locked ou libre, où le mur estampillait un compteur parti de 0. L'index d'un grain est une COORDONNÉE DE TEMPS, pas un numéro de séquence : docs/Timing.md du SDK MXL est normatif (GrainIndex = Timestamp / GrainDurationNs, epoch SMPTE 2059-1).",
       "Un compteur libre casse l'alignement inter-flux que la doc décrit (ReadIndex = min(F1_head … FN_head)) et rend le flux irréplicable vers un autre nœud — la réplication s'amorce sur la grille et n'atteint jamais un index parti de 0.",
