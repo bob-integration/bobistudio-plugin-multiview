@@ -1,7 +1,12 @@
 {
-  "version": "0.45.1",
+  "version": "0.46.0",
   "date": "2026-07-27",
   "changes": {
+    "Index de sortie sur la grille TAI en toute cadence (0.46.0)": [
+      "L'index des grains de sortie est désormais TOUJOURS pris sur la grille TAI, y compris en cadence input-locked ou libre, où le mur estampillait un compteur parti de 0. L'index d'un grain est une COORDONNÉE DE TEMPS, pas un numéro de séquence : docs/Timing.md du SDK MXL est normatif (GrainIndex = Timestamp / GrainDurationNs, epoch SMPTE 2059-1).",
+      "Un compteur libre casse l'alignement inter-flux que la doc décrit (ReadIndex = min(F1_head … FN_head)) et rend le flux irréplicable vers un autre nœud — la réplication s'amorce sur la grille et n'atteint jamais un index parti de 0.",
+      "La CADENCE (genlock-grille, input-locked, libre) reste un tout autre sujet : elle dit QUAND on émet, jamais quelle coordonnée on estampille. Index strictement croissant garanti (deux trames dans le même créneau, horloge qui recule, horloge indisponible → +1 puis recalage)."
+    ],
     "Sélecteurs de source au niveau de libellé courant (0.45.1)": [
       "Les quatre sélecteurs de source de l'éditeur (source d'un PiP, source audio d'un PiP, source d'un bloc d'historique vidéo, source audio d'un bloc) affichaient « hôte → flux (shm) » en dur. Ils préfixent désormais le LIBELLÉ d'exploitation du niveau choisi dans la barre de navigation (window.SourceLabels), en gardant le nom technique derrière — deux sources peuvent porter le même nom d'antenne, l'opérateur doit pouvoir les départager.",
       "Aux niveaux 0 (hostname) et 1 (MXL), rien n'est préfixé : c'est déjà ce que dit le texte technique."

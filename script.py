@@ -4913,8 +4913,16 @@ except Exception as _e:
     log(f"multiview: amorce du chrome échouée ({{_e!r}}) — le boulanger réessaiera", "warning")
 threading.Thread(target=_chrome_baker_loop, daemon=True).start()
 
-# Sortie MXL : index tai en genlock-grille, sinon compteur libre (input-locked / cadence libre).
-_out_mode  = "tai" if (GENLOCK and not INPUT_LOCKED) else "free"
+# Sortie MXL : index TOUJOURS pris sur la grille TAI, quelle que soit la cadence.
+#
+# L'index d'un grain est une COORDONNÉE DE TEMPS, pas un numéro de séquence : docs/Timing.md du SDK
+# est normatif — « Each index of the ring buffer correspond to a timestamp relative to the PTP epoch
+# as defined by SMPTE 2059-1 », GrainIndex = Timestamp / GrainDurationNs. Un compteur libre parti de
+# 0 produit donc des grains qui prétendent dater de l'epoch 2059. Ça casse l'alignement inter-flux
+# (la doc le décrit comme ReadIndex = min(F1_head … FN_head)) et ça rend le flux irréplicable entre
+# nœuds. La CADENCE (genlock-grille vs input-locked) reste un tout autre sujet : elle dit QUAND on
+# émet, jamais QUELLE coordonnée on estampille.
+_out_mode  = "tai"
 # Mode tranche : le flowDef porte slice_height → libmxl publie le grain en N tranches égales
 # (commit progressif). Writer forwarde **flow_kw à build_flow_def. Sans slice : inchangé (1 tranche).
 out_writer = bobimxl.Writer(inst, SHM_OUT_NAME, OUTPUT_W, OUTPUT_H, CHROMA, BIT_DEPTH,
@@ -4925,7 +4933,23 @@ if INTERLACED:
     # VU, frises) est inchangé. Seule l'ÉCRITURE change : la trame est découpée en 2 champs.
     log(f"multiview: sortie ENTRELACÉE {{OUTPUT_W}}x{{OUTPUT_H}}{{FIELD_ORDER}} — "
         f"{{_FN}}/{{_FD}} trames/s, 2 grains-champs de {{OUT_FIELD_SIZE}} o par trame", "info")
-_il_frame = 0        # compteur de TRAME (cadence libre / input-locked) → index champ = ×2 + parité
+_out_index = 0       # index de TRAME de la sortie (grille TAI) — entrelacé : index champ = ×2 + parité
+
+
+def _prochain_index_sortie():
+    """Index de trame de la sortie : la grille TAI, STRICTEMENT CROISSANTE.
+
+    Le max() avec le cran précédent couvre tout ce qui ferait bégayer la grille — deux trames
+    émises dans le même créneau (cadence input-locked plus rapide que la grille), une horloge qui
+    recule sur un pas NTP, une horloge indisponible (index indéfini) : on avance d'un cran et on se
+    recale dès que la grille repasse devant. Un index qui se répète figerait la tête du flux, et le
+    flux passerait pour mort chez ses consommateurs."""
+    global _out_index
+    g = int(out_writer._next_index())
+    if not (0 < g < bobimxl.MXL_UNDEFINED_INDEX):
+        g = 0
+    _out_index = max(g, _out_index + 1)
+    return _out_index
 if SLICE_ON:
     log(f"multiview: MODE TRANCHE actif — {{SLICE_LINES}} lignes/bande "
         f"({{OUT_HEIGHT // SLICE_LINES}} tranches/trame)", "info")
@@ -5777,8 +5801,7 @@ while True:
                 # `full[k][fld::2]` du générateur de mire du moteur, la seule référence qui fait foi.
                 # Index PAIR = lignes PAIRES = champ HAUT ; l'ordre de champ (tff/bff) est DÉCLARÉ
                 # dans le flowDef et n'inverse pas cette correspondance (il dit lequel part d'abord).
-                _fbase = int(out_writer._next_index()) if _out_mode == "tai" else _il_frame
-                _il_frame += 1
+                _fbase = _prochain_index_sortie()
                 for _p in (0, 1):
                     _fld = xp.concatenate([canvas_y[_p::2].ravel(),
                                            canvas_u[_p::2].ravel(),
@@ -5788,9 +5811,9 @@ while True:
                     out_writer.commit(_gi_o)
             else:
                 out_frame = xp.concatenate([canvas_y.ravel(), canvas_u.ravel(), canvas_v.ravel()])
-                # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). En genlock-grille,
-                # l'index tai vient du Writer ; en input-locked/libre, compteur interne du Writer.
-                _gidx, _gi_o, _vw_o = out_writer.open_grain()
+                # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). Index EXPLICITE :
+                # la grille TAI, strictement croissante — cf. _prochain_index_sortie().
+                _gidx, _gi_o, _vw_o = out_writer.open_grain(index=_prochain_index_sortie())
                 _vw_o[:OUT_FRAME_SIZE] = _out_host(out_frame).view(np.uint8)
                 out_writer.commit(_gi_o)
         ts_out = time.time_ns()
