@@ -52,6 +52,17 @@ def topology_ports(hostname, params, ctx):
         shm = spec.get("shm") or ""
         grp = "in%s" % (slot if slot is not None else len(vids))
         lbl = spec.get("label") or ""
+        # Le `name` d'une fenêtre en libellé TSL (label_source == "protocol") est un PLACEHOLDER
+        # d'ÉDITEUR : « (TSL #<idx>) », posé par computeDisplayName() parce que le texte réel n'est
+        # connu qu'au runtime. En central l'index n'est même pas saisi (il est déduit de la source,
+        # cf. services/tsl) → l'éditeur écrit « (TSL #?) ». Le laisser remonter au wiring le fait
+        # afficher tel quel comme NOM DE PORT sur la page Câbles, où il ne veut rien dire. Le port
+        # reprend donc son identité de slot ; la source, elle, est nommée à côté.
+        if ess == "video" and spec.get("from_list") == "flux_config" and slot is not None:
+            _fx = params.get("flux_config") or []
+            _e = _fx[slot] if 0 <= slot < len(_fx) and isinstance(_fx[slot], dict) else {}
+            if (_e.get("label_source") or "hostname") == "protocol":
+                lbl = "Entrée %d" % (slot + 1)
         port = {"kind": ess, "group": grp}
         if slot is not None:
             port["slot"] = slot
