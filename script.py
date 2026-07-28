@@ -1894,6 +1894,13 @@ VH_PROBE_H     = 18                    # points, ~10× moins cher qu'une vignett
 VH_BLACK_MEAN  = 16.0                  # luma moyenne (échelle 8 bits) sous laquelle l'image est « noire »
 VH_BLACK_MAX   = 48.0                  # …et pic de luma sous lequel on ne voit RIEN (ni mire, ni logo)
 VH_RESCAN_S    = 5.0                   # re-scan des proxies pyramide de la source
+# Âge maximal toléré de la dernière écriture producteur (now_tai − lastWriteTime) avant de
+# considérer le Reader de l'ÉCHANTILLONNEUR décroché et de le reconnecter — cf. _vh_sample. Même
+# valeur et même critère que `STALE_REOPEN_MS` côté boucle de composition ; redéclaré ICI, avec les
+# autres constantes de l'échantillonneur, parce que `STALE_REOPEN_MS` est défini bien plus bas dans
+# le module, APRÈS le démarrage du thread `_vhist_loop` — le premier relevé lèverait un NameError
+# aussitôt avalé par son `except`, et le garde-fou serait mort-né en silence.
+VH_STALE_REOPEN_MS = 5000.0
 AH_TICK_S      = 0.02                  # période d'échantillonnage audio (50 Hz, = cadence trame)
 AH_COL_PX      = 1                     # ENVELOPPE : une colonne PAR PIXEL (finesse d'origine). La
                                        # finesse ne coûte RIEN (les crêtes sont déjà calculées ; le
@@ -2181,6 +2188,31 @@ def _vh_sample(name, win, now, step):
         _vh_close(st)          # reader périmé/flux disparu → rouvert au prochain relevé
     else:
         fi = got[0]
+        # ★ READER DÉCROCHÉ (2026-07-28) — MÊME garde-fou que la boucle de composition, qui manquait
+        # ICI. Un flux amont RECRÉÉ SOUS LE MÊME NOM (moteur 2110 realigné, producteur redéployé)
+        # laisse ce handle sur l'ANCIEN ring : ses grains restent LISIBLES, donc `got is None` ne se
+        # déclenche jamais ; et comme `_vh_pick_path` rend le même chemin, la ré-ouverture
+        # périodique ne se déclenche pas non plus (`st["path"] == want`). L'échantillonneur relit
+        # alors éternellement le même grain.
+        # Symptôme observé en prod (Horace, frises du mur 361) : vignettes FIGÉES + bande
+        # d'événement « freeze » jaune sous la frise, alors que la boucle de mix — qui a, ELLE, sa
+        # reconnexion depuis la 0.45.0 — affichait la source bien vivante (latence d'entrée 0,6 ms).
+        # Deux Readers sur la même source rendant des verdicts opposés : signature du handle périmé.
+        # CRITÈRE : `lastWriteTime`, le seul fiable et sanctionné par la spec — l'index figé NE
+        # SUFFIT PAS (parité entrelacée, grille FLOW), c'est écrit noir sur blanc dans le garde-fou
+        # de la boucle de composition. `lw = 0` = information indisponible (producteur qui ne
+        # maintient pas lastWriteTime) → on ne conclut rien et on laisse les garde-fous historiques.
+        try:
+            _lw = st["src"]["reader"].last_write_time()
+        except Exception:
+            _lw = 0
+        if _lw and (bobimxl.now_tai() - _lw) / 1e6 > VH_STALE_REOPEN_MS:
+            _age_s = (bobimxl.now_tai() - _lw) / 1e9
+            _vh_close(st)                 # rouvert au prochain relevé (200 ms)
+            st["last_fi"] = None; st["last_fi_t"] = now
+            log(f"multiview: frise {{name}} — Reader décroché (aucune écriture producteur depuis "
+                f"{{_age_s:.1f}} s), reconnexion", "warning")
+            return
         if fi != st.get("last_fi"):
             st["last_fi"] = fi; st["last_fi_t"] = now
         mean_y = max_y = 0.0; lum_ok = False

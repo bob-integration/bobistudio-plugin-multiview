@@ -1,7 +1,13 @@
 {
-  "version": "0.47.0",
-  "date": "2026-07-27",
+  "version": "0.48.0",
+  "date": "2026-07-28",
   "changes": {
+    "Frises d'historique : le Reader de l'échantillonneur se reconnecte aussi (0.48.0)": [
+      "Les vignettes d'une frise restaient FIGÉES, avec une bande d'événement « freeze » jaune en dessous, alors que la cellule affichait la source bien vivante. Deux Readers sur la même source rendant des verdicts opposés : celui de l'échantillonneur était resté collé à une génération morte (flux amont recréé sous le même nom — moteur 2110 realigné, producteur redéployé).",
+      "La reconnexion des Readers décrochés, livrée en 0.45.0, ne couvrait QUE la boucle de composition. L'échantillonneur des frises ouvre son propre Reader et n'avait aucun garde-fou : ses grains restent LISIBLES (donc jamais « got is None »), et `_vh_pick_path` rendant le même chemin, la ré-ouverture périodique ne se déclenchait pas non plus. Il relisait le même grain à vie — d'où la vignette identique, et le gel détecté par sa propre sonde.",
+      "Même critère que la boucle de composition : `lastWriteTime` (now_tai − dernière écriture > 5 s). L'index de grain figé NE SUFFIT PAS — parité entrelacée et grille FLOW le figent légitimement. `lastWriteTime` indisponible (producteur qui ne le maintient pas) → on ne conclut rien.",
+      "La constante est redéclarée près de l'échantillonneur au lieu d'être reprise de `STALE_REOPEN_MS` : celle-ci est définie APRÈS le démarrage du thread, un premier relevé aurait levé un NameError aussitôt avalé par son `except` — le garde-fou serait né mort et muet."
+    ],
     "Index de sortie : un seul point de calcul, dans bobimxl (0.47.0)": [
       "L'index des grains de sortie n'est plus calculé dans le plugin : il vient de bobimxl.Writer.next_index, LE point unique pour toute la flotte — grille TAI, strictement croissante, holdover. Chaque plugin réinventait sa version (compteur maison, appel direct à mxlGetCurrentIndex, convention de repli propre), avec les divergences que ça implique.",
       "Un index de grain est une COORDONNÉE DE TEMPS, pas un numéro de séquence : docs/Timing.md du SDK MXL est normatif (GrainIndex = Timestamp / GrainDurationNs, epoch SMPTE 2059-1). Un compteur parti de 0 casse l'alignement inter-flux et rend le flux irréplicable entre nœuds.",
