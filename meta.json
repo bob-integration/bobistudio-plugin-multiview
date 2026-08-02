@@ -1,7 +1,10 @@
 {
-  "version": "0.48.0",
-  "date": "2026-07-28",
+  "version": "0.49.0",
+  "date": "2026-08-02",
   "changes": {
+    "Variante libmxl exposée dans /state (0.49.0)": [
+      "GET /state porte désormais `mxl_lib` : {path, variante} de la libmxl RÉELLEMENT chargée (x86-64-v3/glibc-hwcaps ou baseline), lu via bobimxl.lib_info(). Jusqu'ici cette information n'était constatable que PAR NŒUD (app/placement.py) — un conteneur retombé sur la baseline (~20 % de coût en régime consommateur) ne se voyait qu'indirectement. Protégé par try/except : une erreur de lecture ne casse jamais /state."
+    ],
     "Frises d'historique : le Reader de l'échantillonneur se reconnecte aussi (0.48.0)": [
       "Les vignettes d'une frise restaient FIGÉES, avec une bande d'événement « freeze » jaune en dessous, alors que la cellule affichait la source bien vivante. Deux Readers sur la même source rendant des verdicts opposés : celui de l'échantillonneur était resté collé à une génération morte (flux amont recréé sous le même nom — moteur 2110 realigné, producteur redéployé).",
       "La reconnexion des Readers décrochés, livrée en 0.45.0, ne couvrait QUE la boucle de composition. L'échantillonneur des frises ouvre son propre Reader et n'avait aucun garde-fou : ses grains restent LISIBLES (donc jamais « got is None »), et `_vh_pick_path` rendant le même chemin, la ré-ouverture périodique ne se déclenchait pas non plus. Il relisait le même grain à vie — d'où la vignette identique, et le gel détecté par sa propre sonde.",

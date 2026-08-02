@@ -8,6 +8,15 @@ from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
 import bobimxl   # migration MXL Phase 1 : entrées vidéo+ANC via Reader, sortie via Writer
+
+
+def _mxl_lib_state():
+    """Variante libmxl réellement chargée (baseline / x86-64-v3) — diagnostic seul, ne doit
+    JAMAIS faire échouer /state."""
+    try:
+        return bobimxl.lib_info()
+    except Exception:
+        return None
 # (mmap/struct conservés : audio VU encore en legacy — différé jusqu'au producteur audio MXL).
 
 # ─── Accélération GPU (cupy) auto-détectée ───────────────────────────────────
@@ -4905,6 +4914,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
                    for ov in OVERLAYS if ov.get("id")]
         payload = {{
             "inputs":    inp,
+            "mxl_lib":   _mxl_lib_state(),
             "log_level": LOG_LEVEL,   # lisible en CONDITION de macro (« si le mur est en debug »)
             "n_windows": len(wins),
             "canvas":    [OUT_WIDTH, OUT_HEIGHT],
