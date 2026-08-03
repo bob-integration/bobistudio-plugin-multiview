@@ -1945,7 +1945,7 @@ function canvasMouseMove(e) {
         let nx = Math.max(0, Math.min(out_w - f.w, Math.round(dragOrigRect.x + dx)));
         let ny = Math.max(0, Math.min(out_h - f.h, Math.round(dragOrigRect.y + dy)));
         if (snapEnabled) {
-            const snapped = computeSnap(primary, nx, ny, f.w, f.h);
+            const snapped = computeSnap({ kind: 'win', i: primary }, nx, ny, f.w, f.h);
             nx = snapped.x; ny = snapped.y; snapGuides = snapped.guides;
         } else snapGuides = [];
         let ddx = nx - dragOrigRect.x, ddy = ny - dragOrigRect.y;
@@ -1970,7 +1970,7 @@ function canvasMouseMove(e) {
         let nh = Math.round(nw / ratio);
         if (nh > out_h - f.y) { nh = out_h - f.y; nw = Math.round(nh * ratio); }
         if (snapEnabled) {
-            const snapped = computeSnapResize(primary, f.x, f.y, nw, nh, ratio);
+            const snapped = computeSnapResize({ kind: 'win', i: primary }, f.x, f.y, nw, nh, ratio);
             nw = snapped.w; nh = snapped.h; snapGuides = snapped.guides;
         } else snapGuides = [];
         f.w = nw % 2 === 0 ? nw : nw - 1;
@@ -1986,12 +1986,25 @@ function overlayMouseMove(e) {
     const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
     const o = editorParams.overlays[selectedOverlay];
     const out_w = editorParams.out_width, out_h = editorParams.out_height;
+    const skip = { kind: 'ov', i: selectedOverlay };
     if (dragMode === 'move') {
-        o.x = Math.max(0, Math.min(out_w - o.w, Math.round(dragOrigRect.x + dx)));
-        o.y = Math.max(0, Math.min(out_h - o.h, Math.round(dragOrigRect.y + dy)));
+        let nx = Math.max(0, Math.min(out_w - o.w, Math.round(dragOrigRect.x + dx)));
+        let ny = Math.max(0, Math.min(out_h - o.h, Math.round(dragOrigRect.y + dy)));
+        if (snapEnabled) {
+            const sn = computeSnap(skip, nx, ny, o.w, o.h);
+            nx = sn.x; ny = sn.y; snapGuides = sn.guides;
+        } else snapGuides = [];
+        o.x = Math.max(0, Math.min(out_w - o.w, nx));
+        o.y = Math.max(0, Math.min(out_h - o.h, ny));
     } else if (dragMode === 'resize') {
         let nw = Math.max(16, Math.min(out_w - o.x, Math.round(dragOrigRect.w + dx)));
         let nh = Math.max(16, Math.min(out_h - o.y, Math.round(dragOrigRect.h + dy)));
+        if (snapEnabled) {
+            // Overlay LIBRE (pas de ratio imposé, contrairement à une fenêtre vidéo) : on snappe
+            // les deux axes indépendamment, d'où ratio = 0 (cf. computeSnapResize).
+            const sn = computeSnapResize(skip, o.x, o.y, nw, nh, 0);
+            nw = sn.w; nh = sn.h; snapGuides = sn.guides;
+        } else snapGuides = [];
         o.w = nw % 2 === 0 ? nw : nw - 1;
         o.h = nh % 2 === 0 ? nh : nh - 1;
     }
@@ -2005,12 +2018,23 @@ function blockMouseMove(e) {
     const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
     const b = editorParams.meter_blocks[selectedBlock];
     const out_w = editorParams.out_width, out_h = editorParams.out_height;
+    const skip = { kind: 'blk', i: selectedBlock };
     if (dragMode === 'move') {
-        b.x = Math.max(0, Math.min(out_w - b.w, Math.round(dragOrigRect.x + dx)));
-        b.y = Math.max(0, Math.min(out_h - b.h, Math.round(dragOrigRect.y + dy)));
+        let nx = Math.max(0, Math.min(out_w - b.w, Math.round(dragOrigRect.x + dx)));
+        let ny = Math.max(0, Math.min(out_h - b.h, Math.round(dragOrigRect.y + dy)));
+        if (snapEnabled) {
+            const sn = computeSnap(skip, nx, ny, b.w, b.h);
+            nx = sn.x; ny = sn.y; snapGuides = sn.guides;
+        } else snapGuides = [];
+        b.x = Math.max(0, Math.min(out_w - b.w, nx));
+        b.y = Math.max(0, Math.min(out_h - b.h, ny));
     } else if (dragMode === 'resize') {
         let nw = Math.max(24, Math.min(out_w - b.x, Math.round(dragOrigRect.w + dx)));
         let nh = Math.max(24, Math.min(out_h - b.y, Math.round(dragOrigRect.h + dy)));
+        if (snapEnabled) {
+            const sn = computeSnapResize(skip, b.x, b.y, nw, nh, 0);
+            nw = Math.max(24, sn.w); nh = Math.max(24, sn.h); snapGuides = sn.guides;
+        } else snapGuides = [];
         b.w = nw % 2 === 0 ? nw : nw - 1;
         b.h = nh % 2 === 0 ? nh : nh - 1;
     }
@@ -2786,13 +2810,33 @@ function importOverlayImage(input) {
 
 // ─── Snap ──────────────────────────────────────────────────────
 
-function computeSnap(idx, x, y, w, h) {
+// Rectangles de TOUS les objets posés sur le mur, pour le snap. Le composeur ne considérait que
+// `flux_config` : une horloge, un champ texte, une image ou un bloc VU n'était donc NI une cible de
+// snap, NI snappé lui-même (overlayMouseMove/blockMouseMove n'appelaient pas le snap du tout). On
+// alignait à l'œil tout ce qui n'était pas une fenêtre vidéo.
+// `skip` = {kind, i} de l'objet en cours de déplacement, à exclure de ses propres cibles.
+function _snapRects(skip) {
+    const out = [];
+    const add = (kind, list) => (list || []).forEach((o, i) => {
+        if (!o || o.hidden) return;
+        if (skip && skip.kind === kind && skip.i === i) return;
+        if (!(o.w > 0) || !(o.h > 0)) return;
+        out.push(o);
+    });
+    add('win', editorParams.flux_config);
+    add('ov',  editorParams.overlays);
+    add('blk', editorParams.meter_blocks);
+    add('vh',  editorParams.video_history_blocks);
+    add('ah',  editorParams.audio_history_blocks);
+    return out;
+}
+
+function computeSnap(skip, x, y, w, h) {
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
     const xTargets = [0, out_w, out_w / 2];     // bords + centre canvas
     const yTargets = [0, out_h, out_h / 2];
-    editorParams.flux_config.forEach((o, i) => {
-        if (i === idx) return;
+    _snapRects(skip).forEach(o => {
         xTargets.push(o.x, o.x + o.w, o.x + o.w / 2);
         yTargets.push(o.y, o.y + o.h, o.y + o.h / 2);
     });
@@ -2846,14 +2890,13 @@ function computeSnap(idx, x, y, w, h) {
     return {x: Math.round(snapX), y: Math.round(snapY), guides};
 }
 
-function computeSnapResize(idx, x, y, w, h, ratio) {
+function computeSnapResize(skip, x, y, w, h, ratio) {
     // Snap uniquement le coin bas-droit (resize est ancré haut-gauche)
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
     const xTargets = [out_w, out_w / 2];
     const yTargets = [out_h, out_h / 2];
-    editorParams.flux_config.forEach((o, i) => {
-        if (i === idx) return;
+    _snapRects(skip).forEach(o => {
         xTargets.push(o.x, o.x + o.w);
         yTargets.push(o.y, o.y + o.h);
     });
@@ -2864,15 +2907,20 @@ function computeSnapResize(idx, x, y, w, h, ratio) {
         if (d <= SNAP_PX && d < bestDx) { bestDx = d; snapW = t - x; }
     });
     if (bestDx <= SNAP_PX) guides.push({type: 'v', pos: x + snapW});
-    // h suit le ratio pour préserver l'aspect — mais on peut aussi snapper indépendamment
-    let snapH = Math.round(snapW / ratio);
+    // ratio > 0 : la hauteur SUIT la largeur (fenêtre vidéo, aspect préservé). ratio ≤ 0 : objet
+    // à format LIBRE (overlay, bloc VU) — la hauteur part de celle demandée et se snappe seule.
+    // Sans ce cas, `snapW / 0` valait l'infini et le redimensionnement d'un overlay explosait.
+    let snapH = ratio > 0 ? Math.round(snapW / ratio) : h;
     let bestDy = SNAP_PX + 1;
     yTargets.forEach(t => {
         const d = Math.abs((y + snapH) - t);
         if (d <= SNAP_PX && d < bestDy) { bestDy = d; snapH = t - y; }
     });
     if (bestDy <= SNAP_PX) guides.push({type: 'h', pos: y + snapH});
-    return {w: Math.max(64, snapW), h: Math.max(64, snapH), guides};
+    // Plancher : 64 px pour une fenêtre vidéo, 16 pour un objet libre (un overlay peut
+    // légitimement être petit — une pastille tally, un chiffre d'horloge).
+    const mn = ratio > 0 ? 64 : 16;
+    return {w: Math.max(mn, snapW), h: Math.max(mn, snapH), guides};
 }
 
 // ─── Déployer la composition ─────────────────────────────────

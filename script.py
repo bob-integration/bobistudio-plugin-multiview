@@ -817,7 +817,11 @@ def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opac
     _right = (grad_side == "right")
     _grad_x0 = (mx + mw - tick_w) if _right else mx        # origine de la colonne
     _tick_x0 = _grad_x0 if _right else (_grad_x0 + tick_w - 4)
-    for tick_dbfs, lbl in (ticks_dbfs if grad != "none" else ()):
+    # Mode superposé : AUCUNE colonne latérale ici, les graduations sont une tuile à part
+    # blendée après les barres (cf. _meter_grad_tile). Sans ce garde-fou, tick_w = 0 ferait
+    # écrire le trait à mx-4, hors du mètre.
+    _in_bars = (grad_side == "inside")
+    for tick_dbfs, lbl in (ticks_dbfs if (grad != "none" and not _in_bars) else ()):
         f = to_frac(tick_dbfs)
         y_tick = my + bars_mh - int(round(f * bars_mh))
         # Petite ligne 3px du côté des barres (donc dans la zone des barres, devant)
@@ -933,7 +937,8 @@ def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct, ch0=
     _grad_x0 = (mx + mw - tick_w) if _right else mx
     _tick_x0 = _grad_x0 if _right else (_grad_x0 + tick_w - 4)
     _lf = ImageFont.load_default()
-    for tick_dbfs, lbl in (ticks_dbfs if grad != "none" else ()):
+    _in_bars = (grad_side == "inside")   # cf. _draw_meter : colonne latérale supprimée
+    for tick_dbfs, lbl in (ticks_dbfs if (grad != "none" and not _in_bars) else ()):
         y_tick = my + bars_mh - int(round(to_frac(tick_dbfs) * bars_mh))
         d.line([_tick_x0, y_tick, _tick_x0 + 3, y_tick], fill=(180, 180, 180, a_text))
         if grad != "full":
@@ -1887,6 +1892,64 @@ def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
     oy, ou, ov, oa, oa2 = rgba_to_yuv(img)
     return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
 
+_meter_grad_tile_cache = {{}}
+
+def _meter_grad_tile(bx0, by0, bx1, by1, mx, my, mw, mh, scale, opacity_pct, grad, n_channels):
+    """Graduations SUPERPOSÉES aux barres (grad_side = "inside") — tuile YUV séparée, blendée
+    APRÈS le mètre. C'est la seule position possible : les barres sont peintes par-dessus le fond
+    statique caché, donc des graduations dessinées dans ce fond seraient recouvertes.
+
+    Intérêt : la colonne latérale disparaît complètement (tick_w = 0) et TOUTE la largeur va aux
+    barres — c'est le mode qui rend le plus de place, là où « traits seuls » n'en rendait qu'une
+    partie. Traits fins semi-transparents sur toute la largeur des barres (repère de lecture sans
+    masquer le niveau) ; en niveau « complet », les valeurs sont posées à gauche sur un fond sombre
+    translucide, sans quoi un chiffre clair sur une barre jaune serait illisible.
+
+    Tuile CACHÉE : elle ne dépend que de la géométrie et de l'échelle, jamais des niveaux — seul
+    le blend est payé par trame (même contrat que le fond statique)."""
+    key = (bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, scale, opacity_pct, grad, n_channels)
+    got = _meter_grad_tile_cache.get(key)
+    if got is None:
+        tw_, th_ = bx1 - bx0, by1 - by0
+        if tw_ <= 0 or th_ <= 0:
+            return None
+        bars_mh = max(20, mh - 12)
+        rmx, rmy = mx - bx0, my - by0
+        img = Image.new("RGBA", (tw_, th_), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img, "RGBA")
+        to_frac, _gt, _yt = _meter_scale_params(scale)
+        if scale == "ppm":
+            ticks = [(+12, "+12"), (+9, "+9"), (+6, "+6"), (+3, "+3"), (0, "0"),
+                     (-3, "-3"), (-6, "-6"), (-9, "-9"), (-12, "-12")]
+            ticks_dbfs = [(ebu - 18, lbl) for ebu, lbl in ticks]
+        else:
+            ticks_dbfs = [(0, "0"), (-3, "-3"), (-6, "-6"), (-9, "-9"), (-12, "-12"),
+                          (-18, "-18"), (-20, "-20"), (-30, "-30"), (-40, "-40"), (-50, "-50")]
+        a_line = int(120 * opacity_pct / 100)     # discret : on lit le niveau À TRAVERS le trait
+        a_txt  = int(235 * opacity_pct / 100)
+        a_chip = int(150 * opacity_pct / 100)
+        _lf = ImageFont.load_default()
+        last_label_y = -10
+        for tick_dbfs, lbl in ticks_dbfs:
+            y_tick = rmy + bars_mh - int(round(to_frac(tick_dbfs) * bars_mh))
+            d.line([rmx, y_tick, rmx + mw - 1, y_tick], fill=(210, 210, 215, a_line))
+            if grad != "full":
+                continue
+            if abs(y_tick - last_label_y) >= 9 and y_tick - 4 >= rmy and y_tick + 4 <= rmy + bars_mh:
+                try:
+                    _lw = int(round(d.textlength(lbl, font=_lf)))
+                except Exception:
+                    _lw = 0
+                if _lw and _lw + 4 <= mw:
+                    d.rectangle([rmx, y_tick - 5, rmx + _lw + 2, y_tick + 5],
+                                fill=(0, 0, 0, a_chip))
+                    d.text((rmx + 1, y_tick - 4), lbl, font=_lf, fill=(230, 230, 235, a_txt))
+                    last_label_y = y_tick
+        got = rgba_to_yuv(img)
+        _meter_grad_tile_cache[key] = got
+    oy, ou, ov, oa, oa2 = got
+    return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
+
 def _tile_peaks_range(i, cfg, start0, count, now):
     """Peaks/holds/statut pour la FENÊTRE de canaux [start0, start0+count) d'un espace de
     16 canaux : canaux 0..7 = flux audio dérivé de la source, 8..15 = flux dérivé SUIVANT
@@ -1952,6 +2015,15 @@ def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status,
                     tick_w, bar_w, gap, grad, grad_side)
         oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
     tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
+    # Graduations SUPERPOSÉES (mode "inside") : tuile propre blendée APRÈS les barres — dans le
+    # fond statique elles seraient recouvertes par les barres. Cosmétique → jamais fatale.
+    if grad_side == "inside" and grad != "none":
+        try:
+            gt = _meter_grad_tile(bx0, by0, bx1, by1, mx, my, mw, mh, scale, opacity_pct, grad, n)
+        except Exception:
+            gt = None
+        if gt is not None:
+            tiles.append(gt)
     # Étiquette SILENCE / ABSENCE par-dessus (tuile séparée, même bbox → blend après le meter).
     # Cosmétique → ne jamais casser le rendu d'une trame si l'étiquette échoue.
     if status in ("silence", "absence"):
@@ -2003,7 +2075,11 @@ def render_meters(now):
                     rx, rw = _meter_inset(rx, rw, _g["x"], _g["w"])
                     _scale = comp.get("scale") or "dbfs"
                     _grad, _gtw = _meter_grad(comp, _scale, rw)
-                    _gside = "right" if (comp.get("grad_side") or "left") == "right" else "left"
+                    _gside = str(comp.get("grad_side") or "left").strip().lower()
+                    if _gside not in ("left", "right", "inside"):
+                        _gside = "left"
+                    if _gside == "inside":
+                        _gtw = 0        # plus de colonne : toute la largeur va aux barres
                     mh = max(20, rh - 1)
                     width_mode = comp.get("width_mode") or "auto"
                     if width_mode == "fit":
@@ -2057,7 +2133,11 @@ def render_meters(now):
                 # dont le séparer, et le rentrer déplacerait un bloc que l'utilisateur a posé.
                 _bscale = blk.get("scale") or "dbfs"
                 _bgrad, _bgtw = _meter_grad(blk, _bscale, rw)
-                _bgside = "right" if (blk.get("grad_side") or "left") == "right" else "left"
+                _bgside = str(blk.get("grad_side") or "left").strip().lower()
+                if _bgside not in ("left", "right", "inside"):
+                    _bgside = "left"
+                if _bgside == "inside":
+                    _bgtw = 0
                 mh = max(20, rh - 1)
                 width_mode = blk.get("width_mode") or "auto"
                 if width_mode == "fit":
