@@ -4187,22 +4187,54 @@ def _tpl_video_comp(cfg):
             return c
     return None
 
+# Types d'HABILLAGE : ceux qui bordent l'image. Par défaut leur axe X suit l'IMAGE (ils doivent
+# rester alignés sur ses bords gauche/droit quels que soient le ratio de la source, la taille de la
+# cellule et la réserve du viseur), leur axe Y reste sur la CELLULE — c'est le seul moyen d'exprimer
+# « sous l'image », que des fractions d'image bornées à [0, 1] ne savent pas dire.
+# meters / anc / historiques restent sur la cellule dans les deux axes : ils vivent légitimement
+# DANS la marge, à côté de l'image.
+_ANCHOR_X_IMAGE_TYPES = ("umd", "tally", "format", "clock", "text")
+
+def _comp_anchor(comp, axis):
+    """Ancrage d'un composant sur un AXE : "cell" ou "image". Réglage explicite `anchor_x` /
+    `anchor_y` s'il est posé, sinon défaut par type. Le composant `video` est TOUJOURS ancré à la
+    cellule : c'est lui qui DÉFINIT l'image (_video_rect l'appelle) — l'ancrer à l'image serait une
+    récursion infinie."""
+    if (comp or {{}}).get("type") == "video":
+        return "cell"
+    v = str((comp or {{}}).get("anchor_" + axis) or "").strip().lower()
+    if v in ("cell", "image"):
+        return v
+    if axis == "x" and (comp or {{}}).get("type") in _ANCHOR_X_IMAGE_TYPES:
+        return "image"
+    return "cell"
+
 def _comp_rect(cfg, comp):
-    """Rectangle ABSOLU (px, borné à la cellule et au canvas) d'un composant."""
+    """Rectangle ABSOLU (px, borné au canvas) d'un composant. Les fractions sont rapportées, PAR
+    AXE, soit à la cellule soit au rectangle de l'IMAGE (cf. _comp_anchor)."""
     x, y, w, h = int(cfg["x"]), int(cfg["y"]), int(cfg["w"]), int(cfg["h"])
     x = max(0, min(x, OUT_WIDTH - 1)); y = max(0, min(y, OUT_HEIGHT - 1))
     w = max(2, min(w, OUT_WIDTH - x)); h = max(2, min(h, OUT_HEIGHT - y))
+    bx, by, bw, bh = x, y, w, h          # base par défaut : la cellule, sur les deux axes
+    ax, ay = _comp_anchor(comp, "x"), _comp_anchor(comp, "y")
+    if ax == "image" or ay == "image":
+        g = _video_rect(cfg)
+        if g["vw"] >= 2 and g["vh"] >= 2:     # modèle sans vidéo → on reste sur la cellule
+            if ax == "image":
+                bx, bw = g["vx"], g["vw"]
+            if ay == "image":
+                by, bh = g["vy"], g["vh"]
     def _f(k, dflt):
         try:
             return max(0.0, min(1.0, float(comp.get(k, dflt))))
         except (TypeError, ValueError):
             return dflt
-    rx = x + int(round(_f("x", 0.0) * w))
-    ry = y + int(round(_f("y", 0.0) * h))
-    rw = max(2, int(round(_f("w", 1.0) * w)))
-    rh = max(2, int(round(_f("h", 1.0) * h)))
-    rw = max(2, min(rw, x + w - rx))
-    rh = max(2, min(rh, y + h - ry))
+    rx = bx + int(round(_f("x", 0.0) * bw))
+    ry = by + int(round(_f("y", 0.0) * bh))
+    rw = max(2, int(round(_f("w", 1.0) * bw)))
+    rh = max(2, int(round(_f("h", 1.0) * bh)))
+    rw = max(2, min(rw, bx + bw - rx))
+    rh = max(2, min(rh, by + bh - ry))
     return rx, ry, rw, rh
 
 def _comp_visible(i, cfg, comp):

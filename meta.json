@@ -1,7 +1,10 @@
 {
-  "version": "0.58.0",
+  "version": "0.59.0",
   "date": "2026-08-03",
   "changes": {
+    "Ancrage PAR AXE de l'habillage : suivre l'image en X, la cellule en Y (0.59.0)": [
+      "Les composants étaient positionnés en fractions de la CELLULE, alors que l'image est (1) recadrée en `contain` au ratio de la source dans le rectangle du composant vidéo et (2) rétrécie depuis 0.55.0 par la réserve du style « viseur ». Un tally aligné sur le bord de la cellule débordait donc de l'image — mesuré sur un PiP 480×270 avec le style viseur : 8 px à gauche, 10 px à droite (0 et 4 px avant 0.55.0 — la réserve a aggravé un défaut qui préexistait). ★ L'ancrage est PAR AXE, et ce n'est pas un raffinement : un ancrage image sur les DEUX axes déplacerait l'habillage de −18 px en Y, le faisant passer de SOUS l'image à DEDANS. Les fractions sont bornées à [0, 1] par _comp_rect, donc « sous l'image » n'est tout simplement pas exprimable en coordonnées d'image. D'où : X sur l'image (défaut pour umd/tally/format/clock/text), Y sur la cellule. Les deux restent réglables par composant (`anchor_x`/`anchor_y`). meters, anc et frises restent sur la cellule dans les deux axes : ils vivent légitimement dans la marge. Le composant `video` est toujours ancré à la cellule — c'est lui qui DÉFINIT l'image, l'ancrer à l'image serait une récursion."
+    ],
     "Composeur de mur : les outils d'alignement atteignent enfin les overlays (0.58.0)": [
       "`aligner()` ne regardait que `selectedIdxs`, c'est-à-dire les FENÊTRES vidéo. Les overlays (horloge, texte, image), les blocs VU et les frises sont suivis par des variables de sélection distinctes (`selectedOverlay`, `selectedBlock`, `selectedHist`) : sélectionner une horloge et cliquer « centrer » ne faisait donc RIEN, sans le moindre message — même classe de défaut que le snap corrigé en 0.57.0, à un endroit différent. Un objet à sélection unique s'aligne désormais sur le CANVAS (seule référence possible : ces objets ne se sélectionnent pas à plusieurs) et passe par le même canal de persistance que son déplacement (hotApplyFull). La géométrie d'alignement est factorisée dans `_alignRect`, partagée avec la boucle des fenêtres — sans quoi les deux chemins auraient divergé à la première correction, exactement comme _draw_meter et _draw_meter_static."
     ],
