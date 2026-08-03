@@ -235,6 +235,38 @@ _MAXV  = (1 << BIT_DEPTH) - 1
 _NEUTRAL = 1 << (BIT_DEPTH - 1)
 _CW = {{"420": 2, "422": 2, "444": 1}}.get(CHROMA, 2)   # diviseur largeur chroma
 _CH = {{"420": 2, "422": 1, "444": 1}}.get(CHROMA, 1)   # diviseur hauteur chroma
+# ─── Filtre de RÉDUCTION des tuiles vidéo ────────────────────────────────────────────────────
+# Une tuile de mur est une RÉDUCTION de sa source : 1920×1080 dans une case 640×360 = ratio 3,
+# soit UN pixel de sortie pour NEUF d'entrée. Historiquement le placement prenait un pixel sur
+# les neuf et jetait les huit autres (décimation `plane[::3, ::3]`) : c'est du sous-échantillon-
+# nage sans pré-filtre, donc du repliement de spectre. Tout ce qui est fin dans la source — texte
+# incrusté, mires, contours — devient du crénelage ou disparaît purement et simplement.
+#   "box"     : moyenne du bloc source (filtre d'AIRE), le pré-filtre CORRECT pour une réduction.
+#   "nearest" : décimation historique — conservée pour comparer et pour dégager du CPU.
+# ⚠ COÛT MESURÉ (banc numpy, plan Y 1920×1080→640×360) : décimation+copie 0,13 ms, box 2,8 ms.
+# La box LIT tous les pixels source là où la décimation n'en lisait qu'un sur neuf : c'est une
+# opération memory-bound et le facteur ~10 est structurel, pas une maladresse d'implémentation.
+# Sur un gros mur ça ne tient pas 50 fps en numpy — d'où le réglage. La suite est un kernel C
+# fusionné (réduction+placement en une passe, cf. mvcompose.c/mvk_place) sur le modèle des
+# autres passes de compositing, qui rend le surcoût négligeable.
+SCALE_FILTER = str(CONFIG.get("scale_filter") or "box").strip().lower()
+if SCALE_FILTER not in ("box", "nearest"):
+    SCALE_FILTER = "box"
+_BOX = (SCALE_FILTER == "box")
+# ─── Traitement des sources ENTRELACÉES ──────────────────────────────────────────────────────
+# Le mur sort TOUJOURS en progressif. Une source 1080i doit donc être désentrelacée.
+#   "weave" : les DEUX champs appariés sont retissés en une trame pleine (défaut). Rend la
+#             RÉSOLUTION VERTICALE COMPLÈTE — sur une source 1080i c'est un facteur 2 rendu à
+#             l'image AVANT toute mise à l'échelle, bien plus que ce qu'un filtre peut donner.
+#   "bob"   : champ HAUT seul, comportement historique. Moitié de la résolution verticale, mais
+#             strictement insensible au mouvement.
+# Le weave peigne sur le mouvement : deux champs distants de 20 ms cousus ligne à ligne. Ici
+# c'est acceptable parce que la tuile est TOUJOURS une forte réduction — le filtre box vertical
+# qui suit moyenne des lignes des DEUX champs et absorbe l'essentiel du peigne. Ce raisonnement
+# NE VAUT PAS pour une sortie 1:1 : ne pas réutiliser ce weave ailleurs sans le rechiffrer.
+INTERLACE_MODE = str(CONFIG.get("interlace_mode") or "weave").strip().lower()
+if INTERLACE_MODE not in ("weave", "bob"):
+    INTERLACE_MODE = "weave"
 PIX_FMT = ({{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}.get(CHROMA, "yuv422p")
            + (("12le" if BIT_DEPTH >= 12 else "10le") if _DEEP else ""))
 OUT_FRAME_SIZE = (OUTPUT_W * OUTPUT_H + 2 * (OUTPUT_W // _CW) * (OUTPUT_H // _CH)) * _BPS
@@ -1005,6 +1037,13 @@ def _refresh_lat_metrics():
     # frises VIDÉO (une frise dont la source n'alimente AUCUNE fenêtre lit quand même un proxy —
     # sans ça l'orchestrateur le croirait ORPHELIN et le supprimerait sous nos pieds).
     metrics["proxy_read"]  = sorted(set(_proxy_read_latest) | _vh_read_proxies())
+    # Filtre de réduction RÉELLEMENT appliqué aux tuiles. Sans ça, un mur déployé avant le
+    # réglage et un mur filtré sont indiscernables de l'extérieur — et le surcoût de `inputs`
+    # serait inexplicable. `scale_filter_nearest_paths` compte les chemins fusionnés (kernel C)
+    # écartés parce qu'ils ne savent faire que du nearest : c'est le prix payé, rendu visible.
+    metrics["scale_filter"] = SCALE_FILTER
+    metrics["scale_filter_nearest_paths"] = _mvk_miss["place"]
+    metrics["interlace_mode"] = INTERLACE_MODE
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
                                        "output": _t_output.avg(),
@@ -1212,19 +1251,83 @@ def open_source(cfg, own_instance=False):
         except Exception: pass
         return None
 
+def _weave_fields(vt, vb, in_w, in_h):
+    """ENTRELACÉ : recompose une TRAME PLEINE à partir des deux champs appariés.
+    Convention de parité du fichier : index PAIR = lignes PAIRES = champ HAUT, index IMPAIR =
+    lignes impaires. L'ordre de champ (TFF/BFF) ne change PAS cette correspondance — il dit
+    seulement lequel part en premier sur le fil — donc le tissage se fait sur la PARITÉ D'INDEX
+    et reste correct dans les deux ordres.
+    `in_h` est la hauteur de CHAMP (ce que rend format() sur un flux entrelacé natif) ; la trame
+    rendue fait donc 2·in_h. En 4:2:2 la chroma a la même hauteur que le luma et se tisse pareil ;
+    en 4:2:0 le tissage vertical de la chroma est une APPROXIMATION (le siting chroma entrelacé
+    n'est pas une simple alternance de lignes) — acceptable sur un mur de monitoring, à ne pas
+    reprendre tel quel pour une sortie de diffusion."""
+    _yb  = in_w * in_h * _BPS
+    _uvb = (in_w // _CW) * (in_h // _CH) * _BPS
+    ch, cw = in_h // _CH, in_w // _CW
+    y = np.empty((in_h * 2, in_w), dtype=_NP_DT)
+    y[0::2] = np.frombuffer(bytes(vt[:_yb]), dtype=_NP_DT).reshape(in_h, in_w)
+    y[1::2] = np.frombuffer(bytes(vb[:_yb]), dtype=_NP_DT).reshape(in_h, in_w)
+    u = np.empty((ch * 2, cw), dtype=_NP_DT)
+    v = np.empty((ch * 2, cw), dtype=_NP_DT)
+    u[0::2] = np.frombuffer(bytes(vt[_yb:_yb + _uvb]), dtype=_NP_DT).reshape(ch, cw)
+    u[1::2] = np.frombuffer(bytes(vb[_yb:_yb + _uvb]), dtype=_NP_DT).reshape(ch, cw)
+    v[0::2] = np.frombuffer(bytes(vt[_yb + _uvb:_yb + 2 * _uvb]), dtype=_NP_DT).reshape(ch, cw)
+    v[1::2] = np.frombuffer(bytes(vb[_yb + _uvb:_yb + 2 * _uvb]), dtype=_NP_DT).reshape(ch, cw)
+    return y, u, v
+
+def _box_acc_dtype(n):
+    """dtype d'accumulation d'une somme de `n` échantillons : uint16 tant qu'elle ne PEUT PAS
+    déborder (255·9 = 2295 en 8 bits, 1023·9 = 9207 en 10 bits), uint32 au-delà. uint16 brasse
+    2× moins d'octets sur une opération memory-bound — mais un débordement serait SILENCIEUX et
+    donnerait des tuiles fausses, donc le seuil est CALCULÉ sur la profondeur réelle, pas supposé."""
+    return np.uint16 if n * _MAXV <= 65535 else np.uint32
+
+def _box_reduce(plane, sy, sx):
+    """Réduction d'un plan par MOYENNE du bloc sy×sx (filtre d'aire) — ratio ENTIER uniquement.
+    Somme par additions successives des sy·sx sous-vues stridées du bloc : mesuré 2,8 ms sur un
+    plan Y 1920×1080→640×360, contre 14 ms pour le `.sum(axis=(1, 3))` naïf, qui matérialise un
+    intermédiaire 4D non contigu — la formulation compte plus que l'algorithme ici. Arrondi au
+    plus proche (+n//2). Écrit dans le backend de `plane` (sous-vues + accumulation) → marche
+    identiquement en numpy et en cupy, canvas GPU compris."""
+    if sy <= 1 and sx <= 1:
+        return plane
+    h, w = plane.shape
+    th, tw = h // sy, w // sx
+    q = plane[:th * sy, :tw * sx].reshape(th, sy, tw, sx)
+    n = sy * sx
+    acc = q[:, 0, :, 0].astype(_box_acc_dtype(n))
+    for i in range(sy):
+        for j in range(sx):
+            if i or j:
+                acc += q[:, i, :, j]
+    return ((acc + n // 2) // n).astype(_NP_DT)
+
 def resize_plane(plane, target_h, target_w):
     from_h, from_w = plane.shape
     if target_h <= 0 or target_w <= 0:
         return plane[:1, :1]
-    # Downscale à ratio ENTIER (grilles 2×2/3×3/4×4… → tuile = ½, ⅓, ¼ de la source) : slicing à
-    # pas constant `plane[::sy, ::sx]` (une VUE, zéro copie) au lieu du gather np.ix_ (alloue+copie).
-    # Résultat octet-identique au nearest-neighbor (arange*from/target = arange*s pour s entier).
-    # Sinon (ratio non entier / upscale), repli sur le gather générique.
+    # Downscale à ratio ENTIER (grilles 2×2/3×3/4×4… → tuile = ½, ⅓, ¼ de la source).
     if from_h % target_h == 0 and from_w % target_w == 0:
-        return plane[::from_h // target_h, ::from_w // target_w]
+        sy, sx = from_h // target_h, from_w // target_w
+        if _BOX and (sy > 1 or sx > 1):
+            return _box_reduce(plane, sy, sx)   # moyenne du bloc = anticrénelage correct
+        # nearest : slicing à pas constant `plane[::sy, ::sx]` (une VUE, zéro copie) au lieu du
+        # gather np.ix_ (alloue+copie). Octet-identique au nearest-neighbor générique ci-dessous
+        # (arange*from/target = arange*s pour s entier).
+        return plane[::sy, ::sx]
     # Gather (ratio non entier/upscale) : indices via le MÊME backend que `plane` (xp) — un index
     # numpy sur un tableau cupy lèverait. xp=np en CPU → comportement inchangé (octet-identique).
     _xp = cp if (GPU and isinstance(plane, cp.ndarray)) else np
+    # Ratio NON ENTIER en box : on pré-réduit du plus grand facteur ENTIER disponible — c'est là
+    # que se joue l'essentiel de l'anticrénelage (un 1920→700 passe par 960) — puis le gather
+    # nearest ajuste à la taille exacte. Un ratio non entier n'admet pas de filtre d'aire exact
+    # sans pondération par pixel de sortie, hors budget sur ce chemin.
+    if _BOX:
+        py, px = max(1, from_h // target_h), max(1, from_w // target_w)
+        if py > 1 or px > 1:
+            plane = _box_reduce(plane, py, px)
+            from_h, from_w = plane.shape
     row_idx = (_xp.arange(target_h) * from_h / target_h).astype(int)
     col_idx = (_xp.arange(target_w) * from_w / target_w).astype(int)
     return plane[_xp.ix_(row_idx, col_idx)]
@@ -1339,8 +1442,15 @@ def _blend_pre_into(dv, ia, sa):
 def _mvk_place_plane(dstv, plane, th, tw):
     """resize_plane + assignation FUSIONNÉS (mvk_place → écrit la vue canvas en 1 passe).
     Indices nearest = MÊMES formules que resize_plane (pas entier, sinon troncature float),
-    calculées ici — le C ne fait que le gather. False → repli resize_plane (bit-exact)."""
+    calculées ici — le C ne fait que le gather. False → repli resize_plane (bit-exact).
+    ⚠ Le kernel ne sait faire QUE le gather nearest : sous filtre box il n'a pas le droit de
+    servir, sinon la tuile serait décimée pendant que le reste du plugin croit filtrer. On rend
+    la main à resize_plane, et on COMPTE le repli (`mvk_miss.place` sur :8080) pour que le
+    surcoût soit lisible au lieu d'être subi en silence."""
     if not _MVK or th <= 0 or tw <= 0:
+        return False
+    if _BOX:
+        _mvk_miss["place"] += 1
         return False
     fh, fw = plane.shape
     if fh % th == 0 and fw % tw == 0:
@@ -5078,14 +5188,19 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
     # Éléments [6..10] : plans SOURCE de base + pas de décimation — consommés par le placement
     # fusionné mvk (_mvk_band, indices absolus) ; les index [0..5] historiques sont inchangés
     # (repli _gather_band). cxi/cci en int32 (contrat mvk_place ; identique en fancy-indexing).
+    # Éléments [11..12] : facteurs de réduction du plan CHROMA (le filtre box réduit la tranche
+    # source elle-même, il ne peut pas réutiliser une vue stridée pré-calculée — et les facteurs
+    # chroma ne se déduisent pas des facteurs luma quand la géométrie n'est pas divisible).
     def _tile_views(sy, su, sv, in_h, in_w, vh, vw):
         if vh > 0 and vw > 0 and in_h % vh == 0 and in_w % vw == 0:
             _sy, _sx = in_h // vh, in_w // vw
+            _cfy = max(1, (in_h // _CH) // max(1, vh // _CH))
+            _cfx = max(1, (in_w // _CW) // max(1, vw // _CW))
             return ("v", sy[::_sy, ::_sx], su[::_sy, ::_sx], sv[::_sy, ::_sx], None, None,
-                    sy, su, sv, _sy, _sx)
+                    sy, su, sv, _sy, _sx, _cfy, _cfx)
         cxi = ((np.arange(vw) * in_w) // vw).astype(np.int32)
         cci = ((np.arange(vw // _CW) * (in_w // _CW)) // (vw // _CW)).astype(np.int32)
-        return ("g", sy, su, sv, cxi, cci, sy, su, sv, 0, 0)
+        return ("g", sy, su, sv, cxi, cci, sy, su, sv, 0, 0, 0, 0)
     def _gather_band(tv, in_h, vh, vy, a, b):
         """Rangées SOURCE (hôte) des lignes de sortie [a, b) d'une tuile : vue STRIDÉE (ratio
         entier, ~8 µs) sinon gather chaîné lignes→colonnes (~33 µs — np.ix_ 2D mesuré à ~120 µs,
@@ -5095,6 +5210,19 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
         ca0, cb0 = a // _CH, b // _CH
         _bu = _bv = None
         if tv[0] == "v":
+            if _BOX:
+                # box : la bande de sortie [r0, r1) consomme les lignes source [r0·fy, r1·fy).
+                # On réduit CETTE tranche — pas le plan entier — donc le mode tranche garde son
+                # intérêt (l'aval démarre sur la 1ʳᵉ bande) et le coût reste proportionnel.
+                _fy, _fx = tv[9], tv[10]
+                _by = _box_reduce(tv[6][r0 * _fy:r1 * _fy], _fy, _fx)
+                if cb0 > ca0:
+                    rc0 = r0 // _CH
+                    _cfy, _cfx = tv[11], tv[12]
+                    _nc = cb0 - ca0
+                    _bu = _box_reduce(tv[7][rc0 * _cfy:(rc0 + _nc) * _cfy], _cfy, _cfx)
+                    _bv = _box_reduce(tv[8][rc0 * _cfy:(rc0 + _nc) * _cfy], _cfy, _cfx)
+                return _by, _bu, _bv, ca0, cb0
             _by = tv[1][r0:r1]
             if cb0 > ca0:
                 rc0 = r0 // _CH
@@ -5176,6 +5304,12 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
             # resize_plane) → nb de tranches source nécessaires (convention : k tranches = lignes
             # [0, k·islh) valides sur les 3 plans, chroma compris).
             need_row = ((b - 1 - vy) * in_h) // vh
+            if _BOX and tv[0] == "v":
+                # ★ En box, la bande n'a pas besoin de la SEULE ligne échantillonnée mais de TOUT
+                # le bloc : fy−1 lignes source de plus. Sans ce décalage, la dernière ligne de
+                # chaque bande serait moyennée avec des lignes que le producteur n'a pas encore
+                # écrites — bandes souillées, et d'autant plus visibles que la grille est fine.
+                need_row = (b - vy) * tv[9] - 1
             need_k = min(total, need_row // islh + 1)
             if _sl_dbg[1] < 0:
                 _sl_dbg[1] = valid
@@ -5221,7 +5355,9 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
             if GPU_SLICE:
                 _by, _bu, _bv, ca0, cb0 = _gather_band(tv, in_h, vh, vy, a, b)
                 _bstage.append((_by, _bu, _bv, a, b, ca0, cb0, vx, vw, _cx0, 1, 1))
-            elif not (_MVK and _mvk_band(tv, in_h, vh, vy, a, b, vx, vw, _cx0)):
+            # `not _BOX` : _mvk_band est un gather nearest fusionné — même raison que
+            # _mvk_place_plane, il ne peut pas servir sous filtre box.
+            elif not (_MVK and not _BOX and _mvk_band(tv, in_h, vh, vy, a, b, vx, vw, _cx0)):
                 _by, _bu, _bv, ca0, cb0 = _gather_band(tv, in_h, vh, vy, a, b)
                 cy[a:b, vx:vx + vw] = _by
                 if _bu is not None:
@@ -5248,7 +5384,14 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                 if a >= b:
                     continue
                 _tv2 = _t2[15]
-                if _tv2[0] == "v":
+                if _tv2[0] == "v" and _BOX:
+                    # box : le fast-path « rangées pleine largeur + décimation COLONNE en VRAM »
+                    # ne s'applique pas à une moyenne (csx/csc = 1). On réduit sur l'hôte via le
+                    # MÊME chemin que la bande simple et on uploade la tuile déjà réduite — moins
+                    # d'octets à transférer, en compensation partielle du coût de la moyenne.
+                    _by, _bu, _bv, ca0, cb0 = _gather_band(_tv2, _t2[6], _vh2, _vy2, a, b)
+                    _bstage.append((_by, _bu, _bv, a, b, ca0, cb0, _vx2, _vw2, _vx2 // _CW, 1, 1))
+                elif _tv2[0] == "v":
                     _sty = _t2[6] // _vh2; _stx = _t2[7] // _vw2
                     r0 = a - _vy2; r1 = r0 + (b - a)
                     _by = _t2[3][::_sty][r0:r1]            # rangées décimées, colonnes PLEINES
@@ -5492,6 +5635,8 @@ while True:
     _statuses = []          # (idx, statut, chip format, proxy) → signature de la couche info
     _pu = {{}}              # idx → {{src, read, cost, kind}} (monitoring pyramide, cette frame)
     _pread = []             # noms de shm proxy réellement lus cette frame
+    _woven = 0              # tuiles DÉSENTRELACÉES par weave cette frame (exposé sur :8080 —
+                            # une source déclarée 1080i qui reste à 0 signale un repli bob muet)
 
     with state_lock:
         _fc = list(FLUX_CONFIG)   # snapshot stable pour cette frame
@@ -5613,14 +5758,33 @@ while True:
                     got = rd.get_latest()
             else:
                 got = rd.get_latest()
-            # ENTRELACÉ : on VERROUILLE la PARITÉ sur le champ HAUT (index pair). Sans ça, get_latest
-            # renvoie alternativement top/bottom (50/s) → scalés à la tuile, les deux champs ont un
-            # décalage vertical d'½ ligne → SCINTILLEMENT des bords horizontaux. Un seul champ (top) →
-            # bob progressif STABLE à la cadence trame (25/s), suffisant pour un mur de monitoring.
-            if got is not None and src.get("interlaced") and (got[0] % 2 == 1):
-                _gt = rd.get(got[0] - 1)        # champ haut apparié (déjà commité → retour immédiat)
-                if _gt is not None:
-                    got = _gt
+            # ENTRELACÉ. Deux traitements possibles, cf. INTERLACE_MODE.
+            # • WEAVE (défaut) : on retisse les DEUX champs de la dernière trame COMPLÈTE →
+            #   résolution verticale PLEINE. Appariement : une trame = (index PAIR 2k = champ
+            #   haut, index IMPAIR 2k+1 = champ bas). Si le dernier grain est IMPAIR, la paire
+            #   (n−1, n) est entièrement commitée. S'il est PAIR, le champ bas n+1 n'est pas
+            #   encore écrit : on recule d'une trame sur (n−2, n−1), commitée elle aussi. On
+            #   n'attend donc JAMAIS, et on n'affiche jamais une demi-trame — au prix d'au plus
+            #   un champ de latence. Paire indisponible (démarrage, ring court) → repli bob.
+            # • BOB : on VERROUILLE la parité sur le champ HAUT (index pair). Sans ce verrou,
+            #   get_latest rend alternativement top/bottom (50/s) → une fois scalés à la tuile les
+            #   deux champs ont un décalage vertical d'½ ligne → SCINTILLEMENT des bords
+            #   horizontaux. Un seul champ = bob progressif STABLE à la cadence trame (25/s).
+            _wv = None
+            if got is not None and src.get("interlaced"):
+                if INTERLACE_MODE == "weave":
+                    _n = got[0]
+                    _it, _ib = ((_n - 1, _n) if (_n % 2 == 1) else (_n - 2, _n - 1))
+                    if _it >= 0:
+                        _gt = rd.get(_it)
+                        _gb = rd.get(_ib)
+                        if _gt is not None and _gb is not None:
+                            _wv = (_gt[2], _gb[2])
+                            got = _gt
+                if _wv is None and (got[0] % 2 == 1):
+                    _gt = rd.get(got[0] - 1)    # champ haut apparié (déjà commité → retour immédiat)
+                    if _gt is not None:
+                        got = _gt
             if got is None:        # flux ouvert mais aucun grain lisible (vide OU Reader périmé)
                 canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
                 _tile_status[i] = "nosignal"
@@ -5664,7 +5828,7 @@ while True:
 
             _yb  = in_w * in_h * _BPS               # octets du plan Y
             _uvb = (in_w // _CW) * (in_h // _CH) * _BPS   # octets d'un plan chroma
-            if SLICE_ON:
+            if SLICE_ON and _wv is None:
                 # MODE TRANCHE : vues ZÉRO-COPIE sur le grain (les lignes au-delà de validSlices ne
                 # sont PAS lues ici — _compose_bands attend chaque bande avant de la toucher ; le
                 # handler SIGBUS couvre la recréation amont, comme pour les mmaps historiques).
@@ -5674,12 +5838,20 @@ while True:
                 _slice_batch.append((i, rd, fi, got[1], src_y, src_u, src_v, in_h, in_w,
                                      vy, vh, video_x, video_w))
                 continue
-            src_y = np.frombuffer(bytes(src_view[:_yb]),
-                                  dtype=_NP_DT).reshape(in_h, in_w)
-            src_u = np.frombuffer(bytes(src_view[_yb:_yb + _uvb]),
-                                  dtype=_NP_DT).reshape(in_h//_CH, in_w//_CW)
-            src_v = np.frombuffer(bytes(src_view[_yb + _uvb:_yb + 2 * _uvb]),
-                                  dtype=_NP_DT).reshape(in_h//_CH, in_w//_CW)
+            if _wv is not None:
+                # ENTRELACÉ/WEAVE : trame PLEINE retissée (2·in_h lignes) — c'est elle, et non un
+                # champ, qui part au placement. Tout l'aval (resize_plane, filtre box, géométrie
+                # `contain`) travaille dès lors sur la vraie hauteur d'image : le facteur de
+                # réduction vertical double, donc le box moyenne des lignes des DEUX champs.
+                src_y, src_u, src_v = _weave_fields(_wv[0], _wv[1], in_w, in_h)
+                _woven += 1
+            else:
+                src_y = np.frombuffer(bytes(src_view[:_yb]),
+                                      dtype=_NP_DT).reshape(in_h, in_w)
+                src_u = np.frombuffer(bytes(src_view[_yb:_yb + _uvb]),
+                                      dtype=_NP_DT).reshape(in_h//_CH, in_w//_CW)
+                src_v = np.frombuffer(bytes(src_view[_yb + _uvb:_yb + 2 * _uvb]),
+                                      dtype=_NP_DT).reshape(in_h//_CH, in_w//_CW)
             # On COLLECTE (plans numpy depuis le shm + géométrie de destination) au lieu de
             # resize+place inline. Le placement se fait APRÈS la boucle : en GPU, un seul upload
             # GROUPÉ épinglé des plans collectés (1 H2D/trame, sinon le GPU régresse — banc Phase 0) ;
@@ -5709,6 +5881,7 @@ while True:
     # Publication du monitoring proxy de cette frame (swap de référence = atomique pour le lecteur).
     _proxy_usage_latest = _pu
     _proxy_read_latest = sorted(set(_pread))
+    metrics["interlace_woven_tiles"] = _woven
 
     _t_after_inputs = time.time_ns()   # profiling : fin des entrées vidéo (lecture+resize+blend tuiles)
 

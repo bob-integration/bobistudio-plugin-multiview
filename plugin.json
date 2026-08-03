@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.49.0",
+  "version": "0.51.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -233,6 +233,42 @@
       ],
       "default": "info",
       "scope": "user"
+    },
+    {
+      "key": "scale_filter",
+      "type": "select",
+      "label": "Filtre de réduction des vignettes",
+      "help": "Une vignette est une réduction de sa source (1920×1080 dans une case 640×360 = 1 pixel sur 9). « Moyenne » filtre correctement : le texte incrusté et les détails fins de la source redeviennent lisibles. « Décimation » est le comportement historique, plus rapide mais crénelé. La moyenne coûte environ 10× plus de CPU par vignette — surveiller compose_breakdown_ms.inputs sur :8080.",
+      "default": "box",
+      "scope": "system",
+      "options": [
+        {
+          "value": "box",
+          "label": "Moyenne du bloc (anticrénelage)"
+        },
+        {
+          "value": "nearest",
+          "label": "Décimation (historique, rapide)"
+        }
+      ]
+    },
+    {
+      "key": "interlace_mode",
+      "type": "select",
+      "label": "Sources entrelacées",
+      "help": "Le mur sort toujours en progressif : une source 1080i doit être désentrelacée. « Tissage » recompose les deux champs et rend la résolution verticale complète — c'est le réglage qui rend les incrustations de la source lisibles. « Champ seul » est le comportement historique : moitié de la résolution verticale, mais insensible au mouvement. Le tissage peigne sur les mouvements rapides ; la réduction vers la vignette en absorbe l'essentiel.",
+      "default": "weave",
+      "scope": "system",
+      "options": [
+        {
+          "value": "weave",
+          "label": "Tissage des deux champs (résolution pleine)"
+        },
+        {
+          "value": "bob",
+          "label": "Champ seul (historique)"
+        }
+      ]
     }
   ],
   "wiring": {
