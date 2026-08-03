@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.51.0",
+  "version": "0.56.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -356,12 +356,14 @@
       "/overlays",
       "/chrono",
       "/overlay_text",
-      "/log_level"
+      "/log_level",
+      "/clock_tz"
     ],
     "read_endpoints": [
       "/state",
       "/chronos",
-      "/texts"
+      "/texts",
+      "/timezones"
     ],
     "recall": {
       "source": "layouts",
@@ -632,6 +634,23 @@
               "label": "Erreurs seules"
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "set_clock_tz",
+      "label": "Changer le fuseau d'une horloge",
+      "endpoint": "/clock_tz",
+      "params": [
+        {
+          "key": "id",
+          "label": "Horloge",
+          "options_endpoint": "/chronos"
+        },
+        {
+          "key": "tz",
+          "label": "Fuseau horaire",
+          "options_endpoint": "/timezones"
         }
       ]
     }

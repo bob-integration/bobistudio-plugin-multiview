@@ -205,6 +205,10 @@
                 <label class="field field-inline" for="ov_show_ss"><input type="checkbox" class="ios-toggle" id="ov_show_ss" onchange="onOverlayChange()"> SS</label>
                 <label class="field field-inline" for="ov_show_ff"><input type="checkbox" class="ios-toggle" id="ov_show_ff" onchange="onOverlayChange()"> <span data-i18n="plugin.multiview.ff">II</span></label>
                 <div class="field field-narrow" id="ov_ptp_grp"><label for="ov_offset_ms" data-i18n="plugin.multiview.offset_ms">Offset (ms)</label><input type="number" id="ov_offset_ms" onchange="onOverlayChange()"></div>
+                <!-- Fuseau PROPRE à cette horloge. Vide = fuseau du mur (réglage système). Peuplé
+                     depuis /timezones = la tzdata réellement présente dans l'image, jamais une
+                     liste en dur : un fuseau proposé mais absent afficherait l'heure du mur. -->
+                <div class="field" id="ov_tz_grp"><label for="ov_tz" data-i18n="plugin.multiview.clock_tz">Fuseau horaire</label><select id="ov_tz" onchange="onOverlayChange()"></select></div>
                 <div class="field" id="ov_anc_grp"><label for="ov_tc_source" data-i18n="plugin.multiview.tc_source">Source du timecode</label><select id="ov_tc_source" onchange="onOverlayChange()"></select></div>
             </div>
             <div class="mw-editor-row" id="ov_chrono_grp" hidden>

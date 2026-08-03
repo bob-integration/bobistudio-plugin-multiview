@@ -2171,7 +2171,9 @@ function newOverlay(kind) {
     if (kind === 'text')  Object.assign(o, { text: 'TEXTE', text_source: 'local', tsl_index: 0,
         label_row: '', label_col: 0, tally_level: 0, tally_red: false, tally_green: false });
     if (kind === 'clock') Object.assign(o, {
-        clock_source: 'ptp', show_hh: true, show_mm: true, show_ss: true, show_ff: false,
+        // tz vide = fuseau du MUR (réglage système). Une horloge neuve suit donc le mur, et
+        // n'affiche une autre ville que si l'utilisateur le demande explicitement.
+        clock_source: 'ptp', tz: '', show_hh: true, show_mm: true, show_ss: true, show_ff: false,
         offset_ms: 0, chrono_start: '00:00:00', chrono_running: false,
         tc_source: 0,   // index d'entrée vidéo dont on lit le timecode ANC
         cd_warn: true, cd_warn_orange: 10, cd_warn_red: 5,
@@ -2238,6 +2240,7 @@ function serializeOverlays() {
             tally_red: !!o.tally_red, tally_green: !!o.tally_green });
         if (o.kind === 'clock') Object.assign(base, {
             clock_source: o.clock_source || 'ptp',
+            tz: o.tz || '',
             show_hh: o.show_hh !== false, show_mm: o.show_mm !== false,
             show_ss: o.show_ss !== false, show_ff: !!o.show_ff,
             offset_ms: parseInt(o.offset_ms) || 0,
@@ -2474,6 +2477,47 @@ function onBlockGeomChange() {
 }
 
 // ── Panneau de propriétés overlay ──
+// ─── Sélecteur de FUSEAU HORAIRE d'une horloge ─────────────────────────────────────────────
+// La liste vient de /timezones (proxy plugin) = la tzdata RÉELLEMENT présente dans l'image du
+// conteneur, jamais une liste codée en dur : proposer un fuseau absent ferait afficher l'heure du
+// mur sans le moindre signal. Chargée UNE fois puis mémorisée (486 entrées, ~15 ko).
+let _tzCache = null, _tzPending = null;
+function _tzLoad() {
+    if (_tzCache) return Promise.resolve(_tzCache);
+    if (_tzPending) return _tzPending;
+    _tzPending = fetch(`/api/containers/${editorVmid}/plugin/timezones`)
+        .then(r => r.ok ? r.json() : {items: []})
+        .then(j => { _tzCache = j.items || []; return _tzCache; })
+        .catch(() => []);
+    return _tzPending;
+}
+// Peuple le <select> et sélectionne `val`. Les options sont groupées par région (une liste plate
+// de ~500 entrées est inutilisable) ; l'entrée vide « fuseau du mur » reste en tête.
+function _tzFill(id, val) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    _tzLoad().then(items => {
+        if (el.dataset.filled !== '1') {
+            el.innerHTML = '';
+            const groups = new Map();
+            items.forEach(it => {
+                if (!it.value) {   // entrée « hérite du mur », toujours en premier
+                    el.appendChild(new Option(it.label, ''));
+                    return;
+                }
+                const reg = it.value.includes('/') ? it.value.split('/')[0] : 'UTC';
+                if (!groups.has(reg)) {
+                    const g = document.createElement('optgroup');
+                    g.label = reg; groups.set(reg, g); el.appendChild(g);
+                }
+                groups.get(reg).appendChild(new Option(it.label, it.value));
+            });
+            el.dataset.filled = '1';
+        }
+        el.value = val || '';
+    });
+}
+
 function _ovSetVal(id, v) { const e = document.getElementById(id); if (e) e.value = v; }
 function _ovSetChk(id, v) { const e = document.getElementById(id); if (e) e.checked = !!v; }
 // Pose la police d'un overlay dans le select. Si la clé n'est pas (encore / plus) au catalogue
@@ -2557,6 +2601,7 @@ function refreshOverlayPanel() {
     _ovSetChk('ov_show_ss', o.show_ss !== false);
     _ovSetChk('ov_show_ff', !!o.show_ff);
     _ovSetVal('ov_offset_ms', o.offset_ms || 0);
+    _tzFill('ov_tz', o.tz || '');
     _ovSetVal('ov_chrono_start', o.chrono_start || '00:00:00');
     _ovSetChk('ov_cd_warn', o.cd_warn !== false);
     _ovSetVal('ov_cd_warn_orange', o.cd_warn_orange ?? 10);
@@ -2584,6 +2629,9 @@ function refreshOverlayPanel() {
     sub('ov_chrono_grp',   o.kind === 'clock' && (o.clock_source === 'chrono' || o.clock_source === 'countdown'));
     sub('ov_cdwarn_grp',   o.kind === 'clock' && o.clock_source === 'countdown');
     sub('ov_ptp_grp',      o.kind === 'clock' && o.clock_source === 'ptp');
+    // Le fuseau n'a de sens que pour l'HEURE DU JOUR : un chrono, un décompte ou un timecode
+    // embarqué sont des durées/valeurs absolues, les décaler d'un fuseau n'aurait aucun sens.
+    sub('ov_tz_grp',       o.kind === 'clock' && o.clock_source === 'ptp');
     sub('ov_anc_grp',      o.kind === 'clock' && o.clock_source === 'anc');
 }
 
@@ -2634,6 +2682,7 @@ function onOverlayChange() {
         o.show_ss = g('ov_show_ss').checked;
         o.show_ff = g('ov_show_ff').checked;
         o.offset_ms = parseInt(g('ov_offset_ms').value) || 0;
+        o.tz = g('ov_tz').value || '';
         o.chrono_start = g('ov_chrono_start').value || '00:00:00';
         o.tc_source = parseInt(g('ov_tc_source').value) || 0;
         o.cd_warn = g('ov_cd_warn').checked;

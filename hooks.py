@@ -203,9 +203,16 @@ def before_deploy(params, context):
     #    PiP) : fuseau du contrôleur (`tz` — images runtime en UTC) + `tai_utc_offset_s`
     #    (l'horloge des nœuds est sur l'échelle PTP/TAI, cf. PTP_CLOCK.md — offset MESURÉ
     #    contre le contrôleur, jamais 37 figé). Ré-évalué à chaque déploiement.
+    #    ★ Le `tz` EXPLICITE du mur PRIME. `params.update()` écrasait sans condition la valeur
+    #    saisie par l'utilisateur à CHAQUE déploiement : le réglage semblait accepté puis
+    #    revenait au fuseau du système au premier redéploiement. Un mur dont `tz` est vide suit
+    #    le réglage global, ce qui reste le défaut voulu.
     try:
         from app.ptp import civil_clock_params
-        params.update(civil_clock_params(context.get("vmid")))
+        _civ = civil_clock_params(context.get("vmid")) or {}
+        if (params.get("tz") or "").strip():
+            _civ.pop("tz", None)
+        params.update(_civ)
     except Exception:
         pass
 

@@ -4,6 +4,7 @@
 # Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
 import mmap, socket, struct, sys, time, numpy as np, threading, json, os, re, base64, io, signal, gc
+import datetime   # horloges : conversion civile PAR FUSEAU (zoneinfo), cf. _civil_hms
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
@@ -213,6 +214,48 @@ if _TZ_NAME:
         time.tzset()
     except Exception:
         pass
+
+# FUSEAU PAR HORLOGE. `tz` du CONFIG = fuseau du mur (hérité du réglage global du système, injecté
+# au déploiement) ; chaque horloge peut le SURCHARGER par son propre champ `tz` — mur d'horloges
+# Paris / New York / Tokyo, usage courant en régie. On ne peut donc PAS se contenter du TZ global du
+# process (`time.localtime`) : la conversion doit être explicite, par zone, à chaque horloge.
+_ZONE_CACHE = {{}}     # nom IANA → ZoneInfo | None (None = introuvable, déjà signalé)
+_ZONE_BAD   = {{}}     # nom IANA refusé → nb d'horloges concernées (exposé sur :8080)
+
+def _zone(name):
+    """ZoneInfo d'un nom IANA, mis en cache. Renvoie None si le nom est vide, si `zoneinfo` est
+    indisponible, ou si la base tzdata de l'image ne connaît pas ce fuseau — l'appelant retombe
+    alors sur le fuseau du mur. Un fuseau refusé est COMPTÉ (`clock_tz_unknown` sur :8080) : une
+    horloge qui affiche silencieusement la mauvaise heure est pire qu'une horloge absente."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    if name in _ZONE_CACHE:
+        z = _ZONE_CACHE[name]
+        if z is None:
+            _ZONE_BAD[name] = _ZONE_BAD.get(name, 0) + 1
+        return z
+    z = None
+    try:
+        from zoneinfo import ZoneInfo
+        z = ZoneInfo(name)
+    except Exception as _e:
+        log("horloge : fuseau « %s » inconnu de l'image (%s) — repli sur le fuseau du mur"
+            % (name, _e), "warning")
+        _ZONE_BAD[name] = _ZONE_BAD.get(name, 0) + 1
+    _ZONE_CACHE[name] = z
+    return z
+
+def _civil_hms(ts, tz_name):
+    """(heure, minute, seconde) civiles d'un instant epoch UTC dans `tz_name`. Fuseau absent ou
+    inconnu → fuseau du PROCESS (celui du mur, posé par os.environ['TZ'] ci-dessus) : identique au
+    comportement historique."""
+    z = _zone(tz_name)
+    if z is not None:
+        d = datetime.datetime.fromtimestamp(ts, z)
+        return d.hour, d.minute, d.second
+    _lt = time.localtime(ts)
+    return _lt.tm_hour, _lt.tm_min, _lt.tm_sec
 try:
     TAI_UTC_OFFSET_S = max(0, int(CONFIG.get("tai_utc_offset_s") or 0))
 except (TypeError, ValueError):
@@ -477,7 +520,22 @@ A_TOTAL_SIZE        = A_HEADER_SIZE + A_RING_SIZE * A_CHUNK_SIZE
 
 METER_BAR_W          = 5
 METER_GAP            = 1
-METER_TICK_W         = 16
+# Largeur de la COLONNE DE GRADUATIONS d'un VU-mètre (libellés dB + petit trait de repère).
+# ★ MESURÉE, pas choisie : le trait occupe les 4 derniers pixels, et le libellé le plus large
+# ("+12" en échelle PPM, police par défaut) fait 19 px. Il faut donc 1 (marge gauche) + 19 + 2
+# (garde) + 4 (trait) = 26. À 16 px — la valeur historique — TOUT libellé à 3 caractères
+# ("-12", "-18", "-30"…) mesure 15 px et finissait DANS le trait de repère ; "+12" débordait
+# même de 4 px sur les barres. Rétrécir la police n'est pas une porte de sortie : il faudrait
+# descendre à la taille 6, soit des chiffres de 4 px de haut, illisibles sur un mur.
+# Largeur SELON L'ÉCHELLE : le « +12 » du PPM (19 px) est le seul libellé à imposer 26 ; en dBFS
+# le pire est « -18 » (15 px), 22 suffisent. Rendre ces 4 px aux murs en dBFS ne coûte rien.
+METER_TICK_W_DBFS    = 22
+METER_TICK_W_PPM     = 26
+METER_TICK_W_MARKS   = 6    # traits seuls (4 px de trait + 2 de garde), sans les chiffres
+METER_TICK_W         = METER_TICK_W_PPM   # défaut des signatures = le pire cas (jamais trop étroit)
+# Marge réservée entre un VU-mètre et le BORD de sa cellule : sans elle, un mètre aligné sur le
+# bord touche visuellement la fenêtre voisine et on ne sait plus à quel PiP l'audio appartient.
+METER_EDGE_MARGIN    = 4
 METER_MIN_DB         = -60.0
 METER_DECAY_DB_PER_S = 20.0    # vitesse de chute du peak hold
 
@@ -641,11 +699,53 @@ def _update_peaks(state, n_channels, now):
     status = "silence" if (now - float(state.get("last_loud_ts", now))) >= SILENCE_HOLD_S else "ok"
     return peak_db, holds, status
 
+def _meter_grad(comp_or_blk, scale, rw):
+    """Niveau de graduations EFFECTIF d'un VU-mètre et largeur de colonne associée.
+    Renvoie (niveau, tick_w) avec niveau ∈ "full" (traits + chiffres) | "marks" (traits seuls) |
+    "none" (barres nues).
+
+    Le réglage `graduations` vaut "auto" (défaut) ou l'un des trois niveaux, qui s'impose alors.
+    En AUTO, on décide sur la PLACE RÉELLEMENT ALLOUÉE au mètre (`rw`, largeur du composant) : la
+    colonne ne doit pas dominer, seuil 40 %. C'est la place donnée par le concepteur du modèle qui
+    compte, pas la taille intrinsèque du mètre — sinon un mur à 2 canaux dégraderait toujours
+    (22/(22+11) = 67 %) même dans une cellule large.
+    Mesuré sur le mur 379 : zone de 125 px → 18 %, on garde les chiffres ; petit PiP à ~40 px →
+    55 %, on passe aux traits seuls ; sous ~15 px il ne reste que les barres."""
+    mode = str((comp_or_blk or {{}}).get("graduations") or "auto").strip().lower()
+    tw_full = METER_TICK_W_PPM if scale == "ppm" else METER_TICK_W_DBFS
+    if mode == "full":
+        return "full", tw_full
+    if mode == "marks":
+        return "marks", METER_TICK_W_MARKS
+    if mode == "none":
+        return "none", 0
+    if rw > 0 and tw_full <= rw * 0.40:
+        return "full", tw_full
+    if rw > 0 and METER_TICK_W_MARKS <= rw * 0.40:
+        return "marks", METER_TICK_W_MARKS
+    return "none", 0
+
+
+def _meter_inset(rx, rw, cell_x, cell_w):
+    """Rentre le mètre de METER_EDGE_MARGIN là où son rectangle TOUCHE le bord de la cellule.
+    Uniquement sur le ou les côtés concernés : un mètre déjà écarté du bord n'est pas déplacé, et
+    on ne mange jamais plus du tiers de la largeur allouée."""
+    cap = max(0, rw // 3)
+    m = min(METER_EDGE_MARGIN, cap)
+    if m <= 0:
+        return rx, rw
+    if rx <= cell_x:
+        rx += m; rw -= m
+    if rx + rw >= cell_x + cell_w:
+        rw -= m
+    return rx, max(2, rw)
+
+
 def _meter_layout(n_channels, tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
     """Renvoie la largeur totale d'un meter à N canaux pour les dimensions données. Sans bordure."""
     return tick_w + n_channels * bar_w + (n_channels - 1) * gap
 
-def _meter_fit_dims(n_channels, rw):
+def _meter_fit_dims(n_channels, rw, tick_w=None):
     """Dimensions (tick_w, bar_w, gap, mw_effectif) d'un meter mode `fit` : SEULES les barres de
     canaux s'élargissent pour occuper `rw` — la zone de graduations (tick_w) et l'espacement
     inter-canaux (gap) restent FIXES (METER_TICK_W/METER_GAP), sinon l'échelle dBFS/PPM et ses
@@ -655,7 +755,8 @@ def _meter_fit_dims(n_channels, rw):
     proprement sur la largeur INTRINSÈQUE (mode `auto`, jamais de barre à 0 px)."""
     n = max(1, n_channels)
     MIN_BAR = 2
-    tick_w, gap = METER_TICK_W, METER_GAP
+    tick_w = METER_TICK_W if tick_w is None else tick_w
+    gap = METER_GAP
     avail_bars = rw - tick_w - (n - 1) * gap
     bar_w = avail_bars // n if n > 0 else 0
     if bar_w < MIN_BAR:
@@ -666,7 +767,8 @@ def _meter_fit_dims(n_channels, rw):
     return tick_w, bar_w, gap, mw
 
 def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opacity_pct, ch0=0,
-                 tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+                 tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP,
+                 grad="full", grad_side="left"):
     """Dessine un peak meter sur l'image RGBA. opacity_pct 10..100.
     Réserve 12 px en bas pour afficher le numéro de canal sous chaque barre.
     `ch0` : décalage d'étiquetage (composants meters à affectation de canaux : la barre k
@@ -708,19 +810,47 @@ def _draw_meter(img, mx, my, mw, mh, n_channels, peaks_db, holds_db, scale, opac
     bars_bottom = my + bars_mh   # ligne du bas des barres
     # Graduations : petite ligne pour chaque tick + label si l'espace permet
     last_label_y = -10
-    for tick_dbfs, lbl in ticks_dbfs:
+    # CÔTÉ des graduations : à gauche (défaut) la colonne occupe [mx, mx+tick_w) et le trait ses
+    # 4 derniers pixels, collé aux barres ; à droite tout est en miroir — la colonne est en fin de
+    # mètre et le trait à son bord GAUCHE, de nouveau côté barres. Un mètre posé au bord droit
+    # d'un PiP a ainsi son échelle tournée vers l'image, pas vers la fenêtre voisine.
+    _right = (grad_side == "right")
+    _grad_x0 = (mx + mw - tick_w) if _right else mx        # origine de la colonne
+    _tick_x0 = _grad_x0 if _right else (_grad_x0 + tick_w - 4)
+    for tick_dbfs, lbl in (ticks_dbfs if grad != "none" else ()):
         f = to_frac(tick_dbfs)
         y_tick = my + bars_mh - int(round(f * bars_mh))
-        # Petite ligne 3px à droite de la zone tick (donc dans la zone des barres, devant)
-        d.line([mx + tick_w - 4, y_tick, mx + tick_w - 1, y_tick],
+        # Petite ligne 3px du côté des barres (donc dans la zone des barres, devant)
+        d.line([_tick_x0, y_tick, _tick_x0 + 3, y_tick],
                fill=(180, 180, 180, a_text))
+        if grad != "full":
+            continue
         # Label seulement si suffisamment d'espace vertical avec le précédent
         if abs(y_tick - last_label_y) >= 9 and y_tick - 4 >= my and y_tick + 4 <= bars_bottom:
-            d.text((mx + 1, y_tick - 4), lbl,
-                   font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
+            # Libellé ALIGNÉ À DROITE, terminé 2 px avant le trait de repère. L'ancrage à gauche
+            # (`mx + 1`) faisait dépendre la fin du libellé de sa LONGUEUR : "0" tenait, "-18"
+            # finissait dans le trait, "+12" débordait sur les barres. Aligné à droite, la marge
+            # au trait est constante quel que soit le texte, et les chiffres s'alignent entre eux.
+            # Bornage à `mx + 1` : un libellé plus large que la colonne reste dans le meter.
+            _lf = ImageFont.load_default()
+            try:
+                _lw = d.textlength(lbl, font=_lf)
+            except Exception:
+                _lw = 0
+            # Le libellé fuit toujours le trait : aligné à droite quand la colonne est à gauche,
+            # à gauche quand elle est à droite. La marge au trait reste constante dans les deux
+            # sens, quelle que soit la longueur du texte.
+            if _right:
+                _lx = min(_grad_x0 + tick_w - 1 - int(round(_lw)), _tick_x0 + 6)
+                _lx = max(_grad_x0 + 5, _lx)
+            else:
+                _lx = max(_grad_x0 + 1, _grad_x0 + tick_w - 6 - int(round(_lw)))
+            d.text((_lx, y_tick - 4), lbl, font=_lf, fill=(220, 220, 220, a_text))
             last_label_y = y_tick
     # Barres + numéro de canal en bas
-    bar_x0 = mx + tick_w
+    # Barres : après la colonne quand elle est à gauche, dès le bord du mètre quand elle est à
+    # droite (ou absente — tick_w vaut alors 0 et les deux expressions coïncident).
+    bar_x0 = mx if _right else (mx + tick_w)
     green_top_px  = int(round(green_top  * bars_mh))
     yellow_top_px = int(round(yellow_top * bars_mh))
     for ch in range(n_channels):
@@ -778,10 +908,13 @@ def _meter_scale_params(scale):
     return to_frac, to_frac(-20.0), to_frac(-6.0)
 
 def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct, ch0=0,
-                        tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+                        tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP,
+                        grad="full", grad_side="left"):
     """Partie STATIQUE du meter (fond + graduations + labels dB + n° de canal), SANS les barres —
     identique à _draw_meter hors boucle barres/hold. Rendu une seule fois (caché).
-    `tick_w`/`bar_w`/`gap` : voir _draw_meter (mode `fit` vs dimensions historiques)."""
+    `tick_w`/`bar_w`/`gap` : voir _draw_meter (mode `fit` vs dimensions historiques).
+    ⚠ C'est LE chemin par défaut (le cache YUV) : toute correction de graduations faite dans
+    _draw_meter doit être faite ICI AUSSI, sinon elle ne touche que le repli `meters_pil`."""
     d = ImageDraw.Draw(img, "RGBA")
     a_bg = int(180 * opacity_pct / 100); a_text = int(255 * opacity_pct / 100)
     bars_mh = max(20, mh - 12)
@@ -796,19 +929,34 @@ def _draw_meter_static(img, mx, my, mw, mh, n_channels, scale, opacity_pct, ch0=
     d.rectangle([mx, my, mx + mw, my + mh], fill=(0, 0, 0, a_bg))
     bars_bottom = my + bars_mh
     last_label_y = -10
-    for tick_dbfs, lbl in ticks_dbfs:
+    _right = (grad_side == "right")
+    _grad_x0 = (mx + mw - tick_w) if _right else mx
+    _tick_x0 = _grad_x0 if _right else (_grad_x0 + tick_w - 4)
+    _lf = ImageFont.load_default()
+    for tick_dbfs, lbl in (ticks_dbfs if grad != "none" else ()):
         y_tick = my + bars_mh - int(round(to_frac(tick_dbfs) * bars_mh))
-        d.line([mx + tick_w - 4, y_tick, mx + tick_w - 1, y_tick], fill=(180, 180, 180, a_text))
+        d.line([_tick_x0, y_tick, _tick_x0 + 3, y_tick], fill=(180, 180, 180, a_text))
+        if grad != "full":
+            continue
         if abs(y_tick - last_label_y) >= 9 and y_tick - 4 >= my and y_tick + 4 <= bars_bottom:
-            d.text((mx + 1, y_tick - 4), lbl, font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
+            try:
+                _lw = d.textlength(lbl, font=_lf)
+            except Exception:
+                _lw = 0
+            if _right:
+                _lx = max(_grad_x0 + 5, min(_grad_x0 + tick_w - 1 - int(round(_lw)), _tick_x0 + 6))
+            else:
+                _lx = max(_grad_x0 + 1, _grad_x0 + tick_w - 6 - int(round(_lw)))
+            d.text((_lx, y_tick - 4), lbl, font=_lf, fill=(220, 220, 220, a_text))
             last_label_y = y_tick
     for ch in range(n_channels):
-        bx = mx + tick_w + ch * (bar_w + gap)
+        bx = (mx if _right else mx + tick_w) + ch * (bar_w + gap)
         d.text((bx + (bar_w // 2) - 2, bars_bottom + 2), str(ch0 + ch + 1),
                font=ImageFont.load_default(), fill=(220, 220, 220, a_text))
 
 def _meter_static_yuv(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0=0,
-                       tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+                       tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP,
+                       grad="full", grad_side="left"):
     """Fond STATIQUE du meter (fond + graduations + labels), rendu PIL UNE fois puis caché
     ★ DÉJÀ CONVERTI EN YUV ★ (0.40.0). C'était LE point chaud des VU (banc : 86 % de leur coût) :
     l'ancien chemin gardait le statique en RGBA et re-convertissait TOUTE la tuile en YUV à CHAQUE
@@ -816,11 +964,14 @@ def _meter_static_yuv(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0=0,
     constant. La conversion par trame était intégralement redondante.
     La clé de cache inclut tick_w/bar_w/gap : un meter `fit` (largeur effective propre à sa cellule)
     ne doit JAMAIS réutiliser le fond caché d'un meter `auto` ou `fit` d'une autre largeur."""
-    key = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap)
+    # grad/grad_side DANS LA CLÉ : ils changent les pixels du fond (colonne présente ou non,
+    # côté, chiffres ou non). Les omettre ferait resservir le fond d'un autre réglage.
+    key = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap, grad, grad_side)
     p = _meter_static_yuv_cache.get(key)
     if p is None:
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        _draw_meter_static(img, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap)
+        _draw_meter_static(img, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0, tick_w, bar_w, gap,
+                           grad, grad_side)
         p = rgba_to_yuv(img)      # (Y, U, V, alpha, alpha_sub) — hôte, kernel C si dispo
         _meter_static_yuv_cache[key] = p
     return p
@@ -860,14 +1011,15 @@ def _meter_paint_rect(y, u, v, a8, x0, y0, x1, y1, ycc, a):
         v[cy0:cy1, cx0:cx1] = ycc[2]
 
 def _meter_tile_yuv(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0,
-                     tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+                     tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP,
+                     grad="full", grad_side="left"):
     """Tuile YUV d'un meter : copie du fond statique CACHÉ EN YUV + barres/hold peints DIRECTEMENT
     en YUV. Plus AUCUNE conversion RGBA→YUV par trame (banc : 2,3 → 0,4 ms sur 4 fenêtres).
     Tuile HÔTE (numpy) : elle est minuscule (une bande de VU), et `_to_xp` l'uploade au blend —
     ce qui, sur un mur GPU, supprime aussi la nuée de micro-noyaux cupy que coûtait la peinture
     RGBA par tranche. `tick_w`/`bar_w`/`gap` : voir _draw_meter."""
     sy, su, sv, sa, _sam = _meter_static_yuv(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct,
-                                             ch0, tick_w, bar_w, gap)
+                                             ch0, tick_w, bar_w, gap, grad, grad_side)
     y = sy.copy(); u = su.copy(); v = sv.copy(); a8 = sa.copy()
     a_bar = int(220 * opacity_pct / 100); a_hold = int(255 * opacity_pct / 100)
     bars_mh = max(20, mh - 12); bars_bottom = rmy + bars_mh
@@ -876,7 +1028,8 @@ def _meter_tile_yuv(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacit
     _g = _met_yuv(_MET_GREEN); _yl = _met_yuv(_MET_YELLOW)
     _r = _met_yuv(_MET_RED);   _w = _met_yuv(_MET_WHITE)
     for ch in range(n):
-        bx = rmx + tick_w + ch * (bar_w + gap)
+        # Colonne à droite → les barres commencent au bord du mètre (cf. _draw_meter.bar_x0).
+        bx = (rmx if grad_side == "right" else rmx + tick_w) + ch * (bar_w + gap)
         peak_h = int(round(to_frac(peaks_db[ch]) * bars_mh))
         hold_h = int(round(to_frac(holds_db[ch]) * bars_mh))
         # NB : PIL d.rectangle est INCLUSIF sur (x1,y1) → bas +1 ici pour égaler les hauteurs.
@@ -1044,6 +1197,11 @@ def _refresh_lat_metrics():
     metrics["scale_filter"] = SCALE_FILTER
     metrics["scale_filter_nearest_paths"] = _mvk_miss["place"]
     metrics["interlace_mode"] = INTERLACE_MODE
+    # Fuseau du mur + fuseaux d'horloge REFUSÉS par la base tzdata de l'image. Une horloge dont le
+    # fuseau est inconnu retombe sur celui du mur : sans ce compteur elle afficherait une heure
+    # fausse en silence, et rien à l'écran ne le dirait.
+    metrics["tz"] = _TZ_NAME
+    metrics["clock_tz_unknown"] = dict(_ZONE_BAD)
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
                                        "output": _t_output.avg(),
@@ -1640,6 +1798,28 @@ def _video_rect(cfg):
         return {{"x": x, "y": y, "w": w, "h": h, "vx": x, "vy": y, "vw": 0, "vh": 0,
                  "ay": y, "ah": h}}
     rx, ry, rw, rh = _comp_rect(cfg, vr)
+    # ★ HABILLAGE QUI RÉSERVE SA PLACE. Le style « viseur » dessine ses équerres AUTOUR de
+    # l'image ; sans réservation, elles n'ont de marge que là où le fit `contain` en laisse
+    # (letterbox OU pillarbox, jamais les deux) et retombent sur l'image sur les deux autres
+    # côtés. On retire donc l'épaisseur des équerres du rectangle vidéo AVANT le fit : l'image
+    # est réduite d'autant, les quatre côtés ont leur marge, et rien n'est recouvert — c'est la
+    # même convention que les autres habillages de fenêtre (réduction homothétique).
+    # Fait ICI et pas au dessin : _video_rect est la géométrie de RÉFÉRENCE (boucle composite,
+    # habillage, tailles réclamées à la pyramide). L'insérer ailleurs ferait diverger le
+    # rectangle réellement composé de celui que l'habillage croit border.
+    if (vr.get("border") or "none") == "viewfinder":
+        try:                       # MÊME formule que _tpl_draw_video_border (bw clampé, puis bt) —
+            _bw = max(1, min(24, int(vr.get("border_w") or 3)))   # une marge qui ne correspondrait
+        except (TypeError, ValueError):                            # pas à l'épaisseur dessinée
+            _bw = 3                                                # laisserait un liseré d'image.
+        _bt = max(2, _bw)
+        # ★ `_bt + 1` et non `_bt` : plus bas, vx/vy sont ramenés au PAIR INFÉRIEUR (alignement
+        # chroma). Ce recul d'un pixel mangeait EXACTEMENT la marge réservée en haut et à gauche,
+        # et les équerres y retombaient sur l'image — le pixel supplémentaire l'absorbe.
+        # Jamais au point de faire disparaître l'image : on plafonne la marge au quart du côté.
+        _m = _bt + 1
+        _mx = min(_m, max(0, rw // 4)); _my = min(_m, max(0, rh // 4))
+        rx += _mx; ry += _my; rw = max(2, rw - 2 * _mx); rh = max(2, rh - 2 * _my)
     if (vr.get("fit") or "fill") == "contain":
         # Homothétique au ratio SOURCE (in_w/in_h résolus par l'orchestrateur), centré.
         sw = int(cfg.get("in_w") or 0); sh = int(cfg.get("in_h") or 0)
@@ -1739,7 +1919,8 @@ def _tile_peaks_range(i, cfg, start0, count, now):
     return peaks, holds, ("ok" if got_ok else ("silence" if got_sil else "absence"))
 
 def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status, tiles, ch0=0,
-                     tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP):
+                     tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP,
+                     grad="full", grad_side="left"):
     """Tuile(s) YUV d'un meter à la géométrie donnée (bbox chroma-alignée + étiquette
     SILENCE/ABSENCE) — corps commun aux meters legacy et aux composants de modèle.
     bbox locale du meter (_draw_meter dessine jusqu'à mx+mw / my+mh inclus → +1), bornée à
@@ -1761,13 +1942,14 @@ def _meter_tiles_at(mx, my, mw, mh, n, peaks, holds, scale, opacity_pct, status,
         # chroma des bords de barre « franc » au lieu de moyenné (cf. _meter_paint_rect).
         # Repli bit-exact intégral : `meters_pil=true` (chemin PIL d'origine, ci-dessous).
         oy, ou, ov, oa, oa2 = _meter_tile_yuv(bx1 - bx0, by1 - by0, mx - bx0, my - by0, mw, mh, n,
-                                              peaks, holds, scale, opacity_pct, ch0, tick_w, bar_w, gap)
+                                              peaks, holds, scale, opacity_pct, ch0, tick_w, bar_w, gap,
+                                              grad, grad_side)
     else:
         # Repli `meters_pil` : chemin PIL historique VERBATIM (redéployer avec meters_pil=true
         # restaure le comportement d'avant 0.31.0 à l'identique en cas de doute sur un mur).
         tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
         _draw_meter(tile, mx - bx0, my - by0, mw, mh, n, peaks, holds, scale, opacity_pct, ch0,
-                    tick_w, bar_w, gap)
+                    tick_w, bar_w, gap, grad, grad_side)
         oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
     tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
     # Étiquette SILENCE / ABSENCE par-dessus (tuile séparée, même bbox → blend après le meter).
@@ -1815,6 +1997,13 @@ def render_meters(now):
                     n = min(n, 2 * A_CHANNELS_MAX - s0)
                     peaks, holds, status = _tile_peaks_range(i, cfg, s0, n, now)
                     rx, ry, rw, rh = _comp_rect(cfg, comp)
+                    # Marge au bord de la CELLULE : un mètre collé au bord touche visuellement la
+                    # fenêtre voisine et on ne sait plus à quel PiP l'audio appartient.
+                    _g = _video_rect(cfg)
+                    rx, rw = _meter_inset(rx, rw, _g["x"], _g["w"])
+                    _scale = comp.get("scale") or "dbfs"
+                    _grad, _gtw = _meter_grad(comp, _scale, rw)
+                    _gside = "right" if (comp.get("grad_side") or "left") == "right" else "left"
                     mh = max(20, rh - 1)
                     width_mode = comp.get("width_mode") or "auto"
                     if width_mode == "fit":
@@ -1822,18 +2011,19 @@ def render_meters(now):
                         # pour occuper rw (zone de graduations tick_w et espacement gap FIXES —
                         # sinon l'échelle dBFS/PPM et ses repères se déforment, cf. _meter_fit_dims).
                         # L'alignement devient sans effet — le meter occupe le rectangle (mw ≤ rw).
-                        tick_w, bar_w, gap, mw = _meter_fit_dims(n, rw)
+                        tick_w, bar_w, gap, mw = _meter_fit_dims(n, rw, _gtw)
                         mx = rx
                     else:
-                        tick_w, bar_w, gap = METER_TICK_W, METER_BAR_W, METER_GAP
+                        tick_w, bar_w, gap = _gtw, METER_BAR_W, METER_GAP
                         mw = _meter_layout(n, tick_w, bar_w, gap)
                         al = comp.get("align") or "left"
                         mx = rx + ((rw - mw) // 2 if al == "center"
                                    else (rw - mw if al == "right" else 0))
                     opacity_pct = max(10, min(100, int(comp.get("opacity") or 70)))
                     _meter_tiles_at(mx, ry, mw, mh, n, peaks, holds,
-                                    comp.get("scale") or "dbfs", opacity_pct, status, tiles,
-                                    ch0=s0, tick_w=tick_w, bar_w=bar_w, gap=gap)
+                                    _scale, opacity_pct, status, tiles,
+                                    ch0=s0, tick_w=tick_w, bar_w=bar_w, gap=gap,
+                                    grad=_grad, grad_side=_gside)
                 except Exception:
                     continue
     # Blocs VU-mètres du MUR (deploy_config.params.meter_blocks) : posés sur le canevas de
@@ -1862,21 +2052,28 @@ def render_meters(now):
                 # comme indice de liste — cf. audio_states[(i, flow)].
                 peaks, holds, status = _tile_peaks_range(("mb", j), blk, s0, n, now)
                 rx, ry, rw, rh = _comp_rect(full_cfg, blk)
+                # Bloc de MUR : mêmes réglages de graduations que le composant de cellule. Pas de
+                # marge de bord ici — sa « cellule » est le canevas entier, il n'a pas de voisin
+                # dont le séparer, et le rentrer déplacerait un bloc que l'utilisateur a posé.
+                _bscale = blk.get("scale") or "dbfs"
+                _bgrad, _bgtw = _meter_grad(blk, _bscale, rw)
+                _bgside = "right" if (blk.get("grad_side") or "left") == "right" else "left"
                 mh = max(20, rh - 1)
                 width_mode = blk.get("width_mode") or "auto"
                 if width_mode == "fit":
-                    tick_w, bar_w, gap, mw = _meter_fit_dims(n, rw)
+                    tick_w, bar_w, gap, mw = _meter_fit_dims(n, rw, _bgtw)
                     mx = rx
                 else:
-                    tick_w, bar_w, gap = METER_TICK_W, METER_BAR_W, METER_GAP
+                    tick_w, bar_w, gap = _bgtw, METER_BAR_W, METER_GAP
                     mw = _meter_layout(n, tick_w, bar_w, gap)
                     al = blk.get("align") or "left"
                     mx = rx + ((rw - mw) // 2 if al == "center"
                                else (rw - mw if al == "right" else 0))
                 opacity_pct = max(10, min(100, int(blk.get("opacity") or 70)))
                 _meter_tiles_at(mx, ry, mw, mh, n, peaks, holds,
-                                 blk.get("scale") or "dbfs", opacity_pct, status, tiles,
-                                 ch0=s0, tick_w=tick_w, bar_w=bar_w, gap=gap)
+                                 _bscale, opacity_pct, status, tiles,
+                                 ch0=s0, tick_w=tick_w, bar_w=bar_w, gap=gap,
+                                 grad=_bgrad, grad_side=_bgside)
             except Exception:
                 continue
     return tiles or None
@@ -1950,15 +2147,32 @@ def render_anc_tiles(now):
         d.rectangle([0, 0, bx1 - bx0 - 1, by1 - by0 - 1], fill=(0, 0, 0, a_bg))
         # Un checksum invalide = métadonnée corrompue → texte en rouge (signal d'alarme).
         bad = "CRC!" in txt
-        d.text((pad, pad), txt, font=fnt,
+        # ALIGNEMENT du bandeau. Les composants texte passent par _draw_text_overlay, qui gère
+        # déjà `align` ; l'ANC dessine sa propre tuile et écrivait en dur en haut à GAUCHE. On
+        # calcule ici l'abscisse à partir de la largeur mesurée du texte. Bornée à `pad` : un
+        # texte plus large que la tuile reste lisible par la gauche au lieu de déborder à gauche.
+        _al = (flags.get("align") or "left")
+        _tx = pad
+        if _al in ("center", "right"):
+            try:
+                _tw = d.textlength(txt, font=fnt)
+            except Exception:
+                _tw = 0
+            _avail = (bx1 - bx0) - 2 * pad
+            _tx = max(pad, pad + int((_avail - _tw) / (2 if _al == "center" else 1)))
+        d.text((_tx, pad), txt, font=fnt,
                fill=(255, 90, 90, 255) if bad else (235, 235, 235, 255))
         oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
         tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
     return tiles or None
 
 def _anc_sig():
-    """Signature des bandeaux ANC (gate du re-rendu PIL/YUV) — vide si aucune unité active."""
-    return tuple(_format_anc_cell(i, flags) for i, flags, _r in _anc_units())
+    """Signature des bandeaux ANC (gate du re-rendu PIL/YUV) — vide si aucune unité active.
+    L'ALIGNEMENT en fait partie : il change les pixels sans changer le texte, donc l'omettre
+    ferait ignorer un changement d'alignement appliqué à chaud jusqu'à la prochaine variation
+    de la valeur ANC (parfois jamais, sur une source au timecode figé)."""
+    return tuple((_format_anc_cell(i, flags), flags.get("align") or "left")
+                 for i, flags, _r in _anc_units())
 
 
 # ─── Historique vidéo / audio (« que s'est-il passé sur cette source ? ») ────────────────
@@ -4039,7 +4253,23 @@ def _tpl_draw_video_border(d, img, i, cfg, comp):
         col = tally_col or (225, 225, 232, 255)
         bt = max(2, bw)
         arm = max(8, int(round(min(vw, vh) * 0.14)))
-        x0, y0, x1, y1 = vx, vy, vx + vw - 1, vy + vh - 1
+        # ★ Les équerres se posent À L'EXTÉRIEUR de l'image : elles CADRENT le PiP au lieu de
+        # recouvrir des pixels de la source (une équerre posée sur l'image masque justement le
+        # coin qu'on veut vérifier). On les décale de `bt` vers l'extérieur — avec ce décalage
+        # les deux bras tombent entièrement dans la marge letterbox/pillarbox laissée par le fit
+        # `contain`, jamais sur l'image.
+        # Repli : s'il n'y a pas la place DANS LA CELLULE (image qui la remplit exactement), on
+        # redessine à l'intérieur comme avant. Recouvrir un peu d'image reste préférable à
+        # déborder sur la fenêtre voisine — c'est la règle du cadre (cf. docstring).
+        # Décision PAR AXE : une image letterboxée a de la marge en haut/bas mais pas sur les
+        # côtés, une pillarboxée l'inverse. Trancher en tout-ou-rien ferait retomber tout le
+        # cadre à l'intérieur alors qu'un axe avait la place.
+        _cx0, _cy0 = g["x"], g["y"]
+        _cx1, _cy1 = g["x"] + g["w"] - 1, g["y"] + g["h"] - 1
+        _ox = bt if (vx - bt >= _cx0 and vx + vw - 1 + bt <= _cx1) else 0
+        _oy = bt if (vy - bt >= _cy0 and vy + vh - 1 + bt <= _cy1) else 0
+        x0, y0 = vx - _ox, vy - _oy
+        x1, y1 = vx + vw - 1 + _ox, vy + vh - 1 + _oy
         for cx, cy, sx, sy in ((x0, y0, 1, 1), (x1, y0, -1, 1),
                                (x0, y1, 1, -1), (x1, y1, -1, -1)):
             ex, ey = cx + sx * arm, cy + sy * (bt - 1)
@@ -4115,6 +4345,8 @@ def _tpl_clock_ovs():
                                     bg_default="#000000", bg_op_default=60)
                 ov.update({{"kind": "clock",
                             "clock_source": comp.get("clock_source") or "ptp",
+                            # Fuseau PROPRE à cette horloge ; vide = fuseau du mur (cf. _civil_hms).
+                            "tz": (comp.get("tz") or "").strip(),
                             "tc_source": i,
                             "show_hh": _as_bool(comp.get("show_hh", True)),
                             "show_mm": _as_bool(comp.get("show_mm", True)),
@@ -4155,10 +4387,14 @@ def _format_clock(ov, now):
             val = max(0.0, _parse_tc_seconds(ov.get("chrono_start")) - elapsed)
         else:  # chrono : compte À PARTIR de la valeur de départ (0 par défaut)
             val = _parse_tc_seconds(ov.get("chrono_start")) + elapsed
-    else:  # ptp : heure CIVILE LOCALE (horloge nœud TAI − offset TAI→UTC, fuseau injecté) + offset signé
+    else:  # ptp : heure CIVILE (horloge nœud TAI − offset TAI→UTC) + offset signé, dans le fuseau
+        # de CETTE horloge (`tz`) — vide = fuseau du mur. Cf. _civil_hms : conversion explicite par
+        # zone, et non `time.localtime`, pour que deux horloges du même mur puissent afficher deux
+        # villes. La part fractionnaire (champs FF) ne dépend pas du fuseau : tous les décalages
+        # IANA sont des multiples de la minute.
         _civ = now - TAI_UTC_OFFSET_S + int(_overlay_get(ov, "offset_ms", 0)) / 1000.0
-        _lt = time.localtime(_civ)
-        val = _lt.tm_hour * 3600 + _lt.tm_min * 60 + _lt.tm_sec + (_civ % 1.0)
+        _hh, _mm, _ss = _civil_hms(_civ, ov.get("tz"))
+        val = _hh * 3600 + _mm * 60 + _ss + (_civ % 1.0)
     hh = int(val // 3600)
     mm = int((val % 3600) // 60)
     ss = int(val % 60)
@@ -4679,6 +4915,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
             return self._do_overlays()
         if self.path == "/chrono":
             return self._do_chrono()
+        if self.path == "/clock_tz":
+            return self._do_clock_tz()
         if self.path == "/overlay_text":
             return self._do_overlay_text()
         if self.path == "/log_level":
@@ -4989,6 +5227,38 @@ class MvControlHandler(BaseHTTPRequestHandler):
         self.send_response(200 if ok else 400)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": ok}}).encode())
+    def _do_clock_tz(self):
+        """Fuseau d'UNE horloge, à chaud : {{id, tz}}. `tz` vide = revenir au fuseau du mur.
+        Cible les overlays GLOBAUX et les composants `clock` des MODÈLES de PiP (mêmes ids que
+        /chronos). Un fuseau inconnu de l'image est REFUSÉ ici (400) plutôt qu'accepté puis replié
+        en silence sur le mur — l'appelant (macro, UI) doit savoir que son réglage n'a pas pris."""
+        b = self._json()
+        cid = str(b.get("id") or "")
+        tzn = (b.get("tz") or "").strip()
+        if not cid:
+            self.send_response(400); self.end_headers(); return
+        if tzn and _zone(tzn) is None:
+            self.send_response(400); self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({{"ok": False, "error": "fuseau inconnu : %s" % tzn}}).encode())
+            return
+        n = 0
+        with state_lock:
+            for ov in OVERLAYS:
+                if str(ov.get("id") or "") == cid and ov.get("kind") == "clock":
+                    ov["tz"] = tzn; n += 1
+            for cfg in FLUX_CONFIG:
+                for comp in (_tpl_comps(cfg) or ()):
+                    if (isinstance(comp, dict) and comp.get("type") == "clock"
+                            and str(comp.get("id") or "") == cid):
+                        comp["tz"] = tzn; n += 1
+        # Pas de purge de cache à faire : les tuiles d'horloge sont cachées par SIGNATURE = les
+        # chaînes formatées (_pf_sig). Changer de fuseau change l'heure affichée, donc la
+        # signature, donc le rendu est refait à la trame suivante.
+        self.send_response(200 if n else 404)
+        self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(json.dumps({{"ok": bool(n), "applied": n}}).encode())
+
     def _do_overlay_text(self):
         # Change le TEXTE d'un overlay texte (par id) via la couche overlay_central (même
         # mécanisme que le push TSL). Pilotable par macro/déclencheur : {{id, text}}.
@@ -5003,6 +5273,22 @@ class MvControlHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({{"ok": True}}).encode())
     def do_GET(self):
         # Listes pour les sélecteurs d'action (horloges / champs texte) : {{items:[{{value,label}}]}}.
+        # Fuseaux DISPONIBLES DANS L'IMAGE (tzdata réellement présente), pas une liste codée en
+        # dur : c'est la seule qui garantit qu'un choix de l'utilisateur sera applicable. Le mur
+        # est renvoyé à part pour que l'UI puisse étiqueter l'option « hérite du mur ».
+        if self.path == "/timezones":
+            try:
+                from zoneinfo import available_timezones
+                _zs = sorted(available_timezones())
+            except Exception as _e:
+                log("liste des fuseaux indisponible (%s)" % _e, "warning")
+                _zs = []
+            _b = json.dumps({{"wall_tz": _TZ_NAME,
+                              "items": [{{"value": "", "label": "Fuseau du mur (%s)"
+                                          % (_TZ_NAME or "système")}}]
+                                       + [{{"value": z, "label": z}} for z in _zs]}}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.end_headers(); self.wfile.write(_b); return
         if self.path in ("/chronos", "/texts"):
             want = "clock" if self.path == "/chronos" else "text"
             with state_lock:
