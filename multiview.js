@@ -3038,7 +3038,51 @@ async function deployerEditor() {
 
 // ─── Outils d'alignement ─────────────────────────────────────
 
+// Applique un alignement à UN rectangle {x,y,w,h} par rapport à `ref`, en le maintenant dans le
+// canvas. Partagé par les fenêtres et par les objets à sélection unique (overlays, blocs VU,
+// frises) — ces derniers n'étaient couverts par AUCUN outil d'alignement : les six boutons ne
+// regardaient que `selectedIdxs`, c'est-à-dire les fenêtres vidéo. Sélectionner une horloge ou un
+// champ texte et cliquer « centrer » ne faisait donc rien du tout, sans le moindre message.
+function _alignRect(o, mode, ref, out_w, out_h) {
+    switch (mode) {
+        case 'left':    o.x = ref.x; break;
+        case 'right':   o.x = ref.x + ref.w - o.w; break;
+        case 'hcenter': o.x = Math.round(ref.x + (ref.w - o.w) / 2); break;
+        case 'top':     o.y = ref.y; break;
+        case 'bottom':  o.y = ref.y + ref.h - o.h; break;
+        case 'vcenter': o.y = Math.round(ref.y + (ref.h - o.h) / 2); break;
+    }
+    o.x = Math.max(0, Math.min(out_w - o.w, o.x));
+    o.y = Math.max(0, Math.min(out_h - o.h, o.y));
+}
+
+// Objet à sélection unique actuellement visé, ou null. L'ordre suit celui de canvasMouseUp.
+function _singleSelected() {
+    if (!editorParams) return null;
+    if (selectedOverlay >= 0 && (editorParams.overlays || [])[selectedOverlay])
+        return editorParams.overlays[selectedOverlay];
+    if (selectedBlock >= 0 && (editorParams.meter_blocks || [])[selectedBlock])
+        return editorParams.meter_blocks[selectedBlock];
+    if (selectedHist >= 0) {
+        const l = histList(selectedHistKind) || [];
+        if (l[selectedHist]) return l[selectedHist];
+    }
+    return null;
+}
+
 function aligner(mode) {
+    const out_w0 = editorParams ? editorParams.out_width : 0;
+    const out_h0 = editorParams ? editorParams.out_height : 0;
+    // Overlay / bloc / frise sélectionné : alignement sur le CANVAS (référence unique possible —
+    // ces objets ne se sélectionnent pas à plusieurs). Même canal de persistance que leur drag.
+    const so = _singleSelected();
+    if (so) {
+        _alignRect(so, mode, { x: 0, y: 0, w: out_w0, h: out_h0 }, out_w0, out_h0);
+        dessiner();
+        syncGeomFields();
+        hotApplyFull();
+        return;
+    }
     if (!editorParams || selectedIdxs.length === 0) return;
     const fc = editorParams.flux_config;
     const out_w = editorParams.out_width;
@@ -3055,16 +3099,7 @@ function aligner(mode) {
     selectedIdxs.forEach(i => {
         const f = fc[i];
         if (selectedIdxs.length >= 2 && i === primaryIdx()) return;
-        switch (mode) {
-            case 'left':    f.x = ref.x; break;
-            case 'right':   f.x = ref.x + ref.w - f.w; break;
-            case 'hcenter': f.x = Math.round(ref.x + (ref.w - f.w) / 2); break;
-            case 'top':     f.y = ref.y; break;
-            case 'bottom':  f.y = ref.y + ref.h - f.h; break;
-            case 'vcenter': f.y = Math.round(ref.y + (ref.h - f.h) / 2); break;
-        }
-        f.x = Math.max(0, Math.min(out_w - f.w, f.x));
-        f.y = Math.max(0, Math.min(out_h - f.h, f.y));
+        _alignRect(f, mode, ref, out_w, out_h);
     });
     dessiner();
     selectedIdxs.forEach(i => hotApplyWindow(i));
