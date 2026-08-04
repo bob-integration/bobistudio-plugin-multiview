@@ -2542,6 +2542,46 @@ function _tzFill(id, val) {
     });
 }
 
+// ─── Insertion de VARIABLES dans un champ texte ────────────────────────────────────────────
+// Catalogue servi par /api/text-variables : défini UNE SEULE FOIS côté orchestrateur et partagé
+// avec l'éditeur de modèles de PiP. Ici on ne propose que le groupe « Système » : les variables
+// de source décrivent la source d'une FENÊTRE, et un overlay de mur n'en a pas.
+let _mvVarCat = null, _mvVarLoading = null;
+function _mvLoadVars() {
+    if (_mvVarCat) return Promise.resolve(_mvVarCat);
+    if (_mvVarLoading) return _mvVarLoading;
+    _mvVarLoading = fetch('/api/text-variables')
+        .then(r => (r.ok ? r.json() : { system: [] }))
+        .then(j => { _mvVarCat = j; return _mvVarCat; })
+        .catch(() => ({ system: [] }));
+    return _mvVarLoading;
+}
+// Écrit %nom% à la position du curseur dans #ov_text, puis déclenche la persistance comme une
+// frappe utilisateur (onOverlayTextInput + onOverlayChange), sinon la saisie serait perdue.
+function _mvFillVarSelect() {
+    const sel = document.getElementById('ov_vars');
+    if (!sel || sel.dataset.filled === '1') return;
+    _mvLoadVars().then(cat => {
+        sel.innerHTML = '';
+        sel.appendChild(new Option(T('plugin.multiview.insert_var_pick') || 'Insérer une variable…', ''));
+        (cat.system || []).forEach(v => sel.appendChild(new Option(v.label + '  (%' + v.name + '%)', v.name)));
+        sel.dataset.filled = '1';
+        sel.onchange = () => {
+            const v = sel.value; sel.value = '';
+            const inp = document.getElementById('ov_text');
+            if (!v || !inp) return;
+            const tok = '%' + v + '%';
+            const p0 = inp.selectionStart, p1 = inp.selectionEnd;
+            inp.value = (p0 === null) ? (inp.value + tok)
+                                      : inp.value.slice(0, p0) + tok + inp.value.slice(p1);
+            if (p0 !== null) { const np = p0 + tok.length; inp.setSelectionRange(np, np); }
+            inp.focus();
+            if (typeof onOverlayTextInput === 'function') onOverlayTextInput();
+            onOverlayChange();
+        };
+    });
+}
+
 function _ovSetVal(id, v) { const e = document.getElementById(id); if (e) e.value = v; }
 function _ovSetChk(id, v) { const e = document.getElementById(id); if (e) e.checked = !!v; }
 // Pose la police d'un overlay dans le select. Si la clé n'est pas (encore / plus) au catalogue
@@ -2656,6 +2696,9 @@ function refreshOverlayPanel() {
     // Le fuseau n'a de sens que pour l'HEURE DU JOUR : un chrono, un décompte ou un timecode
     // embarqué sont des durées/valeurs absolues, les décaler d'un fuseau n'aurait aucun sens.
     sub('ov_tz_grp',       o.kind === 'clock' && o.clock_source === 'ptp');
+    // Variables : seulement sur un texte LOCAL (un texte piloté par TSL vient du protocole).
+    sub('ov_vars_grp',     o.kind === 'text' && (o.text_source || 'local') === 'local');
+    if (o.kind === 'text') _mvFillVarSelect();
     sub('ov_anc_grp',      o.kind === 'clock' && o.clock_source === 'anc');
 }
 

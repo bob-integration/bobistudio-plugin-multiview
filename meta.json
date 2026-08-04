@@ -1,7 +1,10 @@
 {
-  "version": "0.62.1",
+  "version": "0.63.0",
   "date": "2026-08-03",
   "changes": {
+    "Insertion de variables aussi dans le composeur de mur (0.63.0)": [
+      "Le sélecteur « Insérer une variable » n'existait que dans l'éditeur de modèles de PiP. Il est ajouté au champ texte d'un overlay du composeur, où il n'apparaît que pour un texte LOCAL (un texte piloté par TSL vient du protocole, y insérer une variable n'aurait aucun effet). Seul le groupe « Système » y est proposé : les variables de source décrivent la source d'une FENÊTRE, un mur n'en a pas. ★ Le catalogue est désormais servi par /api/text-variables, défini UNE SEULE FOIS côté orchestrateur et partagé par les deux éditeurs — il était dupliqué dans deux fichiers JS qui auraient divergé au premier ajout, comme l'ont fait _draw_meter et _draw_meter_static."
+    ],
     "%version% lisait une version périmée (0.62.1)": [
       "La variable rendait `CONFIG[\"plugin_version\"]`, c'est-à-dire la valeur PORTÉE PAR LES PARAMS — donc celle du déploiement PRÉCÉDENT. Constaté sur un conteneur rendu en 0.62 dont le CONFIG annonçait encore 0.60. Elle lit désormais `PLUGIN_VERSION`, le placeholder injecté AU RENDU, qui est toujours la version réellement déployée."
     ],
