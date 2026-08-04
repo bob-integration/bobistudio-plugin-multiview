@@ -1801,7 +1801,7 @@ def _video_rect(cfg):
     vr = _tpl_video_comp(cfg)
     if vr is None:
         return {{"x": x, "y": y, "w": w, "h": h, "vx": x, "vy": y, "vw": 0, "vh": 0,
-                 "ay": y, "ah": h}}
+                 "fx": x, "fy": y, "fw": 0, "fh": 0, "ay": y, "ah": h}}
     rx, ry, rw, rh = _comp_rect(cfg, vr)
     # ★ HABILLAGE QUI RÉSERVE SA PLACE. Le style « viseur » dessine ses équerres AUTOUR de
     # l'image ; sans réservation, elles n'ont de marge que là où le fit `contain` en laisse
@@ -1812,12 +1812,14 @@ def _video_rect(cfg):
     # Fait ICI et pas au dessin : _video_rect est la géométrie de RÉFÉRENCE (boucle composite,
     # habillage, tailles réclamées à la pyramide). L'insérer ailleurs ferait diverger le
     # rectangle réellement composé de celui que l'habillage croit border.
+    _frame_out = 0        # ce que le style de bordure dessine À L'EXTÉRIEUR de l'image
     if (vr.get("border") or "none") == "viewfinder":
         try:                       # MÊME formule que _tpl_draw_video_border (bw clampé, puis bt) —
             _bw = max(1, min(24, int(vr.get("border_w") or 3)))   # une marge qui ne correspondrait
         except (TypeError, ValueError):                            # pas à l'épaisseur dessinée
             _bw = 3                                                # laisserait un liseré d'image.
         _bt = max(2, _bw)
+        _frame_out = _bt
         # ★ `_bt + 1` et non `_bt` : plus bas, vx/vy sont ramenés au PAIR INFÉRIEUR (alignement
         # chroma). Ce recul d'un pixel mangeait EXACTEMENT la marge réservée en haut et à gauche,
         # et les équerres y retombaient sur l'image — le pixel supplémentaire l'absorbe.
@@ -1837,7 +1839,17 @@ def _video_rect(cfg):
     vh = max(2, min(rh, OUT_HEIGHT - ry)); vh -= vh % 2
     vx = rx - rx % 2
     vy = ry - ry % 2
+    # ★ Rectangle du CADRE : l'image PLUS ce que la bordure dessine à l'extérieur d'elle. Le
+    # style « viseur » pose ses équerres dans la marge réservée — mesuré sur le mur : l'équerre
+    # occupe les colonnes 4-5 et l'image commence à la 6. Le bord VISUEL du bloc vidéo est donc
+    # celui de l'équerre, pas celui de l'image. C'est sur lui que l'habillage doit s'aligner :
+    # se caler sur l'image laisse les tallies en retrait du cadre, et ça se voit.
+    # Les autres styles dessinent VERS L'INTÉRIEUR → cadre = image, aucun décalage.
+    _fx = max(0, vx - _frame_out); _fy = max(0, vy - _frame_out)
+    _fw = max(2, min(OUT_WIDTH - _fx, vw + 2 * _frame_out))
+    _fh = max(2, min(OUT_HEIGHT - _fy, vh + 2 * _frame_out))
     return {{"x": x, "y": y, "w": w, "h": h, "vx": vx, "vy": vy, "vw": vw, "vh": vh,
+             "fx": _fx, "fy": _fy, "fw": _fw, "fh": _fh,
              "ay": vy, "ah": vh}}
 
 def _render_pill(d, cx, cy, r, fill, outline):
@@ -4219,11 +4231,13 @@ def _comp_rect(cfg, comp):
     ax, ay = _comp_anchor(comp, "x"), _comp_anchor(comp, "y")
     if ax == "image" or ay == "image":
         g = _video_rect(cfg)
-        if g["vw"] >= 2 and g["vh"] >= 2:     # modèle sans vidéo → on reste sur la cellule
+        # On s'ancre sur le CADRE (image + bordure extérieure), pas sur l'image nue — cf. la note
+        # de _video_rect. Sans bordure débordante les deux rectangles sont identiques.
+        if g["fw"] >= 2 and g["fh"] >= 2:     # modèle sans vidéo → on reste sur la cellule
             if ax == "image":
-                bx, bw = g["vx"], g["vw"]
+                bx, bw = g["fx"], g["fw"]
             if ay == "image":
-                by, bh = g["vy"], g["vh"]
+                by, bh = g["fy"], g["fh"]
     def _f(k, dflt):
         try:
             return max(0.0, min(1.0, float(comp.get(k, dflt))))
