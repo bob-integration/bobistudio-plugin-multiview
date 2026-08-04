@@ -207,6 +207,35 @@ def before_deploy(params, context):
     #    saisie par l'utilisateur à CHAQUE déploiement : le réglage semblait accepté puis
     #    revenait au fuseau du système au premier redéploiement. Un mur dont `tz` est vide suit
     #    le réglage global, ce qui reste le défaut voulu.
+    # Variables de texte de SOURCE : les niveaux de libellé (label_2..label_9) et le projet
+    # vivent dans `source_labels`, côté orchestrateur, keyés par shm. Le conteneur ne peut pas
+    # les lire — on les embarque PAR FENÊTRE au déploiement. Rien n'est écrasé : on ne pose que
+    # les clés dérivées (`labels`, `projet`), jamais le `name` choisi par l'utilisateur.
+    try:
+        from app.database import db_get_source_labels
+        _lbl = {}
+        for _row in (db_get_source_labels() or []):
+            _shm = (_row.get("shm") or "").strip()
+            if _shm:
+                _lbl[_shm] = _row
+        _fx = params.get("flux_config")
+        if isinstance(_fx, list) and _lbl:
+            _out = []
+            for _e in _fx:
+                if not isinstance(_e, dict):
+                    _out.append(_e); continue
+                _e = dict(_e)
+                _shm = (_e.get("path") or "").removeprefix("/dev/shm/")
+                _r = _lbl.get(_shm)
+                if _r:
+                    _e["labels"] = {str(_n): (_r.get("label_%d" % _n) or "")
+                                    for _n in range(2, 10)}
+                    _e["projet"] = _r.get("projet") or ""
+                _out.append(_e)
+            params["flux_config"] = _out
+    except Exception:
+        pass
+
     # Variables de texte %systeme% / %noeud% : le conteneur ne peut PAS les connaître (branding
     # et table des nœuds vivent côté orchestrateur). Injectées ici, comme le fuseau.
     try:

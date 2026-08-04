@@ -4373,6 +4373,38 @@ _TEXT_VARS = {{
     "duree":      _var_uptime,
 }}
 
+def _src_format(cfg):
+    w, h = cfg.get("in_w") or 0, cfg.get("in_h") or 0
+    if not (w and h):
+        return "—"
+    sc = (cfg.get("in_scan") or "p").strip().lower()
+    fps = str(cfg.get("in_fps") or "").strip()
+    return "%dx%d%s%s" % (w, h, "i" if sc == "i" else "p", fps)
+
+def _src_label(cfg, n):
+    """Libellé de NIVEAU n de la source (table source_labels de l'orchestrateur, injectée par le
+    hook au déploiement). Vide → repli sur le nom résolu de la fenêtre, pour qu'un niveau non
+    renseigné n'efface pas l'étiquette à l'écran."""
+    lb = cfg.get("labels") or {{}}
+    v = str(lb.get(str(n)) or lb.get(n) or "").strip()
+    return v or (cfg.get("name") or "")
+
+# Variables liées à la SOURCE d'une fenêtre : elles n'ont de sens que dans un composant de
+# MODÈLE (rendu par cellule). Dans un overlay de mur, elles rendent « — » : un mur n'a pas UNE
+# source. Chaque entrée prend la cfg de la fenêtre.
+_SRC_VARS = {{
+    "src":            lambda c: c.get("name") or "",
+    "src_flux":       lambda c: (c.get("path") or "").removeprefix("/dev/shm/"),
+    "src_format":     _src_format,
+    "src_fps":        lambda c: str(c.get("in_fps") or "—"),
+    "src_scan":       lambda c: "entrelacé" if (c.get("in_scan") or "p") == "i" else "progressif",
+    "src_colorimetrie": lambda c: str(c.get("in_colorimetry") or "—"),
+    "src_projet":     lambda c: str(c.get("projet") or ""),
+    "src_audio":      lambda c: (c.get("audio_path") or "").removeprefix("/dev/shm/") or "—",
+}}
+for _n in range(2, 10):
+    _SRC_VARS["src_label%d" % _n] = (lambda n: (lambda c: _src_label(c, n)))(_n)
+
 _VAR_RE = re.compile(r"%([a-zA-Z_][a-zA-Z0-9_]*)%")
 
 def _texts_with_vars():
@@ -4387,10 +4419,10 @@ def _texts_with_vars():
             if not isinstance(comp, dict):
                 continue
             if comp.get("type") in ("text", "umd") and "%" in str(comp.get("text") or ""):
-                out.append(comp["text"])
+                out.append((comp["text"], cfg))
     for ov in OVERLAYS:
         if ov.get("kind") == "text" and "%" in str(ov.get("text") or ""):
-            out.append(ov["text"])
+            out.append((ov["text"], None))
     return out
 
 def _vars_signature():
@@ -4399,21 +4431,32 @@ def _vars_signature():
     raw = _texts_with_vars()
     if not raw:
         return None
-    return tuple(_expand_vars(t) for t in raw)
+    return tuple(_expand_vars(t, c) for t, c in raw)
 
-def _expand_vars(txt):
-    """Remplace les %variables% d'un texte. Jamais fatal : une variable qui lève rend « — »,
-    un nom inconnu est laissé tel quel (la faute de frappe reste visible à l'écran)."""
+def _expand_vars(txt, cfg=None):
+    """Remplace les %variables% d'un texte. `cfg` = la fenêtre, pour les variables de SOURCE
+    (absent sur un overlay de mur → elles rendent « — », un mur n'ayant pas UNE source).
+    Jamais fatal : une variable qui lève rend « — », un nom inconnu est laissé tel quel (la faute
+    de frappe reste visible à l'écran plutôt que de créer un trou)."""
     if not txt or "%" not in txt:
         return txt
     def _sub(m):
-        fn = _TEXT_VARS.get(m.group(1))
-        if fn is None:
-            return m.group(0)
-        try:
-            return str(fn())
-        except Exception:
-            return "—"
+        k = m.group(1)
+        fn = _TEXT_VARS.get(k)
+        if fn is not None:
+            try:
+                return str(fn())
+            except Exception:
+                return "—"
+        sf = _SRC_VARS.get(k)
+        if sf is not None:
+            if cfg is None:
+                return "—"
+            try:
+                return str(sf(cfg))
+            except Exception:
+                return "—"
+        return m.group(0)
     return _VAR_RE.sub(_sub, txt)
 
 def _tpl_text_value(i, cfg, comp):
@@ -4422,7 +4465,7 @@ def _tpl_text_value(i, cfg, comp):
     if src == "tsl":
         return tsl_text.get(i, "") or ""
     if src == "fixed":
-        return _expand_vars(comp.get("text") or "")
+        return _expand_vars(comp.get("text") or "", cfg)
     return cfg.get("name", "") or ""
 
 # Couleur de texte par dominante tally (option tally_text des umd).
@@ -4574,7 +4617,7 @@ def _tpl_render_dynamic(d, img, i, cfg, comps):
                 _draw_text_overlay(d, ov, _fmt_chip_txt(cfg, None))
             else:  # text fixe (variables %nom% comprises — cf. _expand_vars)
                 ov = _tpl_pseudo_ov(i, comp, rect)
-                _draw_text_overlay(d, ov, _expand_vars(comp.get("text") or ""))
+                _draw_text_overlay(d, ov, _expand_vars(comp.get("text") or "", cfg))
         except Exception:
             continue
 
