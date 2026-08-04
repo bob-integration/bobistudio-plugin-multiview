@@ -1,7 +1,10 @@
 {
-  "version": "0.62.0",
+  "version": "0.62.1",
   "date": "2026-08-03",
   "changes": {
+    "%version% lisait une version périmée (0.62.1)": [
+      "La variable rendait `CONFIG[\"plugin_version\"]`, c'est-à-dire la valeur PORTÉE PAR LES PARAMS — donc celle du déploiement PRÉCÉDENT. Constaté sur un conteneur rendu en 0.62 dont le CONFIG annonçait encore 0.60. Elle lit désormais `PLUGIN_VERSION`, le placeholder injecté AU RENDU, qui est toujours la version réellement déployée."
+    ],
     "Variables de SOURCE dans les champs texte (0.62.0)": [
       "Seize variables décrivant la source de la FENÊTRE : %src% (nom résolu), %src_flux%, %src_format% (WxH + balayage + cadence), %src_fps%, %src_scan%, %src_colorimetrie%, %src_audio%, %src_projet%, et %src_label2% à %src_label9% — les niveaux de libellé de la table `source_labels`. Ces libellés et le projet vivent côté ORCHESTRATEUR, keyés par shm : le conteneur ne peut pas les lire, le hook les embarque donc PAR FENÊTRE au déploiement (clés dérivées `labels`/`projet` seulement, le `name` choisi par l'utilisateur n'est jamais écrasé). Un niveau non renseigné retombe sur le nom résolu, pour qu'un libellé vide n'efface pas l'étiquette à l'écran. ★ Ces variables exigent le contexte de la fenêtre : `_expand_vars` prend désormais la cfg. Dans un overlay de MUR elles rendent « — » — un mur n'a pas UNE source, et rendre le nom d'une fenêtre arbitraire serait pire qu'un tiret. Le sélecteur d'insertion de l'éditeur les groupe séparément des variables système."
     ],

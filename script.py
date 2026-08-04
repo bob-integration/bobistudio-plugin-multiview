@@ -4358,7 +4358,10 @@ def _var_now(fmt):
 
 _TEXT_VARS = {{
     "conteneur":  lambda: HOSTNAME,
-    "version":    lambda: str(CONFIG.get("plugin_version") or ""),
+    # PLUGIN_VERSION (placeholder injecté AU RENDU) et non CONFIG["plugin_version"] : cette
+    # dernière est la valeur PORTÉE PAR LES PARAMS, donc celle du déploiement PRÉCÉDENT —
+    # constaté sur un conteneur rendu en 0.62 dont le CONFIG annonçait encore 0.60.
+    "version":    lambda: PLUGIN_VERSION,
     "mur":        lambda: str(CONFIG.get("shm_out") or ""),
     "systeme":    lambda: str(CONFIG.get("system_name") or ""),
     "noeud":      lambda: str(CONFIG.get("node_name") or ""),
