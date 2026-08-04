@@ -80,6 +80,7 @@ _bake_rate = {{}}          # dernier instantané par seconde (exposé sur :8080)
 # ─── Config injectée (contrat plugin) ───────────────────────
 CONFIG         = {config}
 HOSTNAME       = "{hostname}"
+_START_TS      = time.time()   # origine de la variable de texte %duree%
 PLUGIN_VERSION = "{plugin_version}"
 
 # ─── Niveau de log ─────────────────────────────────────────────────────────
@@ -3837,7 +3838,7 @@ def _overlay_text_value(ov):
         if TSL_MODE != "direct":
             return overlay_central.get(str(ov.get("id") or ""), {{}}).get("text", "") or ""
         return tsl_text_by_index.get(int(ov.get("tsl_index") or 0), "") or ""
-    return ov.get("text") or ""
+    return _expand_vars(ov.get("text") or "")
 
 def _parse_tc_seconds(s):
     # Champs séparés par ":" alignés à DROITE. 4 champs → HH:MM:SS:FF (le dernier = images) ;
@@ -4288,13 +4289,140 @@ def _tpl_pseudo_ov(i, comp, rect, bg_default="", bg_op_default=100):
              "color": comp.get("color") or "#ffffff",
              "bg_color": bg, "bg_opacity": comp.get("bg_opacity", bg_op_default)}}
 
+# ─── VARIABLES DE TEXTE ──────────────────────────────────────────────────────────────────────
+# Un champ texte (composant `text` d'un modèle, ou overlay texte de mur) peut contenir des
+# variables %nom%, remplacées au rendu. Syntaxe en POURCENTS et non en accolades : `script.py` est
+# un template str.format, et des accolades dans du texte utilisateur seraient une source de
+# confusion permanente (elles ne SERAIENT pas substituées — la substitution est en une passe —
+# mais tout lecteur croirait le contraire).
+# Un nom inconnu est laissé TEL QUEL : une faute de frappe se voit à l'écran au lieu de produire
+# un trou silencieux.
+_VAR_CACHE = {{"t": 0.0, "cpu": None, "cpu_prev": None}}
+
+def _read_cgroup_cpu_us():
+    """Microsecondes CPU consommées par le CONTENEUR (cgroup v2), ou None. On vise le conteneur
+    entier et pas seulement notre processus : c'est ce que l'exploitant compare à ce qu'affiche
+    l'orchestrateur."""
+    try:
+        with open("/sys/fs/cgroup/cpu.stat", "r") as f:
+            for line in f:
+                if line.startswith("usage_usec"):
+                    return int(line.split()[1])
+    except Exception:
+        pass
+    return None
+
+def _var_cpu():
+    """Charge CPU du conteneur en %, échantillonnée sur l'intervalle écoulé. Repli sur le temps
+    CPU du PROCESSUS si le cgroup n'est pas lisible (conteneur non cgroup v2)."""
+    now = time.monotonic()
+    us = _read_cgroup_cpu_us()
+    if us is None:
+        try:
+            t = os.times()
+            us = int((t.user + t.system) * 1e6)
+        except Exception:
+            return "—"
+    prev = _VAR_CACHE.get("cpu_prev")
+    _VAR_CACHE["cpu_prev"] = (now, us)
+    if not prev or now <= prev[0]:
+        return "—" if _VAR_CACHE.get("cpu") is None else _VAR_CACHE["cpu"]
+    pct = (us - prev[1]) / ((now - prev[0]) * 1e6) * 100.0
+    _VAR_CACHE["cpu"] = "%.0f %%" % max(0.0, pct)
+    return _VAR_CACHE["cpu"]
+
+def _var_ram():
+    try:
+        with open("/sys/fs/cgroup/memory.current", "r") as f:
+            return "%d Mo" % (int(f.read().strip()) // (1024 * 1024))
+    except Exception:
+        return "—"
+
+def _var_uptime():
+    d = int(time.time() - _START_TS)
+    h, rem = divmod(d, 3600); m, sec = divmod(rem, 60)
+    return ("%dh%02d" % (h, m)) if h else ("%d min" % m if m else "%d s" % sec)
+
+def _var_format():
+    return "%dx%d%s%s" % (OUTPUT_W, OUTPUT_H, "i" if INTERLACED else "p",
+                          metrics.get("fps_nominal") and ("%g" % metrics["fps_nominal"]) or "")
+
+def _var_now(fmt):
+    """Heure/date CIVILES, même base que les horloges : horloge du nœud (TAI) − offset TAI→UTC,
+    dans le fuseau du mur."""
+    ts = time.time() - TAI_UTC_OFFSET_S
+    z = _zone(_TZ_NAME)
+    if z is not None:
+        return datetime.datetime.fromtimestamp(ts, z).strftime(fmt)
+    return time.strftime(fmt, time.localtime(ts))
+
+_TEXT_VARS = {{
+    "conteneur":  lambda: HOSTNAME,
+    "version":    lambda: str(CONFIG.get("plugin_version") or ""),
+    "mur":        lambda: str(CONFIG.get("shm_out") or ""),
+    "systeme":    lambda: str(CONFIG.get("system_name") or ""),
+    "noeud":      lambda: str(CONFIG.get("node_name") or ""),
+    "fuseau":     lambda: _TZ_NAME or "système",
+    "heure":      lambda: _var_now("%H:%M"),
+    "date":       lambda: _var_now("%d/%m/%Y"),
+    "cpu":        _var_cpu,
+    "ram":        _var_ram,
+    "fps":        lambda: "%.1f" % (metrics.get("fps") or 0.0),
+    "format":     _var_format,
+    "entrees":    lambda: str(sum(1 for c in FLUX_CONFIG if (c.get("path") or "").strip())),
+    "duree":      _var_uptime,
+}}
+
+_VAR_RE = re.compile(r"%([a-zA-Z_][a-zA-Z0-9_]*)%")
+
+def _texts_with_vars():
+    """Textes bruts susceptibles de contenir des variables (composants `text`/`umd` fixes des
+    modèles + overlays texte). Filtre sur la présence d'un « % » : un mur sans variable ne paie
+    ni parcours ni évaluation."""
+    out = []
+    for cfg in FLUX_CONFIG:
+        if cfg.get("hidden"):
+            continue
+        for comp in (_tpl_comps(cfg) or ()):
+            if not isinstance(comp, dict):
+                continue
+            if comp.get("type") in ("text", "umd") and "%" in str(comp.get("text") or ""):
+                out.append(comp["text"])
+    for ov in OVERLAYS:
+        if ov.get("kind") == "text" and "%" in str(ov.get("text") or ""):
+            out.append(ov["text"])
+    return out
+
+def _vars_signature():
+    """Signature des textes à variables, une fois RENDUS. None = aucun texte à variable (on ne
+    déclenche alors jamais de re-bake)."""
+    raw = _texts_with_vars()
+    if not raw:
+        return None
+    return tuple(_expand_vars(t) for t in raw)
+
+def _expand_vars(txt):
+    """Remplace les %variables% d'un texte. Jamais fatal : une variable qui lève rend « — »,
+    un nom inconnu est laissé tel quel (la faute de frappe reste visible à l'écran)."""
+    if not txt or "%" not in txt:
+        return txt
+    def _sub(m):
+        fn = _TEXT_VARS.get(m.group(1))
+        if fn is None:
+            return m.group(0)
+        try:
+            return str(fn())
+        except Exception:
+            return "—"
+    return _VAR_RE.sub(_sub, txt)
+
 def _tpl_text_value(i, cfg, comp):
     """Texte d'un composant umd : nom résolu de la source (défaut), texte TSL ou texte fixe."""
     src = comp.get("text_source") or "name"
     if src == "tsl":
         return tsl_text.get(i, "") or ""
     if src == "fixed":
-        return comp.get("text") or ""
+        return _expand_vars(comp.get("text") or "")
     return cfg.get("name", "") or ""
 
 # Couleur de texte par dominante tally (option tally_text des umd).
@@ -4444,9 +4572,9 @@ def _tpl_render_dynamic(d, img, i, cfg, comps):
             elif k == "format":
                 ov = _tpl_pseudo_ov(i, comp, rect, bg_default="#000000", bg_op_default=65)
                 _draw_text_overlay(d, ov, _fmt_chip_txt(cfg, None))
-            else:  # text fixe
+            else:  # text fixe (variables %nom% comprises — cf. _expand_vars)
                 ov = _tpl_pseudo_ov(i, comp, rect)
-                _draw_text_overlay(d, ov, comp.get("text") or "")
+                _draw_text_overlay(d, ov, _expand_vars(comp.get("text") or ""))
         except Exception:
             continue
 
@@ -4676,6 +4804,14 @@ _bg_pub     = None               # ((base_y, base_u, base_v) HÔTE pré-blendés
 _chrome_bake = {{"last": 0.0, "max": 0.0}}   # coût UNITAIRE d'une passe de boulange (HORS trame)
 _chrome_bake_ctr = [0]
 _statuses_pub = ()               # signature des statuts de tuile, publiée par la boucle de compo
+# Suivi des VARIABLES DE TEXTE (%cpu%, %heure%…) : les textes sont BAKÉS dans l'habillage, re-rendu
+# seulement sur tally_dirty. Sans surveillance, une variable resterait figée à sa valeur du
+# déploiement — l'utilisateur croirait la fonction cassée. On ré-évalue à intervalle borné et on
+# ne re-bake QUE si la valeur RENDUE a changé : une horloge %heure% coûte donc un bake par minute,
+# un %cpu% un bake par échantillon, et un texte sans variable ne coûte RIEN.
+_VARS_CHECK_S  = 2.0
+_vars_last_ts  = 0.0
+_vars_last_sig = None
 _bake_wake = threading.Event()   # réveil du boulanger (changement de statut vu par la compo)
 _BAKE_BAND_H = 120               # hauteur de bande du compositing PIL (granularité de relâche du GIL)
 
@@ -6308,6 +6444,17 @@ while True:
         if _sig != _statuses_pub:
             _statuses_pub = _sig
             _bake_wake.set()
+        # Variables de texte : ré-évaluation bornée, re-bake sur CHANGEMENT de rendu seulement.
+        if now - _vars_last_ts >= _VARS_CHECK_S:
+            _vars_last_ts = now
+            try:
+                _vsig = _vars_signature()
+            except Exception:
+                _vsig = _vars_last_sig
+            if _vsig != _vars_last_sig:
+                _vars_last_sig = _vsig
+                if _vsig is not None:
+                    tally_dirty.set()
         if _chrome_pub is not _chrome_seen:
             _chrome_seen = _chrome_pub
             _cph = _chrome_seen[0]

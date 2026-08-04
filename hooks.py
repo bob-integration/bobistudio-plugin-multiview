@@ -207,6 +207,24 @@ def before_deploy(params, context):
     #    saisie par l'utilisateur à CHAQUE déploiement : le réglage semblait accepté puis
     #    revenait au fuseau du système au premier redéploiement. Un mur dont `tz` est vide suit
     #    le réglage global, ce qui reste le défaut voulu.
+    # Variables de texte %systeme% / %noeud% : le conteneur ne peut PAS les connaître (branding
+    # et table des nœuds vivent côté orchestrateur). Injectées ici, comme le fuseau.
+    try:
+        from app import settings as _st
+        params["system_name"] = (_st.get("brand_system_name") or "").strip()
+    except Exception:
+        pass
+    try:
+        from app.database import db_get_container, db_get_nodes
+        _c = db_get_container(context.get("vmid")) or {}
+        _nid = _c.get("node_id")
+        if _nid:
+            for _n in (db_get_nodes() or []):
+                if _n.get("id") == _nid:
+                    params["node_name"] = _n.get("name") or ""
+                    break
+    except Exception:
+        pass
     try:
         from app.ptp import civil_clock_params
         _civ = civil_clock_params(context.get("vmid")) or {}
