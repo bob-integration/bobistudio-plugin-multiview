@@ -74,6 +74,24 @@ comme les fenêtres. Toute modification s'applique **à chaud**.
 > décodé côté multiview. Elle nécessite une source reçue par le moteur MTL (2110_io) qui produit
 > le flux ANC ; les sources générateur/ffmpeg sans ANC affichent `--:--:--:--`.
 
+## Réglages avancés (panneau ⚙ du conteneur)
+
+| Réglage | Effet |
+|---|---|
+| Orientation | Paysage (défaut), ou portrait (rotation horaire/anti-horaire) — pour un mur destiné à un affichage vertical |
+| Filtre de réduction des vignettes | **Moyenne du bloc** (défaut) : anticrénelage correct, le texte incrusté et les détails fins de la source restent lisibles réduits ; coûte environ 10× plus de CPU par vignette qu'une simple **décimation** (comportement historique, plus rapide mais crénelé). Si le nœud est chargé, surveiller `compose_breakdown_ms.inputs` sur `:8080` avant de garder la moyenne sur beaucoup de tuiles |
+| Sources entrelacées | **Tissage** (défaut) : recompose les deux champs, résolution verticale complète — nécessaire pour que le texte incrusté d'une source 1080i reste lisible. Peut peigner sur du mouvement rapide, largement absorbé par la réduction en vignette. **Champ seul** (historique) : moitié de la résolution verticale, mais insensible au mouvement |
+| Afficher « NO SIGNAL » | Bandeau quand une fenêtre n'a pas de source ou pas de grain |
+| Détection image figée (s) | Délai avant d'afficher l'alerte figé sur une fenêtre, 0 = désactivé |
+
+## Câblage — au-delà de la vidéo
+
+Une fenêtre peut aussi recevoir, câblés séparément et optionnels : un flux **audio** (pour ses
+VU-mètres), un flux **ANC** (pour la source d'horloge ANC d'un overlay horloge) et, pour
+l'historique vidéo/audio, des blocs dédiés. Le multiview n'exige que la vidéo — les absences ne
+bloquent rien, elles désactivent seulement les fonctions associées (pas de VU sans audio câblé,
+pas de TC ANC sans flux ANC câblé).
+
 ## Notes
 
 - La résolution de sortie est fixée au déploiement
