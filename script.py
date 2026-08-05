@@ -69,7 +69,7 @@ _t_ov_render = RollingMs(); _t_ov_convert = RollingMs(); _t_ov_blend = RollingMs
 # PLEIN CADRE (PIL + rgba_to_yuv + uploads). Compteurs de FRÉQUENCE (par seconde) + coût moyen :
 # c'est la seule façon de voir un habillage re-baké en rafale (churn TSL/statuts) — invisible dans
 # la ventilation inputs/overlays/output où il se noie.
-# Ventilation FINE de ov_render (banc MULTIVIEW_BENCH.md) : VU-mètres / frises / horloges+ANC.
+# Ventilation FINE de ov_render (banc docs/chantiers/MULTIVIEW_BENCH.md) : VU-mètres / frises / horloges+ANC.
 _t_ov_meters = RollingMs(); _t_ov_hist = RollingMs(); _t_ov_clock = RollingMs()
 _t_ov_bake = RollingMs()   # re-bake du chrome (Image.new + alpha_composite + rgba_to_yuv bbox)
 _t_ov_bg   = RollingMs()   # re-bake couche fond/fg statique (overlay_dirty) — compté dans `inputs`
@@ -204,7 +204,7 @@ try:
 except (TypeError, ValueError):
     FREEZE_DETECT_S = 2.0
 SHOW_PROXY    = _as_bool(CONFIG.get("show_proxy"))      # badge proxy lu par tuile (mode ingénierie pyramide)
-# Heure CIVILE des horloges « PTP » : l'horloge du nœud est sur l'échelle PTP/TAI (PTP_CLOCK.md)
+# Heure CIVILE des horloges « PTP » : l'horloge du nœud est sur l'échelle PTP/TAI (docs/reference/PTP_CLOCK.md)
 # → heure civile = horloge − tai_utc_offset_s (mesuré, injecté par before_deploy), au fuseau du
 # contrôleur (`tz` — les images runtime sont en UTC). N'affecte QUE l'affichage des horloges ;
 # la grille genlock/TAI du compositing est intouchée.
@@ -412,7 +412,7 @@ SLICE_LINES = int(CONFIG.get("slice_lines") or 36)
 # get_slice, budgets PAR TUILE, backoff, ciblage flow — seuls les octets transitent par la VRAM).
 # GATE : ne PAS activer en prod avant le verdict du banc dl360-2/T4 (tools/bench_gpu_slice_gate.py)
 # — le banc Phase 0 a montré que des transferts fins mal faits font RÉGRESSER le GPU. Sans le flag,
-# comportement inchangé : GPU ⇒ whole-frame (upload groupé), le repli documenté TISSU_SLICE.md §4.
+# comportement inchangé : GPU ⇒ whole-frame (upload groupé), le repli documenté docs/chantiers/TISSU_SLICE.md §4.
 GPU_SLICE_REQ = _as_bool(CONFIG.get("gpu_slice", False))
 # Repli lot PIL (0.31.0) : `meters_pil=true` restaure le rendu PIL par-trame HISTORIQUE des
 # VU-mètres (avant 0.31.0 le chemin tuile — statique caché + barres peintes — était GPU-only).
@@ -446,7 +446,7 @@ if GPU_SLICE:
     log(f"multiview: GPU SLICE actif (opt-in banc, TISSU_SLICE_GPU.md) — bandes de "
         f"{{SLICE_LINES}} lignes sur {{_GPU_NAME}}, micro-batch {{GPU_BATCH_BANDS}} bande(s)/lot",
         "info")
-# ── CADENCE « flow » (tissu en tranches, TISSU_SLICE.md) ──────────────────────────────────────
+# ── CADENCE « flow » (tissu en tranches, docs/chantiers/TISSU_SLICE.md) ──────────────────────────────────────
 # Data-flow ALIGNÉ SUR LA GRILLE : pas de barrière (le point fixe deadline/période de l'input-
 # locked disparaît structurellement — le tick d'epoch EST le déclencheur, aligné à ~1,6 ms sur
 # l'arrivée des grains). À chaque epoch TAI : la composition CIBLE l'index d'epoch fi_out —
@@ -6568,7 +6568,7 @@ while True:
             _pf_cache_sig = _pf_sig
             _pf_tiles = (render_clock_tiles(now) or []) + (render_anc_tiles(now) or []) or None
         _ts_ov1 = time.time_ns()   # fin rendu PIL + conversion YUV (tuiles VU + horloges AU CHANGEMENT)
-        # Banc perf (MULTIVIEW_BENCH.md) : ventilation FINE de `ov_render` en ses trois producteurs
+        # Banc perf (docs/chantiers/MULTIVIEW_BENCH.md) : ventilation FINE de `ov_render` en ses trois producteurs
         # de tuiles per-frame — VU-mètres / frises d'historique / horloges+ANC. Sans ça, `ov_render`
         # est un agrégat opaque et on ne peut pas chiffrer une frise isolément.
         _t_ov_meters.push((_ts_ovm - _ts_ov0) / 1e6)
@@ -6733,7 +6733,7 @@ while True:
         _refresh_lat_metrics()
         _sd = globals().get('_sl_dbg')
         if _sd:
-            # Observabilité recette (TISSU_SLICE.md) : compteurs slice promus en métriques :8080.
+            # Observabilité recette (docs/chantiers/TISSU_SLICE.md) : compteurs slice promus en métriques :8080.
             metrics["slice"] = {{"tiles": _sd[0], "valid0": _sd[1], "waits": _sd[2],
                                "fallbacks": _sd[3], "dormant": _sd[4],
                                "backoff": len(_sl_backoff)}}

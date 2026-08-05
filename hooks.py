@@ -201,7 +201,7 @@ def before_deploy(params, context):
 
     # 6. Heure CIVILE pour les horloges « PTP » (overlays + composants clock des modèles de
     #    PiP) : fuseau du contrôleur (`tz` — images runtime en UTC) + `tai_utc_offset_s`
-    #    (l'horloge des nœuds est sur l'échelle PTP/TAI, cf. PTP_CLOCK.md — offset MESURÉ
+    #    (l'horloge des nœuds est sur l'échelle PTP/TAI, cf. docs/reference/PTP_CLOCK.md — offset MESURÉ
     #    contre le contrôleur, jamais 37 figé). Ré-évalué à chaque déploiement.
     #    ★ Le `tz` EXPLICITE du mur PRIME. `params.update()` écrasait sans condition la valeur
     #    saisie par l'utilisateur à CHAQUE déploiement : le réglage semblait accepté puis

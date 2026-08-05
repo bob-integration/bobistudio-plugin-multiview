@@ -1,6 +1,6 @@
 # Tranche GPU du multiview — design + banc gate (chantier TISSU_SLICE, phase GPU)
 
-> Suite de TISSU_SLICE.md §4 (décision : migrer le GPU, APRÈS le tissu CPU). Le slice CPU
+> Suite de docs/chantiers/TISSU_SLICE.md §4 (décision : migrer le GPU, APRÈS le tissu CPU). Le slice CPU
 > (0.24.x/0.25.x, cadence « flow ») est la RÉFÉRENCE SÉMANTIQUE — le GPU ne change QUE le
 > lieu des octets (VRAM), jamais le protocole (attentes get_slice, budgets par tuile,
 > backoff, ciblage d'index d'epoch, commit progressif).
