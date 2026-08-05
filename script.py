@@ -1101,8 +1101,28 @@ TSL_SLOT_TTL_MIN    = 0.05  # 50 ms plancher absolu
 # (« HD 1080i50 » → 50), donc un mur i50 sain affiche 50 et ne paraît pas à moitié mort ;
 # `frames_per_s` expose les trames composées (25). Les deux sont publiés, nommés, et `fps_unit`
 # dit lequel est lequel.
+# ★ 0.64.0 — POURQUOI LE MUR N'AFFICHAIT JAMAIS 50. La 0.42.0 a posé « bord droit = maintenant »
+# pour qu'une boucle morte fasse tomber le chiffre à 0. Mais le compteur lu à cet instant RETARDE
+# sur « maintenant » d'une fraction de période (le scrape tombe ENTRE deux commits), alors que le
+# bord GAUCHE est un échantillon pris JUSTE APRÈS un commit — donc sans retard. Les deux retards ne
+# s'annulent pas : il manque jusqu'à une trame au numérateur pour un dénominateur complet, soit un
+# biais SYSTÉMATIQUEMENT bas d'une période sur la fenêtre (20 ms / 1,8 s ≈ 1 %). Un mur exactement
+# à 50 affichait 49,3-49,9 et JAMAIS 50 : mesuré côté bus, 50,0000 grain/s et zéro intervalle
+# déficitaire sur 9 000 échantillons pendant que le plugin publiait 49,7. Un indicateur qui
+# n'atteint jamais sa valeur nominale se lit « on n'y arrive pas » et coûte une enquête à chaque
+# fois — le même piège que la fenêtre à nombre de trames fixe, par l'autre bout.
+# Correctif : quand la boucle SUIT, les DEUX bords sont des échantillons alignés sur trame → le
+# rapport est exact (50,0 franc). Quand elle ne suit plus (aucun échantillon récent), on reprend
+# « maintenant » comme bord droit → le chiffre décroît vers 0. La propriété de la 0.42.0 est donc
+# conservée là où elle sert VRAIMENT (détecter l'arrêt) et retirée là où elle ne faisait que
+# mentir de 1 % (le régime nominal).
 FPS_WINDOW_S = 2.0
+_RATE_SAMPLE_EVERY = 25          # cf. boucle de compo : `if out_frame_index % 25 == 0: _rate_sample()`
 _GRAINS_PER_FRAME = 2 if INTERLACED else 1
+# Au-delà de ce retard sans échantillon, la boucle ne suit plus → bord droit = maintenant (le
+# chiffre décroît). Dérivé de la cadence réelle (2,5 intervalles d'échantillonnage), jamais figé :
+# 50p → 1,25 s ; 1080i50 (25 trames composées/s) → 2,5 s.
+RATE_STALE_S = max(0.6, 2.5 * _RATE_SAMPLE_EVERY * FRAME_INTERVAL)
 _rate_lock  = threading.Lock()
 _rate_total = {{"frames": 0, "missed": 0}}     # compteurs MONOTONES (écrits par la boucle de compo)
 _rate_hist  = deque(maxlen=64)                 # (t_monotone, frames, missed) échantillonnés ~2×/s
@@ -1113,30 +1133,38 @@ def _rate_sample():
         _rate_hist.append((time.monotonic(), _rate_total["frames"], _rate_total["missed"]))
 
 def _update_rate_metrics():
-    """Publie fps / frames_per_s / frames_missed_per_s. Bord DROIT = maintenant (pas la dernière
-    trame) → une boucle morte fait tomber le chiffre à 0. Bord GAUCHE = le plus vieil échantillon
-    encore dans la fenêtre de 2 s."""
+    """Publie fps / frames_per_s / frames_missed_per_s.
+
+    Les DEUX bords sont des échantillons alignés sur trame tant que la boucle suit → le rapport est
+    exact (un mur nominal affiche 50,0, pas 49,x ; cf. bloc 0.64.0 ci-dessus). Si plus aucun
+    échantillon n'est récent (`RATE_STALE_S`), le bord droit redevient « maintenant » → le chiffre
+    décroît vers 0 et une boucle morte reste visible."""
     now = time.monotonic()
     with _rate_lock:
         hist = list(_rate_hist)
         cur_f = _rate_total["frames"]; cur_m = _rate_total["missed"]
+    if not hist:
+        return
+    # Bord DROIT : le dernier échantillon (aligné sur trame, donc sans retard) si la boucle suit ;
+    # sinon l'instant présent avec les compteurs courants → la valeur chute au lieu de se figer.
+    t_dr, f_dr, m_dr = hist[-1]
+    if now - t_dr > RATE_STALE_S:
+        t_dr, f_dr, m_dr = now, cur_f, cur_m
     old = None
     for s in hist:
-        if now - s[0] <= FPS_WINDOW_S:
+        if t_dr - s[0] <= FPS_WINDOW_S:
             old = s
             break
-    if old is None and hist:
+    if old is None:
         old = hist[-1]      # boucle figée : la fenêtre ne contient plus rien → delta 0 sur un long dt
-    if not old:
-        return
-    dt = now - old[0]
+    dt = t_dr - old[0]
     if dt < 0.3:
-        return              # trop tôt (démarrage) : on garde la valeur précédente
-    fps_frames = (cur_f - old[1]) / dt
+        return              # trop tôt (démarrage) ou un seul échantillon : on garde la valeur précédente
+    fps_frames = (f_dr - old[1]) / dt
     metrics["frames_per_s"]        = round(fps_frames, 1)
     metrics["fps"]                 = round(fps_frames * _GRAINS_PER_FRAME, 1)
-    metrics["frames_missed_per_s"] = round((cur_m - old[2]) / dt, 2)
-    metrics["frames_missed"]       = cur_m
+    metrics["frames_missed_per_s"] = round((m_dr - old[2]) / dt, 2)   # mêmes bords que fps
+    metrics["frames_missed"]       = cur_m                            # total : on sert le plus frais
 
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
            "fps_nominal": round(_FN / _FD * _GRAINS_PER_FRAME, 2),   # cadence de sortie visée (= format déclaré)

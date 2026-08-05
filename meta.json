@@ -1,7 +1,10 @@
 {
-  "version": "0.63.0",
-  "date": "2026-08-03",
+  "version": "0.64.0",
+  "date": "2026-08-05",
   "changes": {
+    "Cadence affichée : un mur nominal affiche enfin 50 (0.64.0)": [
+      "Un mur parfaitement à la cadence affichait 49,3-49,9 et JAMAIS 50, ce qui se lit « on n'atteint jamais la bonne cadence » et a coûté des enquêtes répétées. Mesuré côté bus au même instant : 50,0000 grain/s et zéro intervalle déficitaire sur 9 000 échantillons, pendant que le plugin publiait 49,7. La cause est un biais de FENÊTRE, pas une perte : le bord gauche était un échantillon pris juste après un commit (sans retard), le bord droit était le compteur lu à l'instant du scrape, qui retarde d'une fraction de période puisqu'il tombe entre deux commits. Les deux retards ne s'annulent pas — il manquait jusqu'à une trame au numérateur pour un dénominateur complet, soit ~1 % systématiquement en moins. ★ Les DEUX bords sont désormais des échantillons alignés sur trame tant que la boucle suit : le rapport est exact (50,0 franc, vérifié aussi en 1080i50, 1080p25 et 59,94p, y compris au pire instant de scrape). La propriété acquise en 0.42.0 est conservée là où elle sert vraiment : si plus aucun échantillon n'est récent (2,5 intervalles d'échantillonnage, dérivés de la cadence réelle), le bord droit redevient « maintenant » et le chiffre décroît vers 0 — une boucle morte reste visible au lieu de se figer sur sa dernière belle valeur. `frames_missed_per_s` utilise les mêmes bords ; `frames_missed`, un cumul, reste servi au plus frais. Un vrai hoquet de 30 ms fait toujours lire le déficit (49,0), sans le rebond à 52 qui suivait."
+    ],
     "Insertion de variables aussi dans le composeur de mur (0.63.0)": [
       "Le sélecteur « Insérer une variable » n'existait que dans l'éditeur de modèles de PiP. Il est ajouté au champ texte d'un overlay du composeur, où il n'apparaît que pour un texte LOCAL (un texte piloté par TSL vient du protocole, y insérer une variable n'aurait aucun effet). Seul le groupe « Système » y est proposé : les variables de source décrivent la source d'une FENÊTRE, un mur n'en a pas. ★ Le catalogue est désormais servi par /api/text-variables, défini UNE SEULE FOIS côté orchestrateur et partagé par les deux éditeurs — il était dupliqué dans deux fichiers JS qui auraient divergé au premier ajout, comme l'ont fait _draw_meter et _draw_meter_static."
     ],
