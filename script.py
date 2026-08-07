@@ -2839,7 +2839,11 @@ def _ah_sample(name, now):
         st["last_head"] = head; st["last_head_t"] = now
     dt = now - (st["last_t"] or (now - AH_TICK_S))
     n = int(max(A_SAMPLES_PER_CHUNK, min(2400, dt * A_SAMPLE_RATE + A_SAMPLES_PER_CHUNK)))
-    start = head + A_SAMPLES_PER_CHUNK - n     # fenêtre glissante finissant au dernier sample commité
+    # Fenêtre glissante FINISSANT au dernier sample commité. `head` est un index
+    # ONE-PAST-THE-END : les samples écrits sont [.., head), donc la fenêtre est [head - n, head).
+    # L'ancien calcul (head + A_SAMPLES_PER_CHUNK - n) venait du modèle faux « head = début du
+    # dernier bloc » que la docstring de bobimxl propageait — il visait un bloc dans le futur.
+    start = head - n
     blk = None
     if start >= 0:
         try:
