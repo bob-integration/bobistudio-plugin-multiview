@@ -94,6 +94,10 @@ _n_meters = RollingMs(); _n_hist = RollingMs(); _n_clock = RollingMs(); _n_px_bl
 # côté GPU les tuiles qui n'ont pas changé (frises et horloges sont déjà cachées côté hôte, et
 # pourtant re-téléversées à chaque trame) ; si ce sont les lancements, le remède est de grouper.
 _t_ov_upload = RollingMs()
+# `ov_clock` agrège deux choses payées à des rythmes différents : le calcul de la SIGNATURE des
+# tuiles per-frame (fait à CHAQUE trame — il décode les paquets ANC pour savoir si la valeur a
+# bougé) et le RENDU proprement dit (payé seulement quand elle a bougé).
+_t_pf_sig = RollingMs()
 # Sous-ventilation de l'habillage (overlays) : rendu PIL meters/fg / conversion RGBA→YUV / blend.
 _t_ov_render = RollingMs(); _t_ov_convert = RollingMs(); _t_ov_blend = RollingMs()
 # Instrumentation des RE-BAKES d'habillage (couches cachées) : ces coûts sont épisodiques mais
@@ -1309,6 +1313,7 @@ def _refresh_lat_metrics():
                            "kpixels": round(_n_px_blend.avg() / 1000.0, 1),
                            "us_par_tuile": round(_t_ov_blend.avg() * 1000.0 / _nt, 1) if _nt else None,
                            "upload_ms": round(_t_ov_upload.avg(), 2),
+                           "sig_ms": round(_t_pf_sig.avg(), 2),
                            "kernels_ms": round(max(0.0, _t_ov_blend.avg() - _t_ov_upload.avg()), 2)}}
     metrics["clock_tz_unknown"] = dict(_ZONE_BAD)
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
@@ -6778,8 +6783,10 @@ while True:
         # quasi plein écran quand les horloges sont dispersées → gros gain de blend per-frame).
         # Les bandeaux ANC des cellules (opt-in) partagent cette machinerie : même cache par
         # signature, même blend par petite bbox. Aucune cellule cochée → coût strictement nul.
+        _ts_sig0 = time.time_ns()
         _pf_sig = (tuple((_dyn_text(ov, now), _countdown_color(ov, now))
                          for ov in _dyn_overlays()), _anc_sig())
+        _t_pf_sig.push((time.time_ns() - _ts_sig0) / 1e6)
         if _pf_sig != _pf_cache_sig:
             _pf_cache_sig = _pf_sig
             _pf_tiles = (render_clock_tiles(now) or []) + (render_anc_tiles(now) or []) or None

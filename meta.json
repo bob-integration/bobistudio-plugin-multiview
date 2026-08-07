@@ -1,7 +1,11 @@
 {
-  "version": "0.70.0",
+  "version": "0.70.1",
   "date": "2026-08-07",
   "changes": {
+    "Ventiler `ov_clock` en guet et rendu (0.70.1)": [
+      "`ov_clock` agrégeait le calcul de la SIGNATURE des tuiles per-frame — fait à chaque trame, il décode les paquets ANC pour savoir si la valeur a bougé — et le RENDU, payé seulement quand elle a bougé. Mesuré sur le shard 917 (bandeau de timecode, donc 25 changements par seconde) : 0,55 ms de guet contre 2,86 ms de rendu en moyenne, soit environ 5,7 ms par bake. Le guet est bon marché ; c'est le rendu qui assomme une trame sur deux.",
+      "★ TENTATIVE ÉCARTÉE — sortir ce rendu de la trame vers un boulanger dédié, comme le chrome et les frises. Le résultat a été l'INVERSE de l'attendu : sur le shard concerné, `own` est passé de 18,8 à 32,9 ms et la cadence de 37,6 à 23,6 fps ; le retour arrière l'a ramené à 22,7 ms, ce qui confirme la causalité. Le bake coûte 13,6 ms et se déclenche 25 fois par seconde : rendu CONCURRENT sur les mêmes cœurs épinglés, il dispute au fil de compo la bande passante mémoire dont celui-ci dépend, et ce que la désérialisation fait gagner, la contention le reprend au double. Le `nice` du boulanger n'y change rien — il arbitre le CPU, pas la mémoire. Leçon : sur une charge memory-bound, déplacer du travail sur un autre fil du même nœud ne le fait pas disparaître."
+    ],
     "★ Cache VRAM des tuiles d'habillage (0.70.0)": [
       "Les frises et les horloges/ANC sont DÉJÀ cachées côté hôte — re-dessinées seulement au changement de valeur (une frise toutes les quelques secondes, une horloge environ une fois par seconde). Elles n'en étaient pas moins RE-TÉLÉVERSÉES vers la VRAM à chaque trame, cinq tableaux par tuile, depuis de la mémoire pageable. Mesuré sur les shards du tissu : 4,6 ms de transfert sur 8,2 ms d'`ov_blend`, pour 8 tuiles sur 10 qui n'avaient pas bougé. Le mur payait cinquante fois par seconde le transport d'images identiques. ★ Le cache prolonge d'un cran celui qui existe côté hôte : la copie VRAM est conservée tant que la tuile hôte est LA MÊME (comparaison d'identité). Les VU-mètres en sont exclus — leur niveau change réellement à chaque trame, ils n'auraient que des défauts de cache. ⚠ Le cache garde une RÉFÉRENCE FORTE sur la tuile hôte : sans elle, l'objet pourrait être collecté et son id réattribué à une autre tuile, qui se verrait servir une copie VRAM étrangère — une frise à la place d'une horloge, en silence. Éviction à chaque trame des tuiles non servies, sinon le cache grossirait à chaque re-bake."
     ],
