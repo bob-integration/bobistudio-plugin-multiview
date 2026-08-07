@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.64.0",
+  "version": "0.67.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -79,7 +79,9 @@
           "value": "portrait_ccw",
           "label": "Portrait ↺ (anti-horaire)"
         }
-      ]
+      ],
+      "hidden": true,
+      "help": "Réglé depuis le composer du mur."
     },
     {
       "key": "shm_out",
@@ -94,7 +96,9 @@
       "label": "Max entrées",
       "min": 1,
       "max": 16,
-      "default": 4
+      "default": 4,
+      "hidden": true,
+      "help": "Réglé depuis le composer du mur."
     },
     {
       "key": "show_no_signal",
@@ -269,6 +273,13 @@
           "label": "Champ seul (historique)"
         }
       ]
+    },
+    {
+      "key": "mvk",
+      "type": "bool",
+      "default": true,
+      "label": "Noyau de composition fusionné (C)",
+      "help": "Accélère la composition de 4,8 à 6,2×. À DÉSACTIVER si le mur meurt en « code -11 » (SIGSEGV) : le repli numpy est l'ancien chemin, bit-exact — on y perd de la vitesse, jamais de la justesse. Prend effet au redéploiement du script."
     }
   ],
   "wiring": {

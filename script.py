@@ -10,6 +10,19 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageDraw, ImageFont
 import bobimxl   # migration MXL Phase 1 : entrées vidéo+ANC via Reader, sortie via Writer
 
+# ── TRACE DE PLANTAGE NATIF ────────────────────────────────────────────────────────────────────
+# Un mur qui meurt en `code -11` (SIGSEGV) sans rien laisser est INDÉBOGABLE. Mesuré le
+# 2026-08-06 sur le mur 333 : 34 morts dans la journée, journal du conteneur muet — que des
+# lignes de fonctionnement normal, puis « [agent] script terminé (code -11) ». On ne pouvait
+# même pas dire QUEL appel C fautait (noyau mvk fusionné, binding MXL, numpy).
+# `faulthandler` imprime sur stderr la pile Python de TOUS les threads au moment du signal, puis
+# laisse le signal suivre son cours (comportement inchangé, le process meurt pareil). Coût nul
+# tant qu'aucun signal n'arrive : rien ne s'exécute.
+# ⚠ Il pose aussi un handler SIGBUS, mais `signal.signal(SIGBUS, _on_sigbus)` plus bas s'exécute
+# APRÈS et reprend la main : la reconnexion sur mmap tronqué reste le comportement en vigueur.
+import faulthandler
+faulthandler.enable(all_threads=True)
+
 
 def _mxl_lib_state():
     """Variante libmxl réellement chargée (baseline / x86-64-v3) — diagnostic seul, ne doit
@@ -143,13 +156,22 @@ if CONFIG.get("force_cpu"):
 # applicables → repli numpy intégral : le repli EST l'ancien code, octet-identique. Threads
 # OpenMP posés par bobimxl au chargement (env BOBI_MVK_THREADS, sinon cœurs physiques du
 # cpuset HT-aware). getattr : un bobimxl d'ancienne image n'a pas mvk_available.
-_MVK = (not GPU) and bool(getattr(bobimxl, "mvk_available", lambda: False)())
+# ⚠ INTERRUPTEUR `mvk` (config_schema, défaut activé). Le noyau fusionné est du C : quand il
+# écrit hors bornes, il corrompt le tas et le process meurt PLUS TARD, AILLEURS — mesuré le
+# 2026-08-06 sur le mur 333, 4 traces, 3 sites de crash différents (mvk_rgba2yuv, une affectation
+# numpy, PIL.tobytes), toujours avec les boulangers chrome/frises actifs. Sans moyen de le
+# désactiver, impossible de trancher entre « c'est lui » et « c'est autre chose », ni de tenir un
+# mur debout en attendant. Le repli numpy EST l'ancien code, octet-identique (cf. ci-dessus) :
+# le couper coûte de la vitesse, jamais de la justesse.
+# (évaluation littérale : `_as_bool` est défini plus bas dans le fichier)
+_MVK_ON = str(CONFIG.get("mvk", True)).strip().lower() not in ("0", "false", "no", "off", "none", "")
+_MVK = (not GPU) and _MVK_ON and bool(getattr(bobimxl, "mvk_available", lambda: False)())
 # Gate HÔTE (par-appel) : certaines passes restent du numpy CPU MÊME sur un mur GPU — le
 # re-bake du chrome (rgba_to_yuv sur l'image PIL pleine trame, à chaque tally/statut) en tête.
 # Le gate global `not GPU` de _MVK les privait du kernel C (observé sur le 163 : ov_render
 # 5-7 ms de re-bakes en numpy pur). Les call-sites qui l'utilisent vérifient eux-mêmes que le
 # tableau est bien hôte (isinstance cupy) — le chemin VRAM garde ses kernels cupy.
-_MVK_HOST = bool(getattr(bobimxl, "mvk_available", lambda: False)())
+_MVK_HOST = _MVK_ON and bool(getattr(bobimxl, "mvk_available", lambda: False)())
 
 FLUX_CONFIG   = CONFIG.get("flux_config") or []
 # Blocs VU-mètres posés DIRECTEMENT sur le layout du MUR (indépendants de toute fenêtre) :
@@ -602,7 +624,7 @@ def _update_peaks(state, n_channels, now):
         # est un dict non-None → render_meters ne le recrée pas via _open_audio_state) → ABSENCE
         # permanente. On tente donc de ROUVRIR (avec garbage_collect pour se rattacher à la génération
         # vivante). Échec (flux toujours absent) → absence, on retentera au tour suivant.
-        try: inst.garbage_collect()
+        try: _gc_mxl()
         except Exception: pass
         try:
             ar = bobimxl.AudioReader(inst, state["name"]); state["ar"] = ar
@@ -643,7 +665,7 @@ def _update_peaks(state, n_channels, now):
         # writer mort (comme le fait le PRODUCTEUR avant de recréer) → le ré-open voit la vivante.
         try: ar.close()
         except Exception: pass
-        try: inst.garbage_collect()
+        try: _gc_mxl()
         except Exception: pass
         try:
             ar = bobimxl.AudioReader(inst, state["name"]); state["ar"] = ar
@@ -661,7 +683,7 @@ def _update_peaks(state, n_channels, now):
         # sur la vivante. last_head=None pour ré-amorcer le suivi de fraîcheur au tour suivant.
         try: ar.close()
         except Exception: pass
-        try: inst.garbage_collect()
+        try: _gc_mxl()
         except Exception: pass
         try:
             state["ar"] = bobimxl.AudioReader(inst, state["name"]); state["last_head"] = None
@@ -2543,7 +2565,7 @@ def _vh_close(st):
     if src is not None:
         _close_source(src)
     st["src"] = None; st["path"] = ""
-    try: inst.garbage_collect()
+    try: _gc_mxl()
     except Exception: pass
 
 def _vh_pick_path(name):
@@ -2782,7 +2804,7 @@ def _ah_sample(name, now):
             st = _ah_new(); st["name"] = name; _ah[name] = st
     if st["ar"] is None:
         try:
-            inst.garbage_collect()
+            _gc_mxl()
         except Exception:
             pass
         try:
@@ -3990,7 +4012,7 @@ def _anc_packets(idx):
         # prochain appel (rec["state"] None). Timer ré-armé = retentes bornées à 1/_ANC_STALE_S.
         try: st["reader"].close()
         except Exception: pass
-        try: inst.garbage_collect()
+        try: _gc_mxl()
         except Exception: pass
         rec["state"] = None
         return []
@@ -5065,7 +5087,38 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
             if i < len(sources): sources[i] = src
     return src
 
-def _close_source(src):
+# ─── LIBÉRATION DIFFÉRÉE DES MAPPINGS (course mortelle, corrigée le 2026-08-06) ─────────────
+#
+# La boucle de composition lit les plans source comme des VUES numpy sur le mapping partagé d'un
+# flux MXL (`tv[1][r0:r1]`, `tv[2][rc][:, tv[5]]`…), SANS prendre `state_lock` — elle ne peut pas,
+# la cadence s'effondrerait. Or trois autres threads libéraient ces mappings sous ses pieds :
+#   • l'échantillonneur des frises (`_vh_close`) : ferme le Reader PUIS collecte le ring ;
+#   • le gestionnaire HTTP (`/reconfigure`) : ferme les Readers dont la source a changé ;
+#   • les chemins de réouverture d'un flux périmé.
+# Une zone démappée donne un SIGSEGV, pas un SIGBUS : le handler SIGBUS existant ne la couvre pas.
+# Le mur mourait ainsi 34 fois en une journée. Les 5 traces `faulthandler` désignent toutes le
+# thread de composition dans `_gather_band`, et l'une d'elles capture les DEUX bouts de la course
+# dans le même dump (compose dans `_gather_band` ; l'échantillonneur dans `garbage_collect`).
+#
+# Règle : un mapping n'est libéré que DEPUIS LE THREAD DE COMPOSITION, en début de trame, seul
+# instant où l'on sait qu'aucune vue n'est vivante. Les autres threads mettent en file.
+# ⚠ On ne diffère PAS les appels VENANT du thread de composition : `ensure_input` ferme puis
+# ROUVRE dans la foulée, et son `garbage_collect()` est justement ce qui la rattache à la
+# génération vivante — le différer casserait la reconnexion.
+_thread_compo = None                  # ident du thread de composition (posé avant la boucle)
+_a_liberer = []                       # sources en attente de fermeture
+_a_liberer_lock = threading.Lock()
+_gc_demande = False                   # un garbage_collect a été demandé par un autre thread
+
+
+def _sur_thread_compo():
+    # `None` = boucle de composition pas encore armée (démarrage) : aucune vue ne peut être
+    # vivante, on libère immédiatement. Différer là serait un piège : les réouvertures du
+    # démarrage rateraient la génération vivante du flux.
+    return _thread_compo is None or threading.get_ident() == _thread_compo
+
+
+def _fermer_source_maintenant(src):
     """Ferme le Reader d'une source ET son Instance dédiée s'il en a une (sinon on fuit une
     Instance MXL par escalade — et la génération qu'elle référence ne serait jamais collectée)."""
     try: src["reader"].close()
@@ -5074,6 +5127,44 @@ def _close_source(src):
     if own is not None:
         try: own.close()
         except Exception: pass
+
+
+def _close_source(src):
+    """Ferme une source — IMMÉDIATEMENT depuis le thread de composition, en DIFFÉRÉ sinon."""
+    if _sur_thread_compo():
+        _fermer_source_maintenant(src)
+        return
+    with _a_liberer_lock:
+        _a_liberer.append(src)
+
+
+def _gc_mxl():
+    """`inst.garbage_collect()` — global au ring MXL, donc encore plus dangereux qu'une
+    fermeture : il purge des GÉNÉRATIONS entières. Même règle que `_close_source`."""
+    global _gc_demande
+    if _sur_thread_compo():
+        try: inst.garbage_collect()
+        except Exception: pass
+        return
+    with _a_liberer_lock:
+        _gc_demande = True
+
+
+def _liberer_differe():
+    """Purge la file — À APPELER EN DÉBUT DE TRAME, avant toute construction de vue."""
+    global _gc_demande
+    with _a_liberer_lock:
+        lot = _a_liberer[:]
+        del _a_liberer[:]
+        gc = _gc_demande
+        _gc_demande = False
+    for src in lot:
+        _fermer_source_maintenant(src)
+    if lot or gc:
+        try: inst.garbage_collect()
+        except Exception: pass
+        if len(lot) > 8:
+            log("multiview: %d source(s) libérée(s) en différé" % len(lot), "debug")
 
 
 def _drop_input(i, rd, raison=""):
@@ -5087,7 +5178,7 @@ def _drop_input(i, rd, raison=""):
     # le flux périmé reste résolvable PAR NOM tant qu'il n'est pas collecté — sans GC, la
     # réouverture retombe sur L'ORPHELIN qu'on vient de lâcher (mesuré : boucle drop/reopen à
     # ½ cadence sur un shard dont le proxy amont avait été recréé).
-    try: inst.garbage_collect()
+    try: _gc_mxl()
     except Exception: pass
     with state_lock:
         if i < len(sources): sources[i] = None
@@ -5401,6 +5492,10 @@ class MvControlHandler(BaseHTTPRequestHandler):
         b = self._json()
         with state_lock:
             global SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_PROXY, DEFAULT_TEMPLATE
+            # ★ IDEMPOTENT : le tissu pousse /style à chaque reconfiguration d'assembleur, avec la
+            # même valeur qu'avant. Armer geom+tally sans changement = re-bake du chrome plein
+            # cadre (≈ 25 ms mesurées) → une trame lente → le TX ré-émet le grain précédent.
+            _av_style = (DEFAULT_TEMPLATE, SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_PROXY)
             if "default_template" in b:
                 # Modèle de PiP par défaut du MUR (héritage) : dict {{name, components}} ou null.
                 t = b.get("default_template")
@@ -5412,8 +5507,9 @@ class MvControlHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError): pass
             if "show_proxy" in b:
                 SHOW_PROXY = _as_bool(b["show_proxy"])
-            geom_dirty.set()
-            tally_dirty.set()
+            if (DEFAULT_TEMPLATE, SHOW_NO_SIGNAL, FREEZE_DETECT_S, SHOW_PROXY) != _av_style:
+                geom_dirty.set()
+                tally_dirty.set()
         self.send_response(200)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": True}}).encode())
@@ -5434,7 +5530,11 @@ class MvControlHandler(BaseHTTPRequestHandler):
         # le conteneur n'a pas encore (l'orchestrateur ne repousse le script qu'au déploiement) →
         # on rematérialise ce que la charge utile embarque AVANT d'appliquer la nouvelle config,
         # sinon le texte retomberait silencieusement sur DejaVu jusqu'au prochain redéploiement.
-        if b.get("font_library"):
+        # ★ IDEMPOTENT (même motif que les frises/blocs plus bas) : le tissu ré-embarque la
+        # bibliothèque de polices à CHAQUE poussée. Re-matérialiser à l'identique purgeait le cache
+        # de polices et armait tally+overlay_dirty → RECUISSON plein cadre pour rien. On ne bouge
+        # que si la bibliothèque a réellement changé.
+        if b.get("font_library") and b["font_library"] != (CONFIG.get("font_library") or []):
             CONFIG["font_library"] = b["font_library"]
             _materialize_font_library()
             _ofont_cache.clear()
@@ -5523,6 +5623,11 @@ class MvControlHandler(BaseHTTPRequestHandler):
         if not isinstance(new_ov, list):
             self.send_response(400); self.end_headers(); return
         with state_lock:
+            # ★ IDEMPOTENT : `overlay_dirty` déclenche le re-bake de la couche de FOND + des
+            # overlays statiques — le plus cher de tous (canvas RGBA plein cadre → rgba_to_yuv →
+            # blends). Le tissu repousse la liste d'overlays à chaque reconfiguration d'assembleur,
+            # or elle n'a le plus souvent pas bougé : on ne salit que sur changement réel.
+            _ov_changed = (new_ov != list(OVERLAYS))
             OVERLAYS[:] = new_ov
             live = {{ov.get("id") for ov in new_ov}}
             for cid in list(_overlay_img_cache):
@@ -5531,7 +5636,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
             for cid in list(_chrono_state):
                 if cid not in live:
                     _chrono_state.pop(cid, None)
-            overlay_dirty.set()
+            if _ov_changed:
+                overlay_dirty.set()
         self.send_response(200)
         self.send_header("Content-Type", "application/json"); self.end_headers()
         self.wfile.write(json.dumps({{"ok": True}}).encode())
@@ -6168,7 +6274,7 @@ STALE_REOPEN_MS = 5000.0
 # gen2 cadencé (~5 s, durée mesurée → métrique gc_full_ms). gc.freeze() sort le tas de démarrage
 # (modules, fonts, config…) du scan gen2 → collect court ; les objets gelés ne sont plus jamais
 # collectés (OK : quasi tout est pérenne ; les Readers rouverts au churn ne sont pas cycliques,
-# libérés par refcount). NB : RIEN À VOIR avec inst.garbage_collect() = GC du ring MXL (flux
+# libérés par refcount). NB : RIEN À VOIR avec le GC du ring MXL (flux
 # orphelins), qu'on ne touche pas.
 gc.collect(2)
 gc.freeze()
@@ -6178,7 +6284,13 @@ _gc_full_every = max(1, int(round(5.0 / FRAME_INTERVAL)))   # gen2 ~toutes les 5
 _gc_last_full_ms = 0.0
 _gc_max_full_ms = 0.0
 
+_thread_compo = threading.get_ident()   # à partir d'ici, ce thread SEUL libère les mappings
+
 while True:
+    # Fermetures/GC mis en file par les autres threads : on les exécute ICI, avant toute
+    # construction de vue sur un mapping (cf. LIBÉRATION DIFFÉRÉE). Coût nul quand la file
+    # est vide, c'est-à-dire à la quasi-totalité des trames.
+    _liberer_differe()
     now = time.time()
     now_m = time.monotonic()   # horloge MONOTONE pour les durées (détection freeze) — insensible aux sauts de CLOCK_REALTIME (genlock garde time.time())
     if _bus_error.is_set():

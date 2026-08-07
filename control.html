@@ -109,12 +109,15 @@
                 </div>
             </div>
             <label class="mw-snap" for="ed_snap"><input type="checkbox" class="ios-toggle" id="ed_snap" onchange="snapEnabled=this.checked"> <span data-i18n="plugin.multiview.snap">Snap magnétique</span></label>
+            <label class="mw-snap" for="ed_regions" id="ed_regions_wrap" hidden title="Traits pointillés sur le canvas : frontières des régions de calcul. Déplacer une fenêtre à l'intérieur de sa région est immédiat ; lui faire franchir une frontière reconstruit une région (quelques secondes)." data-i18n-title="plugin.multiview.fabric_regions_hint"><input type="checkbox" class="ios-toggle" id="ed_regions" checked onchange="mwToggleRegions(this)"> <span data-i18n="plugin.multiview.show_regions">Régions de calcul</span></label>
         </div>
         <div class="mw-canvas-wrap">
             <canvas id="ed_canvas" aria-label="Aperçu de la composition multiview" data-i18n-aria="plugin.multiview.canvas_aria"
                     onpointerdown="canvasMouseDown(event)" onpointermove="canvasMouseMove(event)"
                     onpointerup="canvasMouseUp(event)" onpointercancel="canvasMouseUp(event)"></canvas>
         </div>
+        <p class="mw-fabric-note" id="mw_fabric_note" role="status" aria-live="polite" hidden></p>
+        <p class="mw-hint" id="mw_fabric_hint" data-i18n="plugin.multiview.fabric_regions_hint" hidden></p>
         <p class="mw-hint" data-i18n="plugin.multiview.hint">Maj + clic pour multi-sélectionner. Référence = dernière sélectionnée (cadre blanc).</p>
         <div id="ed_entry_panel" class="mw-entry-panel" hidden>
             <div class="mw-editor-row">

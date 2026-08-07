@@ -26,6 +26,9 @@ let dragStart     = null;
 let dragOrigRect  = null;
 let dragGroupOrig = [];     // [{j, x, y}] positions d'origine de TOUTES les fenêtres sélectionnées
                             // (déplacement de groupe : même delta appliqué à chacune)
+let dragGeomOrig  = null;   // {idx: {x,y,w,h}} géométrie au DÉBUT du geste — sert au relâchement à
+                            // ne hot-appliquer que les fenêtres réellement modifiées (cf.
+                            // canvasMouseUp). null = aucun geste en cours sur une fenêtre.
 let snapEnabled   = true;
 let snapGuides    = [];     // [{type:'v'|'h', pos:number}] dessinées pendant le drag
 
@@ -401,6 +404,7 @@ async function chargerMw(vmid) {
         return;
     }
     editorVmid   = vmid;
+    mwFabricStart();   // régions de calcul + annonce des réorganisations (murs shardés)
     editorParams = Object.assign({
         flux_config: [],
         shm_out: 'mxl_mix',
@@ -1443,6 +1447,68 @@ const COPY_FIELDS = ['w', 'h', 'label_source', 'show_label', 'show_tally', 'labe
     ...ANC_FLAGS, 'anc_position', 'anc_opacity', 'template', 'template_ref'];
 let reglagesClipboard = null;
 
+// ─── Tissu de composition : régions de calcul et attente ─────────────────────
+// Un mur lourd n'est pas composé par un seul conteneur : il est découpé en RÉGIONS, une par
+// conteneur. Déplacer une fenêtre À L'INTÉRIEUR de sa région se propage à chaud — immédiat.
+// Lui faire franchir une frontière change la découpe : il faut construire un conteneur, et la
+// sortie ne bascule qu'une fois qu'il produit (~5-10 s). Sans rien montrer, le même geste paraît
+// tantôt instantané, tantôt en panne — et rien à l'écran ne permet de deviner pourquoi. D'où
+// deux ajouts : les frontières sont DESSINÉES (on voit qu'on va en franchir une), et l'attente
+// est ANNONCÉE quand elle a lieu.
+let mwFabric = { sharded: false, regions: [], etat: null };
+let _mwFabricTimer = null;
+let mwShowRegions = true;   // interrupteur (à côté du snap) — n'apparaît que sur un mur shardé
+
+function mwToggleRegions(el) {
+    mwShowRegions = !!el.checked;
+    drawCanvas();
+}
+
+async function mwFabricRefresh() {
+    if (editorVmid === null) return;
+    let d;
+    try {
+        d = await (await fetch(`/api/containers/${editorVmid}/fabric`, { cache: 'no-store' })).json();
+    } catch (e) { return; }   // réseau indisponible : on garde le dernier état connu, sans clignoter
+    const avant = JSON.stringify(mwFabric);
+    mwFabric = d || { sharded: false, regions: [], etat: null };
+    const note = document.getElementById('mw_fabric_note');
+    if (note) {
+        note.hidden = (mwFabric.etat !== 'reorganisation');
+        if (!note.hidden) note.textContent = T('plugin.multiview.fabric_reorganizing');
+    }
+    // L'interrupteur et la légende n'ont de sens que sur un mur SHARDÉ : sur un mur composé par
+    // un seul conteneur il n'y a pas de région à montrer, et tout y est instantané.
+    const montrable = !!(mwFabric.sharded && mwFabric.regions.length);
+    const wrap = document.getElementById('ed_regions_wrap');
+    if (wrap) wrap.hidden = !montrable;
+    const hint = document.getElementById('mw_fabric_hint');
+    if (hint) hint.hidden = !(montrable && mwShowRegions);
+    if (JSON.stringify(mwFabric) !== avant) drawCanvas();
+}
+
+function mwFabricStart() {
+    clearInterval(_mwFabricTimer);
+    mwFabricRefresh();
+    _mwFabricTimer = setInterval(mwFabricRefresh, 2500);
+}
+
+// Frontières des régions : pointillés sobres, PAR-DESSUS les fenêtres (sous les fenêtres d'un mur
+// dense, on ne les verrait pas). Plus marquées pendant une réorganisation, pour relier ce qu'on
+// voit bouger au message affiché sous le canvas.
+function drawFabricRegions(ctx, t) {
+    if (!mwShowRegions || !mwFabric.sharded || !mwFabric.regions.length) return;
+    ctx.save();
+    ctx.setLineDash([14, 12]);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = t.muted;
+    ctx.globalAlpha = (mwFabric.etat === 'reorganisation') ? 0.8 : 0.32;
+    mwFabric.regions.forEach(r => {
+        if (r.w > 2 && r.h > 2) ctx.strokeRect(r.x + 1.5, r.y + 1.5, r.w - 3, r.h - 3);
+    });
+    ctx.restore();
+}
+
 function mwFlash(msg) {
     const t = document.getElementById('mw-toast');
     if (!t) return;
@@ -1715,6 +1781,10 @@ function drawCanvas() {
     // Overlays texte/horloge/logo (layer=foreground) : par-dessus les fenêtres.
     drawOverlayLayer(ctx, 'foreground');
 
+    // Frontières des régions de calcul (murs shardés) — au-dessus des fenêtres pour rester
+    // lisibles sur un mur dense, mais sous les guides de snap, qui sont l'aide ACTIVE du geste.
+    drawFabricRegions(ctx, t);
+
     // Lignes guides de snap (pendant le drag)
     if (dragMode && snapGuides.length) {
         ctx.strokeStyle = t.warning;
@@ -1778,6 +1848,7 @@ function canvasMouseDown(e) {
         try { e.target.setPointerCapture(e.pointerId); } catch(_) {}
     }
     e.preventDefault();
+    dragGeomOrig = null;   // réarmé ci-dessous par les seules branches « fenêtre vidéo »
     const pos = getCanvasPos(e);
     // 1. Overlays de premier plan (au-dessus de la vidéo)
     let hit = hitOverlay(pos, 'foreground');
@@ -1796,6 +1867,7 @@ function canvasMouseDown(e) {
             pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
             selectedOverlay = -1; selectedBlock = -1; selectedHist = -1;
             dragMode = 'resize'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...f};
+            dragGeomOrig = _geomSnapshot();
             _setCanvasCursor('nwse-resize');
             return;
         }
@@ -1807,6 +1879,7 @@ function canvasMouseDown(e) {
             if (!(isSelected(i) && !e.shiftKey)) toggleSelection(i, e.shiftKey);
             dragMode = 'move'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...editorParams.flux_config[primaryIdx()]};
             dragGroupOrig = selectedIdxs.map(j => ({ j, x: editorParams.flux_config[j].x, y: editorParams.flux_config[j].y }));
+            dragGeomOrig = _geomSnapshot();
             _setCanvasCursor('move');
             dessiner();
             return;
@@ -2060,7 +2133,30 @@ function canvasMouseUp() {
         return;
     }
     dragMode = null; snapGuides = []; dessiner();
-    selectedIdxs.forEach(idx => hotApplyWindow(idx));
+    // Ne hot-appliquer que les fenêtres dont la géométrie a RÉELLEMENT bougé pendant le geste.
+    // Un clic de SÉLECTION passe aussi par ici (mousedown sur une fenêtre → mouseup sans
+    // déplacement) : il ne doit rien poster. Sur un mur SHARDÉ, chaque POST /plugin/window
+    // déclenche une re-planification du tissu du nœud — donc, pour une sélection, une coupure de
+    // la sortie sans qu'aucun paramètre n'ait changé.
+    const orig = dragGeomOrig;
+    dragGeomOrig = null;
+    if (!orig) return;
+    selectedIdxs.forEach(idx => {
+        const f = editorParams.flux_config[idx], o = orig[idx];
+        if (!f) return;
+        if (o && f.x === o.x && f.y === o.y && f.w === o.w && f.h === o.h) return;
+        hotApplyWindow(idx);
+    });
+}
+
+// Géométrie des fenêtres sélectionnées à l'instant T, indexée par idx (cf. dragGeomOrig).
+function _geomSnapshot() {
+    const snap = {};
+    selectedIdxs.forEach(j => {
+        const f = editorParams && editorParams.flux_config[j];
+        if (f) snap[j] = { x: f.x, y: f.y, w: f.w, h: f.h };
+    });
+    return snap;
 }
 
 // Pendant un drag : ne resynchronise que les champs géométrie (pas de rebuild DOM).

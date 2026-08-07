@@ -362,6 +362,16 @@ input[type="number"].mw-num { -moz-appearance: textfield; appearance: textfield;
     font-size: 0.82em;
     cursor: pointer;
 }
+/* Annonce d'une réorganisation du tissu : un déplacement qui change la découpe des régions exige
+   un conteneur neuf, donc quelques secondes avant que la SORTIE bascule. Discret (une ligne sous
+   le canvas, ton d'attention, pas d'erreur) mais présent : sans lui, l'attente passe pour un
+   raté. Même gabarit que .mw-hint, dont il partage la place. */
+.mw-fabric-note {
+    color: var(--status-warning-fg, #c4a667);
+    font-size: 0.78em;
+    margin: var(--space-1) 0 0;
+}
+
 .mw-hint {
     color: var(--text-muted);
     font-size: 0.78em;
