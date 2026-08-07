@@ -1146,13 +1146,23 @@ _GRAINS_PER_FRAME = 2 if INTERLACED else 1
 # 50p → 1,25 s ; 1080i50 (25 trames composées/s) → 2,5 s.
 RATE_STALE_S = max(0.6, 2.5 * _RATE_SAMPLE_EVERY * FRAME_INTERVAL)
 _rate_lock  = threading.Lock()
-_rate_total = {{"frames": 0, "missed": 0}}     # compteurs MONOTONES (écrits par la boucle de compo)
+# `neuves` = trames composées à partir d'au moins UNE entrée qui a AVANCÉ. Distinguer les deux
+# est indispensable : un mur peut composer 50 fois par seconde à partir de tuiles inchangées —
+# il publie alors 50 fps en toute honnêteté (il compose bien 50 fois), pendant que son émetteur
+# aval, qui n'émet que sur changement, tombe à 38. Mesuré le 2026-08-07 : mur à 50,1 fps et
+# `frames_missed_per_s` à 0, shards à 24-26 fps ratant la moitié de leurs créneaux, TX à 38.
+# La page Câbles montrait 50 et tout le monde concluait que la chaîne allait bien.
+# ⚠ MINORANT du changement VISIBLE : une horloge incrustée fait bouger l'image sans qu'aucune
+# entrée n'avance. Ce compteur mesure « est-ce que je relaie de la matière NEUVE », pas « est-ce
+# que les pixels ont changé » — c'est la question qui compte pour diagnostiquer une chaîne.
+_rate_total = {{"frames": 0, "missed": 0, "neuves": 0}}   # compteurs MONOTONES (boucle de compo)
 _rate_hist  = deque(maxlen=64)                 # (t_monotone, frames, missed) échantillonnés ~2×/s
 
 def _rate_sample():
     """Échantillon de cadence (appelé par la boucle de compo, ~toutes les 25 trames)."""
     with _rate_lock:
-        _rate_hist.append((time.monotonic(), _rate_total["frames"], _rate_total["missed"]))
+        _rate_hist.append((time.monotonic(), _rate_total["frames"], _rate_total["missed"],
+                           _rate_total["neuves"]))
 
 def _update_rate_metrics():
     """Publie fps / frames_per_s / frames_missed_per_s.
@@ -1165,13 +1175,14 @@ def _update_rate_metrics():
     with _rate_lock:
         hist = list(_rate_hist)
         cur_f = _rate_total["frames"]; cur_m = _rate_total["missed"]
+        cur_n = _rate_total["neuves"]
     if not hist:
         return
     # Bord DROIT : le dernier échantillon (aligné sur trame, donc sans retard) si la boucle suit ;
     # sinon l'instant présent avec les compteurs courants → la valeur chute au lieu de se figer.
-    t_dr, f_dr, m_dr = hist[-1]
+    t_dr, f_dr, m_dr, n_dr = hist[-1]
     if now - t_dr > RATE_STALE_S:
-        t_dr, f_dr, m_dr = now, cur_f, cur_m
+        t_dr, f_dr, m_dr, n_dr = now, cur_f, cur_m, cur_n
     old = None
     for s in hist:
         if t_dr - s[0] <= FPS_WINDOW_S:
@@ -1187,6 +1198,10 @@ def _update_rate_metrics():
     metrics["fps"]                 = round(fps_frames * _GRAINS_PER_FRAME, 1)
     metrics["frames_missed_per_s"] = round((m_dr - old[2]) / dt, 2)   # mêmes bords que fps
     metrics["frames_missed"]       = cur_m                            # total : on sert le plus frais
+    # Cadence de CONTENU NEUF (mêmes bords que fps) : à quelle vitesse ce nœud relaie de la
+    # matière nouvelle, par opposition à la vitesse à laquelle il compose. Un écart franc entre
+    # les deux dit que les ENTRÉES ne suivent pas — c'est le maillon faible de la chaîne.
+    metrics["fps_content"]         = round((n_dr - old[3]) / dt * _GRAINS_PER_FRAME, 1)
 
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
            # VERSION RÉELLEMENT EN COURS D'EXÉCUTION. `deploy_config.plugin_version` n'est qu'une
@@ -5058,6 +5073,7 @@ geom_dirty = threading.Event()
 mv_state = {{"inputs": [cfg.get("path", "") for cfg in FLUX_CONFIG]}}
 sources = [None] * len(FLUX_CONFIG)
 _in_track = {{}}  # i → {{"path", "fi", "t"}} : dernier avancement du frame_index source (détection freeze)
+_frame_neuve = False   # trame courante : au moins une entrée a avancé (cf. `fps_content`)
 # i → nb de reconnexions CONSÉCUTIVES sans lecture fraîche derrière. Remis à 0 dès qu'une lecture
 # fraîche revient. ≥ 2 ⇒ le close+GC+reopen n'a pas suffi (il reste une référence sur la génération
 # morte DANS NOTRE Instance) ⇒ ensure_input escalade sur une Instance MXL dédiée à cette entrée.
@@ -6559,6 +6575,8 @@ while True:
                 _in_track[i] = tr
             elif fi != tr["fi"]:
                 tr["fi"] = fi; tr["t"] = now_m
+                _frame_neuve = True     # au moins une entrée a AVANCÉ → cette composition relaie
+                                        # de la matière neuve (cf. `fps_content`)
             _st = "freeze" if (FREEZE_DETECT_S > 0 and now_m - tr["t"] > FREEZE_DETECT_S) else ""
             _tile_status[i] = _st
             if _st or _proxy_chip:
@@ -6768,6 +6786,9 @@ while True:
         _t_output.push((ts_out - _t_after_overlays) / 1e6)
         _bake_ctr["frames"] += 1
         _rate_total["frames"] += 1     # compteur MONOTONE des trames RÉELLEMENT composées+émises
+        if _frame_neuve:
+            _rate_total["neuves"] += 1
+        _frame_neuve = False
     except Exception as _e:
         # Garde-fou : une exception transitoire (rendu overlay/chrome, écriture sortie…) ne doit
         # PAS tuer le process. On saute cette frame (la sortie garde sa dernière image via le ring)

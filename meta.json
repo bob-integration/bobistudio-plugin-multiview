@@ -1,7 +1,10 @@
 {
-  "version": "0.68.2",
+  "version": "0.69.0",
   "date": "2026-08-06",
   "changes": {
+    "Distinguer cadence de COMPOSITION et cadence de CONTENU NEUF (0.69.0)": [
+      "Un mur peut composer 50 fois par seconde \u00e0 partir de tuiles INCHANG\u00c9ES : il publie alors 50 fps en toute honn\u00eatet\u00e9 (il compose bien 50 fois) et `frames_missed_per_s` \u00e0 0, pendant que l\u2019\u00e9metteur aval, qui n\u2019\u00e9met que sur changement, tombe \u00e0 38. Mesur\u00e9 le 2026-08-07 : mur \u00e0 50,1 fps et 0 trame manqu\u00e9e, ses deux shards \u00e0 24-26 fps ratant la MOITI\u00c9 de leurs cr\u00e9neaux (own 23,5 et 29,5 ms pour un budget de 20), TX \u00e0 38 \u2014 et la page C\u00e2bles affichait 50. Un assembleur en bonne sant\u00e9 masquait un tissu en d\u00e9tresse. \u2605 Nouveau `fps_content` sur `:8080`, \u00e0 c\u00f4t\u00e9 de `fps` : compte les compositions o\u00f9 au moins UNE entr\u00e9e a avanc\u00e9. L\u2019\u00c9CART entre les deux EST le diagnostic. D\u00e9riv\u00e9 du suivi d\u2019avancement d\u00e9j\u00e0 tenu pour la d\u00e9tection de gel \u2014 aucune comparaison de trame, co\u00fbt nul. \u26a0 MINORANT du changement visible : une horloge incrust\u00e9e fait bouger l\u2019image sans qu\u2019aucune entr\u00e9e n\u2019avance ; ce compteur r\u00e9pond \u00e0 \u00ab est-ce que je relaie de la mati\u00e8re neuve \u00bb, la question qui compte pour diagnostiquer une cha\u00eene."
+    ],
     "D\u00e9codage du timecode ATC corrig\u00e9 (binding) \u2014 0.68.2": [
       "Bump de VERSION sans changement du script : c\u2019est `bobimxl.py`, pouss\u00e9 \u00e0 c\u00f4t\u00e9 du script \u00e0 chaque d\u00e9ploiement, qui porte la correction du d\u00e9codage ATC (un chiffre BCD par quartet, disposition LTC). Le binding n\u2019a pas de version propre : sans ce bump, la garde de version consid\u00e8re le conteneur \u00e0 jour et ne repousse jamais le fichier. Le timecode d\u2019une source tierce s\u2019affichait fig\u00e9 \u00e0 00:00:00:00, puis \u2014 apr\u00e8s une premi\u00e8re correction incompl\u00e8te \u2014 avec des images plafonn\u00e9es \u00e0 9."
     ],
