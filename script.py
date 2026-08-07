@@ -82,6 +82,18 @@ _t_inputs = RollingMs(); _t_overlays = RollingMs(); _t_output = RollingMs()
 # pas décider ce qu'il y a lieu de replier hors du chemin critique : la moisson est du travail
 # CPU/mémoire parallélisable, le placement est une file GPU qui ne gagne rien à être threadée.
 _t_in_read = RollingMs(); _t_in_place = RollingMs()
+# Comptage des TUILES per-frame de l'habillage. Sur GPU chaque tuile blendée coûte TROIS
+# lancements de kernel (un par plan), et le banc gate a montré que le coût de LANCEMENT domine
+# le travail utile dès qu'on multiplie les petites tuiles (M3 : 45,6 ms à 30 bandes contre 3,0 ms
+# en pleine trame). Sans ce comptage, `ov_blend` ne dit pas s'il est cher parce qu'il y a beaucoup
+# de pixels ou parce qu'il y a beaucoup d'appels — deux problèmes aux remèdes opposés.
+_n_meters = RollingMs(); _n_hist = RollingMs(); _n_clock = RollingMs(); _n_px_blend = RollingMs()
+# Dans `ov_blend`, deux coûts cohabitent et appellent des remèdes OPPOSÉS : le TRANSFERT des tuiles
+# vers la VRAM (5 tableaux par tuile, depuis de la mémoire hôte pageable) et les LANCEMENTS de
+# kernel du blend lui-même (3 par tuile). Si c'est le transfert qui domine, le remède est de garder
+# côté GPU les tuiles qui n'ont pas changé (frises et horloges sont déjà cachées côté hôte, et
+# pourtant re-téléversées à chaque trame) ; si ce sont les lancements, le remède est de grouper.
+_t_ov_upload = RollingMs()
 # Sous-ventilation de l'habillage (overlays) : rendu PIL meters/fg / conversion RGBA→YUV / blend.
 _t_ov_render = RollingMs(); _t_ov_convert = RollingMs(); _t_ov_blend = RollingMs()
 # Instrumentation des RE-BAKES d'habillage (couches cachées) : ces coûts sont épisodiques mais
@@ -1286,6 +1298,18 @@ def _refresh_lat_metrics():
     # fuseau est inconnu retombe sur celui du mur : sans ce compteur elle afficherait une heure
     # fausse en silence, et rien à l'écran ne le dirait.
     metrics["tz"] = _TZ_NAME
+    # Anatomie du blend d'habillage : combien de TUILES per-frame, donc combien de lancements de
+    # kernel (×3 plans sur GPU), et combien de pixels ils couvrent réellement. `us_par_tuile` est
+    # le chiffre qui tranche : un coût par tuile très supérieur au travail utile = borné par les
+    # lancements (remède : grouper), un coût qui suit la surface = borné par les pixels.
+    _nt = _n_meters.avg() + _n_hist.avg() + _n_clock.avg()
+    metrics["ov_tiles"] = {{"meters": round(_n_meters.avg(), 1), "hist": round(_n_hist.avg(), 1),
+                           "clock_anc": round(_n_clock.avg(), 1), "total": round(_nt, 1),
+                           "lancements_gpu": round(_nt * 3, 1) if GPU else 0,
+                           "kpixels": round(_n_px_blend.avg() / 1000.0, 1),
+                           "us_par_tuile": round(_t_ov_blend.avg() * 1000.0 / _nt, 1) if _nt else None,
+                           "upload_ms": round(_t_ov_upload.avg(), 2),
+                           "kernels_ms": round(max(0.0, _t_ov_blend.avg() - _t_ov_upload.avg()), 2)}}
     metrics["clock_tz_unknown"] = dict(_ZONE_BAD)
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
@@ -6738,17 +6762,27 @@ while True:
         _ts_ov2 = time.time_ns()   # fin du blend chrome
         # 2) VU-mètres puis 3) horloges : blend de chaque TUILE sur sa propre bbox (z-ordre conservé :
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
+        _px_blend = 0   # pixels Y réellement recouverts par les tuiles de cette trame
+        _up_ns = 0      # ns passés à TÉLÉVERSER les tuiles vers le backend (identité en CPU)
+        if not SLICE_ON:
+            _n_meters.push(len(_meter_tiles or ()))
+            _n_hist.push(len(_hist_tiles or ()))
+            _n_clock.push(len(_pf_tiles or ()))
         for _src_tiles in (() if SLICE_ON else (_meter_tiles, _hist_tiles, _pf_tiles)):
             if not _src_tiles:
                 continue
             for (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) in _src_tiles:
+                _px_blend += (bx1 - bx0) * (by1 - by0)
                 # Petites tuiles per-frame : uploadées au backend pour le blend en VRAM (_to_xp=identité CPU).
+                _tsu = time.time_ns()
                 _oy, _ou, _ov, _oa, _oa2 = (_to_xp(_oy), _to_xp(_ou), _to_xp(_ov), _to_xp(_oa), _to_xp(_oa2))
+                _up_ns += time.time_ns() - _tsu
                 _blend_into(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
                 cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
                 _blend_into(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
                 _blend_into(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
+        _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
         _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=blend VU+horloges (bbox)
         _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
         _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)

@@ -1,7 +1,13 @@
 {
-  "version": "0.69.1",
+  "version": "0.69.3",
   "date": "2026-08-07",
   "changes": {
+    "Anatomie du blend d'habillage : transfert vs lancements (0.69.3)": [
+      "Suite du comptage de 0.69.2 : `ov_blend` sépare désormais le TRANSFERT des tuiles vers la VRAM (`upload_ms`) des LANCEMENTS de kernel (`kernels_ms`), parce que les deux appellent des remèdes opposés. Verdict sur les shards du tissu : 4,4-4,6 ms de transfert contre 3,1-3,5 ms de kernels, soit 57 % du blend passé à téléverser. Or 8 des 10,2 tuiles par trame sont des frises et des horloges, DÉJÀ cachées côté hôte (re-rendues seulement au changement de valeur, ~1×/s) et pourtant re-téléversées à chaque trame — 5 tableaux chacune, depuis de la mémoire pageable. Le coût par tuile (650-1350 µs) est sans rapport avec sa surface : 906 a 2,4× moins de pixels que les shards et paie le même prix unitaire. Le mur n'est pas borné par les pixels, il l'est par le nombre d'allers-retours. Instrumentation seule."
+    ],
+    "Anatomie du blend d'habillage : compter les TUILES (0.69.2)": [
+      "`ov_blend` ne disait pas s'il était cher parce qu'il y a beaucoup de pixels ou beaucoup d'APPELS — deux problèmes aux remèdes opposés. Sur GPU chaque tuile blendée coûte trois lancements de kernel (un par plan), et le banc gate du slice a montré que le coût de lancement domine le travail utile dès qu'on multiplie les petites tuiles : 45,6 ms à 30 bandes contre 3,0 ms en pleine trame, pour exactement les mêmes pixels. ★ Nouveau `ov_tiles` sur :8080 — nombre de tuiles par catégorie (VU / frises / horloges+ANC), lancements GPU induits, surface réellement recouverte, et surtout `us_par_tuile`. C'est ce dernier qui tranche : un coût par tuile sans rapport avec sa surface = borné par les lancements (remède : grouper) ; un coût qui suit la surface = borné par les pixels. Instrumentation seule, aucun changement de comportement."
+    ],
     "Ventilation fine des ENTRÉES : moisson vs placement (0.69.1)": [
       "`compose_breakdown_ms.inputs` mélangeait deux natures de travail : la MOISSON (sélection du proxy, lecture du grain MXL, copie hôte des plans) et le PLACEMENT (`_place_batch` : un upload GPU groupé, resize, pose dans le canvas). Impossible de décider quoi replier hors du chemin critique tant que les deux sont confondus — la moisson est du travail CPU/mémoire parallélisable, le placement est une file GPU qui ne gagnerait rien à être threadée. Mesuré le 2026-08-07 sur un shard : 7,1 ms d'`inputs` pour DEUX tuiles lues en proxy demi-résolution, ce qui est anormalement cher dans les deux hypothèses. ★ Nouveaux `in_read` et `in_place`, de somme égale à `inputs`. Instrumentation seule : aucun changement de comportement."
     ],
