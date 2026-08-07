@@ -1493,6 +1493,21 @@ function mwFabricStart() {
     _mwFabricTimer = setInterval(mwFabricRefresh, 2500);
 }
 
+// Après une édition, la décision « mutation à chaud ou reconstruction ? » se prend en moins
+// d'une seconde côté orchestrateur. Au rythme de veille (2,5 s), l'annonce arrivait avec
+// jusqu'à 2,5 s de retard sur une attente qui n'en dure que quelques-unes — donc trop tard pour
+// servir. On interroge serré le temps que ça se décide, et tant que ça dure.
+let _mwFabricBurstLeft = 0;
+function mwFabricBurst() {
+    _mwFabricBurstLeft = 20;                    // 20 × 600 ms ≈ 12 s
+    clearInterval(_mwFabricTimer);
+    _mwFabricTimer = setInterval(async () => {
+        await mwFabricRefresh();
+        if (mwFabric.etat === 'reorganisation') _mwFabricBurstLeft = 20;   // ça dure → on suit
+        if (--_mwFabricBurstLeft <= 0) mwFabricStart();
+    }, 600);
+}
+
 // Frontières des régions : pointillés sobres, PAR-DESSUS les fenêtres (sous les fenêtres d'un mur
 // dense, on ne les verrait pas). Plus marquées pendant une réorganisation, pour relier ce qu'on
 // voit bouger au message affiché sous le canvas.
@@ -2210,6 +2225,7 @@ function entryRowKey(ev, i) {
 
 function hotApplyWindow(idx) {
     if (editorVmid === null || !editorParams) return;
+    mwFabricBurst();
     const f = editorParams.flux_config[idx];
     if (!f) return;
     fetch(`/api/containers/${editorVmid}/plugin/window`, {
@@ -3065,6 +3081,7 @@ function computeSnapResize(skip, x, y, w, h, ratio) {
 // ─── Déployer la composition ─────────────────────────────────
 
 async function deployerEditor() {
+    mwFabricBurst();
     if (editorVmid === null) return;
     // Sérialise les déploiements : un appel pendant un POST en cours est rejoué à la
     // fin (jamais deux deploys concurrents, jamais un dernier changement perdu).

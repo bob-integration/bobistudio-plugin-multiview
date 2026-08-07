@@ -1189,6 +1189,14 @@ def _update_rate_metrics():
     metrics["frames_missed"]       = cur_m                            # total : on sert le plus frais
 
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
+           # VERSION RÉELLEMENT EN COURS D'EXÉCUTION. `deploy_config.plugin_version` n'est qu'une
+           # écriture en base : rien ne garantissait qu'elle décrive le script qui tourne. Un mur a
+           # tourné une nuit entière sur un script estampillé 0.67.0 mais sans le correctif qu'il
+           # portait, et il a fallu un `docker exec … grep` pour s'en apercevoir — la garde de
+           # version, elle, le croyait à jour et refusait de le redéployer. Publiée ici, la version
+           # devient VÉRIFIABLE : l'orchestrateur compare ce qui tourne au manifeste au lieu de se
+           # fier à sa propre comptabilité (cf. `version_en_cours` dans app/deploy.py).
+           "plugin_version": PLUGIN_VERSION,
            "fps_nominal": round(_FN / _FD * _GRAINS_PER_FRAME, 2),   # cadence de sortie visée (= format déclaré)
            "fps_unit": "fields" if INTERLACED else "frames",         # unité de `fps` (champs si entrelacé)
            "frames_per_s": 0.0,        # trames COMPOSÉES/s (= fps ÷ 2 en entrelacé)
