@@ -665,5 +665,6 @@
         }
       ]
     }
-  ]
+  ],
+  "video_format": false
 }
