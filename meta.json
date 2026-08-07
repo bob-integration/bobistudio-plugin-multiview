@@ -1,7 +1,10 @@
 {
-  "version": "0.69.3",
+  "version": "0.70.0",
   "date": "2026-08-07",
   "changes": {
+    "★ Cache VRAM des tuiles d'habillage (0.70.0)": [
+      "Les frises et les horloges/ANC sont DÉJÀ cachées côté hôte — re-dessinées seulement au changement de valeur (une frise toutes les quelques secondes, une horloge environ une fois par seconde). Elles n'en étaient pas moins RE-TÉLÉVERSÉES vers la VRAM à chaque trame, cinq tableaux par tuile, depuis de la mémoire pageable. Mesuré sur les shards du tissu : 4,6 ms de transfert sur 8,2 ms d'`ov_blend`, pour 8 tuiles sur 10 qui n'avaient pas bougé. Le mur payait cinquante fois par seconde le transport d'images identiques. ★ Le cache prolonge d'un cran celui qui existe côté hôte : la copie VRAM est conservée tant que la tuile hôte est LA MÊME (comparaison d'identité). Les VU-mètres en sont exclus — leur niveau change réellement à chaque trame, ils n'auraient que des défauts de cache. ⚠ Le cache garde une RÉFÉRENCE FORTE sur la tuile hôte : sans elle, l'objet pourrait être collecté et son id réattribué à une autre tuile, qui se verrait servir une copie VRAM étrangère — une frise à la place d'une horloge, en silence. Éviction à chaque trame des tuiles non servies, sinon le cache grossirait à chaque re-bake."
+    ],
     "Anatomie du blend d'habillage : transfert vs lancements (0.69.3)": [
       "Suite du comptage de 0.69.2 : `ov_blend` sépare désormais le TRANSFERT des tuiles vers la VRAM (`upload_ms`) des LANCEMENTS de kernel (`kernels_ms`), parce que les deux appellent des remèdes opposés. Verdict sur les shards du tissu : 4,4-4,6 ms de transfert contre 3,1-3,5 ms de kernels, soit 57 % du blend passé à téléverser. Or 8 des 10,2 tuiles par trame sont des frises et des horloges, DÉJÀ cachées côté hôte (re-rendues seulement au changement de valeur, ~1×/s) et pourtant re-téléversées à chaque trame — 5 tableaux chacune, depuis de la mémoire pageable. Le coût par tuile (650-1350 µs) est sans rapport avec sa surface : 906 a 2,4× moins de pixels que les shards et paie le même prix unitaire. Le mur n'est pas borné par les pixels, il l'est par le nombre d'allers-retours. Instrumentation seule."
     ],

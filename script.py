@@ -1707,6 +1707,46 @@ def _blend_pre_into(dv, ia, sa):
         return
     dv[...] = blend_pre(dv, ia, sa)
 
+# ─── Cache VRAM des tuiles d'habillage ───────────────────────────────────────
+# Les frises et les horloges/ANC sont DÉJÀ cachées côté hôte : elles ne sont re-dessinées qu'au
+# changement de valeur (une frise toutes les quelques secondes, une horloge ~1×/s). Elles n'en
+# étaient pas moins RE-TÉLÉVERSÉES vers la VRAM à chaque trame — cinq tableaux par tuile, depuis de
+# la mémoire pageable. Mesuré le 2026-08-07 sur les shards : 4,6 ms de transfert sur 8,2 ms de
+# `ov_blend`, pour 8 tuiles sur 10 qui n'avaient pas changé.
+# Le cache est keyé sur l'IDENTITÉ de la tuile hôte, et il garde une référence forte sur elle : sans
+# cette référence, l'objet pourrait être collecté et son id RÉATTRIBUÉ à une autre tuile, qui se
+# verrait alors servir une copie VRAM étrangère (une frise à la place d'une horloge). C'est le seul
+# piège de cette approche, et il est silencieux — d'où la référence, qui rend la réattribution
+# impossible par construction.
+# Les VU-mètres, eux, changent RÉELLEMENT à chaque trame : ils ne passent pas par ici (ils
+# n'auraient que des défauts de cache, et feraient churner la VRAM pour rien).
+_ov_dev = {{}}          # id(tuile hôte) → (tuile hôte, tuile téléversée)
+_ov_dev_vus = set()    # ids touchés par la trame courante (base de l'éviction)
+
+def _tuile_dev(t):
+    """Tuile prête pour le backend, en réutilisant sa copie VRAM tant que la tuile hôte est LA MÊME.
+    En CPU `_to_xp` est l'identité : on rend la tuile telle quelle, coût strictement nul."""
+    if not GPU:
+        return t
+    _k = id(t)
+    _ov_dev_vus.add(_k)
+    _hit = _ov_dev.get(_k)
+    if _hit is not None and _hit[0] is t:
+        return _hit[1]
+    bx0, by0, bx1, by1, _y, _u, _v, _a, _a2 = t
+    _up = (bx0, by0, bx1, by1, _to_xp(_y), _to_xp(_u), _to_xp(_v), _to_xp(_a), _to_xp(_a2))
+    _ov_dev[_k] = (t, _up)
+    return _up
+
+def _tuiles_dev_evict():
+    """Libère les copies VRAM des tuiles qui n'ont pas servi à cette trame (frise retirée, horloge
+    re-dessinée…). Sans ça le cache grossirait à chaque re-bake."""
+    if not _ov_dev:
+        return
+    for _k in [_k for _k in _ov_dev if _k not in _ov_dev_vus]:
+        _ov_dev.pop(_k, None)
+    _ov_dev_vus.clear()
+
 def _mvk_place_plane(dstv, plane, th, tw):
     """resize_plane + assignation FUSIONNÉS (mvk_place → écrit la vue canvas en 1 passe).
     Indices nearest = MÊMES formules que resize_plane (pas entier, sinon troncature float),
@@ -6768,20 +6808,31 @@ while True:
             _n_meters.push(len(_meter_tiles or ()))
             _n_hist.push(len(_hist_tiles or ()))
             _n_clock.push(len(_pf_tiles or ()))
-        for _src_tiles in (() if SLICE_ON else (_meter_tiles, _hist_tiles, _pf_tiles)):
+        # `_cache` dit si la CATÉGORIE est stable entre deux trames : les frises et les horloges le
+        # sont (re-dessinées au changement de valeur), les VU-mètres non (le niveau bouge à chaque
+        # trame). Z-ordre inchangé : meters sous les horloges fg.
+        for _cache, _src_tiles in (() if SLICE_ON else ((False, _meter_tiles), (True, _hist_tiles),
+                                                        (True, _pf_tiles))):
             if not _src_tiles:
                 continue
-            for (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) in _src_tiles:
-                _px_blend += (bx1 - bx0) * (by1 - by0)
-                # Petites tuiles per-frame : uploadées au backend pour le blend en VRAM (_to_xp=identité CPU).
+            for _tuile in _src_tiles:
+                # Téléversement au backend pour le blend en VRAM (_to_xp = identité en CPU), en
+                # réutilisant la copie VRAM des tuiles qui n'ont pas changé.
                 _tsu = time.time_ns()
-                _oy, _ou, _ov, _oa, _oa2 = (_to_xp(_oy), _to_xp(_ou), _to_xp(_ov), _to_xp(_oa), _to_xp(_oa2))
+                if _cache:
+                    (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) = _tuile_dev(_tuile)
+                else:
+                    (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) = _tuile
+                    _oy, _ou, _ov, _oa, _oa2 = (_to_xp(_oy), _to_xp(_ou), _to_xp(_ov),
+                                                _to_xp(_oa), _to_xp(_oa2))
                 _up_ns += time.time_ns() - _tsu
+                _px_blend += (bx1 - bx0) * (by1 - by0)
                 _blend_into(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
                 cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
                 _blend_into(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
                 _blend_into(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
+        _tuiles_dev_evict()
         _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
         _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=blend VU+horloges (bbox)
         _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
