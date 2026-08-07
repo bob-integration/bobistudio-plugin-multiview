@@ -1,7 +1,11 @@
 {
-  "version": "0.71.0",
+  "version": "0.71.2",
   "date": "2026-08-07",
   "changes": {
+    "Blend écrit DIRECTEMENT dans la vue canvas + pics par sous-étage (0.71.1/0.71.2)": [
+      "`dv[...] = blend(dv, s, aa)` allouait un tableau temporaire puis le RECOPIAIT dans la vue du canvas : une allocation et une passe mémoire de plus par plan et par tuile, soit une trentaine par trame sur un mur habillé. Le kernel étant élément-à-élément (chaque sortie ne dépend que de l'entrée de même index), le passer en sortie de lui-même est sûr, y compris sur une vue non contiguë. `ov_blend` : 4,0-4,3 → 3,2 ms sur les deux shards, sans repli mvk (mvk_miss reste à 0).",
+      "`compose_peak_ms` publie le PIC de chaque sous-étage sur la fenêtre glissante. Une moyenne ne dit rien d'une cadence : sur une grille de 20 ms, c'est la queue de la distribution qui fait tomber les trames. Ce que les pics ont montré : AUCUN sous-étage ne domine — ils enflent tous ensemble (ov_blend ×2,3, in_place ×1,7, ov_meters ×6, ov_clock ×12 en pointe). C'est la signature d'un blocage global, pas d'une opération chère. Et le GPU n'est qu'à 40 % avec ses horloges au maximum : les murs ne le saturent pas, ils l'ATTENDENT, un aller-retour à la fois."
+    ],
     "★ Signatures SÉPARÉES pour les horloges et les bandeaux ANC (0.71.0)": [
       "Une signature COMMUNE gouvernait le re-rendu des tuiles per-frame. Un bandeau de timecode, qui change 25 fois par seconde, re-dessinait donc AUSSI les horloges — qui ne changent qu'une fois par seconde. Double peine par trame : le rendu PIL+YUV des horloges payé pour rien, et leurs tuiles reconstruites donc perdues par le cache VRAM de 0.70.0, qui compare l'identité. Mesuré sur le shard 917 : le bake ANC lui-même ne coûte que 1,4-2,3 ms (PIL 1,0 + YUV 0,8 pour deux bandes de 56 kpx), alors qu'`ov_clock` pesait 2,5-3,8 ms par trame — la différence, c'étaient les horloges jetées. ⚠ Piège de lecture : les horloges d'un mur peuvent venir des overlays globaux OU des MODÈLES DE PIP (`_tpl_clock_ovs`). Un mur dont la liste `overlays` est vide en a quand même, ce qui m'avait fait conclure à tort qu'il n'y en avait pas sur ce shard."
     ],

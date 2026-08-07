@@ -71,6 +71,13 @@ class RollingMs:
         if not self.d: return None
         if time.time_ns() - self.last_ns > 2_000_000_000: return None
         return round(sum(self.d) / len(self.d), 1)
+    def mx(self):
+        """PIC de la fenêtre. Une moyenne ne dit rien d'une cadence : sur une grille de 20 ms,
+        c'est la QUEUE de la distribution qui fait tomber les trames, pas le centre. Un mur à
+        7 ms de moyenne d'habillage qui pointe à 60 ms rate une trame sur trois."""
+        if not self.d: return None
+        if time.time_ns() - self.last_ns > 2_000_000_000: return None
+        return round(max(self.d), 1)
 
 lat_in = {{}}  # {{shm_name: RollingMs}} — TRANSIT par entrée (ts_read − ts_in producteur) = arrivée
 own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start), exposé own_latency_ms
@@ -1315,6 +1322,13 @@ def _refresh_lat_metrics():
                            "upload_ms": round(_t_ov_upload.avg(), 2),
                            "sig_ms": round(_t_pf_sig.avg(), 2),
                            "kernels_ms": round(max(0.0, _t_ov_blend.avg() - _t_ov_upload.avg()), 2)}}
+    # PICS par sous-étage sur la fenêtre glissante — c'est eux qui font tomber les trames.
+    metrics["compose_peak_ms"] = {{"own": own_lat.mx(), "in_read": _t_in_read.mx(),
+                                  "in_place": _t_in_place.mx(), "overlays": _t_overlays.mx(),
+                                  "ov_render": _t_ov_render.mx(), "ov_convert": _t_ov_convert.mx(),
+                                  "ov_blend": _t_ov_blend.mx(), "ov_meters": _t_ov_meters.mx(),
+                                  "ov_hist": _t_ov_hist.mx(), "ov_clock": _t_ov_clock.mx(),
+                                  "ov_bake": _t_ov_bake.mx(), "output": _t_output.mx()}}
     metrics["anc_bake"] = dict(_anc_prof)
     metrics["clock_tz_unknown"] = dict(_ZONE_BAD)
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
@@ -1700,6 +1714,14 @@ def _blend_into(dv, s, aa):
     _mvk_miss["calls"] += 1
     if _MVK and bobimxl.mvk_blend_into(dv, s, aa):
         return
+    if GPU and isinstance(dv, cp.ndarray):
+        # ÉCRITURE DIRECTE dans la vue canvas : `dv[...] = blend(dv, s, aa)` allouait un tableau
+        # temporaire puis le RECOPIAIT dans la vue — une allocation et une passe mémoire de plus
+        # par plan et par tuile, soit une trentaine par trame sur un mur habillé. Le kernel étant
+        # élément-à-élément (chaque sortie ne dépend que de l'entrée de MÊME index), le passer en
+        # sortie de lui-même est sûr, y compris sur une vue non contiguë.
+        _blend_k(dv, s, aa, dv)
+        return
     # Un repli numpy ICI coûte 20× le kernel C (banc : 4,6 ms vs 0,19 ms sur une tuile de frise
     # 1920×250, 3 plans) → il doit rester à ZÉRO. Compté et exposé (`mvk_miss` sur :8080).
     if _MVK:
@@ -1710,6 +1732,9 @@ def _blend_into(dv, s, aa):
 
 def _blend_pre_into(dv, ia, sa):
     if _MVK and bobimxl.mvk_blend_pre_into(dv, ia, sa):
+        return
+    if GPU and isinstance(dv, cp.ndarray):
+        _blend_pre_k(dv, ia, sa, dv)   # même raison que _blend_into : pas de temporaire, pas de recopie
         return
     dv[...] = blend_pre(dv, ia, sa)
 
