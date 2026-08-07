@@ -1,7 +1,10 @@
 {
-  "version": "0.70.1",
+  "version": "0.71.0",
   "date": "2026-08-07",
   "changes": {
+    "★ Signatures SÉPARÉES pour les horloges et les bandeaux ANC (0.71.0)": [
+      "Une signature COMMUNE gouvernait le re-rendu des tuiles per-frame. Un bandeau de timecode, qui change 25 fois par seconde, re-dessinait donc AUSSI les horloges — qui ne changent qu'une fois par seconde. Double peine par trame : le rendu PIL+YUV des horloges payé pour rien, et leurs tuiles reconstruites donc perdues par le cache VRAM de 0.70.0, qui compare l'identité. Mesuré sur le shard 917 : le bake ANC lui-même ne coûte que 1,4-2,3 ms (PIL 1,0 + YUV 0,8 pour deux bandes de 56 kpx), alors qu'`ov_clock` pesait 2,5-3,8 ms par trame — la différence, c'étaient les horloges jetées. ⚠ Piège de lecture : les horloges d'un mur peuvent venir des overlays globaux OU des MODÈLES DE PIP (`_tpl_clock_ovs`). Un mur dont la liste `overlays` est vide en a quand même, ce qui m'avait fait conclure à tort qu'il n'y en avait pas sur ce shard."
+    ],
     "Ventiler `ov_clock` en guet et rendu (0.70.1)": [
       "`ov_clock` agrégeait le calcul de la SIGNATURE des tuiles per-frame — fait à chaque trame, il décode les paquets ANC pour savoir si la valeur a bougé — et le RENDU, payé seulement quand elle a bougé. Mesuré sur le shard 917 (bandeau de timecode, donc 25 changements par seconde) : 0,55 ms de guet contre 2,86 ms de rendu en moyenne, soit environ 5,7 ms par bake. Le guet est bon marché ; c'est le rendu qui assomme une trame sur deux.",
       "★ TENTATIVE ÉCARTÉE — sortir ce rendu de la trame vers un boulanger dédié, comme le chrome et les frises. Le résultat a été l'INVERSE de l'attendu : sur le shard concerné, `own` est passé de 18,8 à 32,9 ms et la cadence de 37,6 à 23,6 fps ; le retour arrière l'a ramené à 22,7 ms, ce qui confirme la causalité. Le bake coûte 13,6 ms et se déclenche 25 fois par seconde : rendu CONCURRENT sur les mêmes cœurs épinglés, il dispute au fil de compo la bande passante mémoire dont celui-ci dépend, et ce que la désérialisation fait gagner, la contention le reprend au double. Le `nice` du boulanger n'y change rien — il arbitre le CPU, pas la mémoire. Leçon : sur une charge memory-bound, déplacer du travail sur un autre fil du même nœud ne le fait pas disparaître."

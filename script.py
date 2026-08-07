@@ -1315,6 +1315,7 @@ def _refresh_lat_metrics():
                            "upload_ms": round(_t_ov_upload.avg(), 2),
                            "sig_ms": round(_t_pf_sig.avg(), 2),
                            "kernels_ms": round(max(0.0, _t_ov_blend.avg() - _t_ov_upload.avg()), 2)}}
+    metrics["anc_bake"] = dict(_anc_prof)
     metrics["clock_tz_unknown"] = dict(_ZONE_BAD)
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
@@ -2349,9 +2350,16 @@ def _anc_units():
                     continue
     return out
 
+# Banc : ventilation d'un bake ANC — dessin PIL contre conversion RGBA→YUV, et surface traitée.
+# 5,7 ms pour deux bandes de ~830x34 px est deux ordres de grandeur au-dessus du travail utile ;
+# sans cette ventilation on ne sait pas lequel des deux étages est en cause.
+_anc_prof = {{"total": 0.0, "pil": 0.0, "yuv": 0.0, "px": 0, "n": 0}}
+
 def render_anc_tiles(now):
     """Une tuile YUV par unité ANC (bandeau de cellule ou composant de modèle), ou None."""
     tiles = []
+    _ts_anc0 = time.time_ns()
+    _anc_prof.update({{"yuv": 0.0, "px": 0, "n": 0}})
     for i, flags, rect in _anc_units():
         txt = _format_anc_cell(i, flags)
         if not txt:
@@ -2404,8 +2412,15 @@ def render_anc_tiles(now):
             _tx = max(pad, pad + int((_avail - _tw) / (2 if _al == "center" else 1)))
         d.text((_tx, pad), txt, font=fnt,
                fill=(255, 90, 90, 255) if bad else (235, 235, 235, 255))
+        _ts_y = time.time_ns()
         oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
+        _anc_prof["yuv"] += (time.time_ns() - _ts_y) / 1e6
+        _anc_prof["px"] += (bx1 - bx0) * (by1 - by0)
+        _anc_prof["n"] += 1
         tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
+    _anc_prof["total"] = round((time.time_ns() - _ts_anc0) / 1e6, 2)
+    _anc_prof["yuv"] = round(_anc_prof["yuv"], 2)
+    _anc_prof["pil"] = round(_anc_prof["total"] - _anc_prof["yuv"], 2)
     return tiles or None
 
 def _anc_sig():
@@ -5133,6 +5148,10 @@ def _chrome_baker_loop():
 # DÉTERMINISTE, 1×/s sans le champ images).
 _pf_cache_sig = None
 _pf_tiles     = None   # tuiles YUV des horloges (une par horloge) — recalculées au changement de valeur
+_clk_cache_sig = None  # signature des HORLOGES (valeur affichée + couleur de compte à rebours)
+_anc_cache_sig = None  # signature des BANDEAUX ANC (texte décodé + alignement)
+_clk_tiles    = []     # tuiles des horloges, conservées tant que leur signature ne bouge pas
+_anc_tiles    = []     # tuiles des bandeaux ANC, idem
 
 # ─── Boucle de mix ───────────────────────────────────────────
 
@@ -6783,13 +6802,31 @@ while True:
         # quasi plein écran quand les horloges sont dispersées → gros gain de blend per-frame).
         # Les bandeaux ANC des cellules (opt-in) partagent cette machinerie : même cache par
         # signature, même blend par petite bbox. Aucune cellule cochée → coût strictement nul.
+        # SIGNATURES SÉPARÉES horloges / ANC. Une signature commune faisait qu'un bandeau de
+        # timecode, qui change 25 fois par seconde, re-dessinait AUSSI les horloges — qui, elles,
+        # ne changent qu'une fois par seconde. Deux conséquences par trame : le rendu PIL+YUV des
+        # horloges payé pour rien, et leurs tuiles reconstruites donc perdues par le cache VRAM
+        # (qui compare l'identité). Mesuré sur le shard 917 : ~1,2 à 2,4 ms de rendu d'horloges
+        # jetées à chaque trame. ⚠ Les horloges d'un mur peuvent venir des overlays globaux OU des
+        # MODÈLES DE PIP (`_tpl_clock_ovs`) — un mur dont la liste `overlays` est vide en a quand
+        # même, c'est ce qui m'a fait conclure à tort qu'il n'y en avait pas ici.
         _ts_sig0 = time.time_ns()
-        _pf_sig = (tuple((_dyn_text(ov, now), _countdown_color(ov, now))
-                         for ov in _dyn_overlays()), _anc_sig())
+        _clk_sig = tuple((_dyn_text(ov, now), _countdown_color(ov, now)) for ov in _dyn_overlays())
+        _a_sig = _anc_sig()
         _t_pf_sig.push((time.time_ns() - _ts_sig0) / 1e6)
-        if _pf_sig != _pf_cache_sig:
-            _pf_cache_sig = _pf_sig
-            _pf_tiles = (render_clock_tiles(now) or []) + (render_anc_tiles(now) or []) or None
+        _pf_neuf = False
+        if _clk_sig != _clk_cache_sig:
+            _clk_cache_sig = _clk_sig
+            _clk_tiles = render_clock_tiles(now) or []
+            _pf_neuf = True
+        if _a_sig != _anc_cache_sig:
+            _anc_cache_sig = _a_sig
+            _anc_tiles = render_anc_tiles(now) or []
+            _pf_neuf = True
+        if _pf_neuf:
+            # Concaténation refaite seulement quand l'un des deux groupes a bougé : les TUILES de
+            # l'autre restent les MÊMES objets, donc leur copie VRAM est réutilisée.
+            _pf_tiles = (_clk_tiles + _anc_tiles) or None
         _ts_ov1 = time.time_ns()   # fin rendu PIL + conversion YUV (tuiles VU + horloges AU CHANGEMENT)
         # Banc perf (docs/chantiers/MULTIVIEW_BENCH.md) : ventilation FINE de `ov_render` en ses trois producteurs
         # de tuiles per-frame — VU-mètres / frises d'historique / horloges+ANC. Sans ça, `ov_render`
