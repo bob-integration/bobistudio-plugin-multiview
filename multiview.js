@@ -2259,8 +2259,12 @@ function hotApplyWindow(idx) {
             ...Object.fromEntries(ANC_FLAGS.map(k => [k, f[k] ? 1 : 0])),
             anc_position:   f.anc_position || 'bottom',
             anc_opacity:    f.anc_opacity ?? 60,
-            // Modèle de PiP (null = hériter : défaut du mur, sinon « Classique » généré)
+            // Modèle de PiP (null = hériter : défaut du mur, sinon « Classique » généré).
+            // `template_ref` accompagne le modèle RÉSOLU : sans lui, persister le modèle sans sa
+            // référence laisserait le sélecteur de l'éditeur sur l'ancienne entrée de
+            // bibliothèque au rechargement — le mur rendrait B en affichant « A ».
             template:       f.template || null,
+            template_ref:   f.template_ref || '',
         })
     }).catch(() => {});
 }
