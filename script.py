@@ -76,6 +76,12 @@ lat_in = {{}}  # {{shm_name: RollingMs}} — TRANSIT par entrée (ts_read − ts
 own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start), exposé own_latency_ms
 # Profiling du compositing (où vont les ms de own_latency) : entrées vidéo / habillage / sortie.
 _t_inputs = RollingMs(); _t_overlays = RollingMs(); _t_output = RollingMs()
+# Sous-ventilation des ENTRÉES : `inputs` est un agrégat de deux natures très différentes —
+# la MOISSON (sélection du proxy, lecture du grain MXL, copie hôte des plans) et le PLACEMENT
+# (_place_batch : upload GPU groupé + resize + pose dans le canvas). Sans les séparer on ne peut
+# pas décider ce qu'il y a lieu de replier hors du chemin critique : la moisson est du travail
+# CPU/mémoire parallélisable, le placement est une file GPU qui ne gagne rien à être threadée.
+_t_in_read = RollingMs(); _t_in_place = RollingMs()
 # Sous-ventilation de l'habillage (overlays) : rendu PIL meters/fg / conversion RGBA→YUV / blend.
 _t_ov_render = RollingMs(); _t_ov_convert = RollingMs(); _t_ov_blend = RollingMs()
 # Instrumentation des RE-BAKES d'habillage (couches cachées) : ces coûts sont épisodiques mais
@@ -1284,6 +1290,7 @@ def _refresh_lat_metrics():
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
     metrics["compose_breakdown_ms"] = {{"inputs": _t_inputs.avg(), "overlays": _t_overlays.avg(),
                                        "output": _t_output.avg(),
+                                       "in_read": _t_in_read.avg(), "in_place": _t_in_place.avg(),
                                        "ov_render": _t_ov_render.avg(), "ov_convert": _t_ov_convert.avg(),
                                        "ov_blend": _t_ov_blend.avg(),
                                        "ov_bake": _t_ov_bake.avg(), "ov_bg": _t_ov_bg.avg(),
@@ -6640,7 +6647,10 @@ while True:
                 break
 
     # Placement des tuiles vidéo collectées : 1 upload GPU groupé épinglé (ou resize numpy direct en CPU).
+    _ts_place0 = time.time_ns()   # banc : frontière moisson / placement (cf. _t_in_read/_t_in_place)
     _place_batch(canvas_y, canvas_u, canvas_v, _gpu_batch)
+    _t_in_place.push((time.time_ns() - _ts_place0) / 1e6)
+    _t_in_read.push((_ts_place0 - ts_cycle_start) / 1e6)
 
     # Publication du monitoring proxy de cette frame (swap de référence = atomique pour le lecteur).
     _proxy_usage_latest = _pu
