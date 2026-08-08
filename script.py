@@ -1333,6 +1333,9 @@ def _refresh_lat_metrics():
                                   "ov_blend": _t_ov_blend.mx(), "ov_meters": _t_ov_meters.mx(),
                                   "ov_hist": _t_ov_hist.mx(), "ov_clock": _t_ov_clock.mx(),
                                   "ov_bake": _t_ov_bake.mx(), "output": _t_output.mx()}}
+    # Piles capturées PENDANT un dépassement, les plus fréquentes d'abord. C'est la réponse à
+    # « où part le temps », observée et non déduite.
+    metrics["piles_pic"] = dict(sorted(_piles.items(), key=lambda kv: -kv[1])[:8])
     metrics["place_miss"] = _place_miss["n"]   # replis du gather fusionné — doit rester à 0
     metrics["hist_prof"] = {{k: dict(v) for k, v in _hist_prof.items()}}
     metrics["cpu_split"] = ({{"compo": [_CPUS[0]], "boulangers": _CPUS[1:]}}
@@ -1824,6 +1827,28 @@ def _out_host(arr):
         _outpin["buf"] = np.frombuffer(cp.cuda.alloc_pinned_memory(_n * _BPS),
                                        dtype=_NP_DT, count=_n)
     arr.get(out=_outpin["buf"][:_n])
+    return _outpin["buf"][:_n]
+
+def _out_host_plans(plans):
+    """Mêmes garanties que `_out_host`, mais SANS concaténer d'abord.
+
+    L'ancien chemin construisait une trame contiguë EN VRAM (`xp.concatenate`) uniquement pour
+    offrir un tableau unique au download — soit une allocation plein cadre et une recopie de plus
+    par trame. Or le tampon épinglé est déjà contigu : il suffit d'y déverser chaque plan à son
+    offset. Trois downloads au lieu d'un, mais plus d'allocation ni de recopie côté carte.
+    Mesuré comme le poste dominant des dépassements (la moitié, avec l'assemblage) : l'étage de
+    sortie est le point où la boucle SYNCHRONISE, donc là où toute la file accumulée se paie."""
+    if not GPU:
+        return np.concatenate([p.ravel() for p in plans])
+    _n = sum(p.size for p in plans)
+    if _outpin["buf"] is None or _outpin["buf"].size < _n:
+        _outpin["buf"] = np.frombuffer(cp.cuda.alloc_pinned_memory(_n * _BPS),
+                                       dtype=_NP_DT, count=_n)
+    _off = 0
+    for _p in plans:
+        _k = _p.size
+        _p.ravel().get(out=_outpin["buf"][_off:_off + _k])
+        _off += _k
     return _outpin["buf"][:_n]
 # GPU SLICE : staging épinglé PAR LOT (entrées) + buffers épinglés de SORTIE (D2H) — bande seule
 # (hy/hu/hv, squelette k=1) ou lots ×2 double-buffer + stream D2H dédié (hb/stream, micro-batch).
@@ -6885,6 +6910,42 @@ _gc_full_every = max(1, int(round(5.0 / FRAME_INTERVAL)))   # gen2 ~toutes les 5
 _gc_last_full_ms = 0.0
 _gc_max_full_ms = 0.0
 
+# ─── Chien de garde : QUI tient la trame quand elle dépasse ──────────────────
+# Toute la difficulté de cette chasse est là : `compose_peak_ms` dit QUEL ÉTAGE pique, jamais
+# quelle ligne. J'ai dépensé quatre hypothèses là-dessus, trois fausses. Un fil échantillonne donc
+# la pile de la boucle de composition PENDANT qu'une trame dépasse — pas après, où l'on ne verrait
+# que la fin du travail.
+# Coût : un réveil toutes les 2 ms qui compare deux entiers. La capture elle-même n'a lieu qu'au
+# franchissement du seuil, et UNE seule fois par trame (on attend le compteur de trame suivant),
+# sinon une trame de 40 ms produirait vingt piles identiques.
+_watch = {{"t0": 0, "fi": 0, "seuil_ms": 22.0}}
+_piles = {{}}      # signature de pile → nombre de fois observée pendant un dépassement
+
+def _chien_de_garde():
+    import traceback
+    vue = -1
+    while True:
+        time.sleep(0.002)
+        t0 = _watch["t0"]; fi = _watch["fi"]
+        if not t0 or fi == vue:
+            continue
+        if (time.time_ns() - t0) / 1e6 < _watch["seuil_ms"]:
+            continue
+        vue = fi                      # une capture par trame, pas une par réveil
+        try:
+            cadre = sys._current_frames().get(_thread_compo)
+            if cadre is None:
+                continue
+            # On garde les quelques appels les plus INTERNES : c'est là qu'est le temps. Les
+            # niveaux supérieurs sont toujours les mêmes (la boucle), ils n'apprennent rien.
+            pile = traceback.extract_stack(cadre)[-4:]
+            sig = " < ".join("%s:%d" % (f.name, f.lineno) for f in reversed(pile))
+            _piles[sig] = _piles.get(sig, 0) + 1
+        except Exception:                                                  # noqa: BLE001
+            pass
+
+threading.Thread(target=_chien_de_garde, daemon=True).start()
+
 _thread_compo = threading.get_ident()   # à partir d'ici, ce thread SEUL libère les mappings
 # Affinité de la COMPOSITION : le premier cœur du cpuset, pour elle seule. Posée ICI, après le
 # lancement des boulangers — l'affinité s'hérite à la création, la poser plus tôt les confinerait
@@ -6965,6 +7026,7 @@ while True:
             time.sleep(wait)
 
     ts_cycle_start = time.time_ns()   # début du compositing (après l'attente de grille) → own_latency
+    _watch["t0"] = ts_cycle_start; _watch["fi"] += 1   # chien de garde : cette trame commence ICI
     # Diagnostic grain tardif (chantier tissu slice) : retard du TICK lui-même (la boucle a raté
     # sa grille — la pause est ARRIVÉE AVANT le cycle) vs frame LENTE (le cycle a coûté trop cher
     # — la pause est DANS le cycle). Journalisé plus bas (FRAME LENTE, throttlé).
@@ -7408,11 +7470,14 @@ while True:
                     _vw_o[:OUT_FIELD_SIZE] = _out_host(_fld).view(np.uint8)
                     out_writer.commit(_gi_o)
             else:
-                out_frame = xp.concatenate([canvas_y.ravel(), canvas_u.ravel(), canvas_v.ravel()])
                 # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). Index implicite :
                 # open_grain() sans argument appelle bobimxl.Writer.next_index (grille TAI).
+                # Les trois plans sont déversés DIRECTEMENT dans le tampon épinglé, sans passer par
+                # une trame contiguë en VRAM : l'allocation et la recopie plein cadre que coûtait
+                # `xp.concatenate` disparaissent (cf. _out_host_plans).
                 _gidx, _gi_o, _vw_o = out_writer.open_grain()
-                _vw_o[:OUT_FRAME_SIZE] = _out_host(out_frame).view(np.uint8)
+                _vw_o[:OUT_FRAME_SIZE] = _out_host_plans(
+                    (canvas_y, canvas_u, canvas_v)).view(np.uint8)
                 out_writer.commit(_gi_o)
         ts_out = time.time_ns()
         # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
@@ -7442,6 +7507,9 @@ while True:
     # own = TRAVAIL de compositing : en mode tranche les attentes get_slice (suivi du fil) sont
     # EXCLUES — le tissu (décisions de sharding) et le monitoring y lisent la saturation du
     # worker, pas la période de la source (même contrat que la pyramide / cap réactif).
+    _watch["t0"] = 0        # FIN de trame : au-delà, la boucle ATTEND son créneau et ce temps
+                            # n'est pas du travail. Sans cette remise à zéro, le chien de garde
+                            # capturait `time.sleep` — 37 % de faux positifs au premier essai.
     own_lat.push((ts_out - ts_cycle_start - _sl_waited) / 1e6)
     # FRAME LENTE = PRÉCURSEUR d'incident : reste visible au niveau par défaut (`info`) — mais
     # AGRÉGÉE (règle 3 du bloc « Niveau de log »). L'ancienne version sortait jusqu'à 1 ligne/s
