@@ -1329,6 +1329,7 @@ def _refresh_lat_metrics():
                                   "ov_blend": _t_ov_blend.mx(), "ov_meters": _t_ov_meters.mx(),
                                   "ov_hist": _t_ov_hist.mx(), "ov_clock": _t_ov_clock.mx(),
                                   "ov_bake": _t_ov_bake.mx(), "output": _t_output.mx()}}
+    metrics["place_miss"] = _place_miss["n"]   # replis du gather fusionné — doit rester à 0
     metrics["hist_prof"] = {{k: dict(v) for k, v in _hist_prof.items()}}
     metrics["cpu_split"] = ({{"compo": [_CPUS[0]], "boulangers": _CPUS[1:]}}
                             if _CPU_SPLIT else None)
@@ -1867,6 +1868,63 @@ def _gpu_place_band(cy, cu, cv, stage):
             cu[ca0:cb0, cx0:cx0 + vw//_CW] = din[o+ny:o+ny+nu].reshape(shu)[:, ::csc]
             cv[ca0:cb0, cx0:cx0 + vw//_CW] = din[o+ny+nu:o+ny+2*nu].reshape(shu)[:, ::csc]
 
+# ─── Placement GPU fusionné : indices cachés + gather écrit DANS le canvas ───
+# `dst[...] = resize_plane(src, h, w)` coûtait, par plan : deux `arange`, deux multiplications,
+# deux `astype`, un gather qui ALLOUE, puis une recopie dans la vue — soit une huitaine de
+# lancements et deux tableaux temporaires. À trois plans par tuile et deux tuiles, une quarantaine
+# de lancements par trame, alors que le GPU est à 40 % : on ne le sature pas, on l'attend.
+# Deux corrections, de la même famille que celles qui ont payé ce soir :
+#   • les INDICES ne dépendent que des tailles (source, destination) — donc ils ne changent
+#     JAMAIS d'une trame à l'autre. Ils sont calculés une fois et gardés en VRAM ;
+#   • le gather écrit DIRECTEMENT dans la vue du canvas, en UN lancement, au lieu de produire un
+#     tableau qu'on recopie ensuite.
+# Repli sur le chemin d'origine à la moindre surprise (forme, dtype, backend) — et le repli est
+# COMPTÉ (`place_miss` sur :8080), sinon une régression silencieuse coûterait des millisecondes
+# sans jamais le dire.
+_idx_cache = {{}}          # (from_h, from_w, th, tw) → (row_idx, col_idx) en VRAM
+_place_miss = {{"n": 0}}
+
+if GPU:
+    _gather_k = cp.ElementwiseKernel(
+        "raw T src, raw int32 ry, raw int32 cx, int32 sw, int32 dw", "T out",
+        "int r = i / dw; int c = i - r * dw; out = src[ry[r] * (long long)sw + cx[c]];",
+        "bobi_gather_place")
+
+def _indices(from_h, from_w, th, tw):
+    """Indices nearest (mêmes formules que resize_plane, donc rendu identique), en VRAM et cachés.
+    Les calculer à chaque trame était l'essentiel du coût : six lancements pour des valeurs
+    constantes."""
+    _k = (from_h, from_w, th, tw)
+    _v = _idx_cache.get(_k)
+    if _v is None:
+        _v = ((cp.arange(th) * from_h / th).astype(cp.int32),
+              (cp.arange(tw) * from_w / tw).astype(cp.int32))
+        _idx_cache[_k] = _v
+    return _v
+
+def _place_gpu_plane(dst, plane, th, tw):
+    """Redimensionne `plane` vers la vue `dst` (th×tw) en UN lancement. False = non applicable."""
+    try:
+        if not GPU or not isinstance(plane, cp.ndarray) or th <= 0 or tw <= 0:
+            return False
+        fh, fw = plane.shape
+        if _BOX:
+            py, px = max(1, fh // th), max(1, fw // tw)
+            if py > 1 or px > 1:
+                plane = _box_reduce(plane, py, px)
+                fh, fw = plane.shape
+        if (fh, fw) == (th, tw):
+            dst[...] = plane            # même taille : simple recopie, rien à interpoler
+            return True
+        ry, cx = _indices(fh, fw, th, tw)
+        _src = plane if plane.flags.c_contiguous else cp.ascontiguousarray(plane)
+        _gather_k(_src.ravel(), ry, cx, np.int32(_src.shape[1]), np.int32(tw), dst)
+        return True
+    except Exception:                                                      # noqa: BLE001
+        _place_miss["n"] += 1
+        return False
+
+
 def _place_batch(cy, cu, cv, batch):
     """Resize + place les tuiles vidéo collectées dans le canvas (cy/cu/cv, backend xp).
     CPU : resize numpy direct (octet-identique à l'inline d'origine). GPU : UN seul upload H2D des
@@ -1911,9 +1969,17 @@ def _place_batch(cy, cu, cv, batch):
         gy = dev[o:o+ny].reshape(shy)
         gu = dev[o+ny:o+ny+nu].reshape(shu)
         gv = dev[o+ny+nu:o+ny+2*nu].reshape(shv)
-        cy[vy:vy+vh, vx:vx+vw] = resize_plane(gy, vh, vw)
-        cu[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(gu, vh//_CH, vw//_CW)
-        cv[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(gv, vh//_CH, vw//_CW)
+        _dy = cy[vy:vy+vh, vx:vx+vw]
+        _du = cu[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW]
+        _dv = cv[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW]
+        # Chemin fusionné : gather écrit dans la vue, indices cachés. Repli plan par plan — un
+        # échec sur la chroma ne doit pas jeter la luma déjà posée.
+        if not _place_gpu_plane(_dy, gy, vh, vw):
+            cy[vy:vy+vh, vx:vx+vw] = resize_plane(gy, vh, vw)
+        if not _place_gpu_plane(_du, gu, vh//_CH, vw//_CW):
+            cu[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(gu, vh//_CH, vw//_CW)
+        if not _place_gpu_plane(_dv, gv, vh//_CH, vw//_CW):
+            cv[vy//_CH:vy//_CH+vh//_CH, vx//_CW:vx//_CW+vw//_CW] = resize_plane(gv, vh//_CH, vw//_CW)
 
 # ─── Rendu d'overlay (PIL) ───────────────────────────────────
 

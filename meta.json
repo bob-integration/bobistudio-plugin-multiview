@@ -1,7 +1,10 @@
 {
-  "version": "0.77.1",
+  "version": "0.78.0",
   "date": "2026-08-08",
   "changes": {
+    "★ Placement GPU fusionné : indices cachés, gather écrit dans le canvas (0.78.0)": [
+      "in_place était le plus gros poste restant (5 à 8 ms pour deux tuiles). Pour chaque plan,  coûtait deux arange, deux multiplications, deux astype, un gather qui ALLOUE, puis une recopie dans la vue — une huitaine de lancements et deux tableaux temporaires. À trois plans par tuile et deux tuiles, une quarantaine de lancements par trame, alors que le GPU est à 40 % : on ne le sature pas, on l'attend. ★ Les INDICES ne dépendent que des tailles source et destination : ils ne changent JAMAIS d'une trame à l'autre, ils sont désormais calculés une fois et gardés en VRAM. Et le gather écrit DIRECTEMENT dans la vue du canvas, en un seul lancement, au lieu de produire un tableau qu'on recopie. Mêmes formules d'indices que resize_plane, donc rendu identique. Repli plan par plan à la moindre surprise, et les replis sont COMPTÉS ( sur :8080) — une régression silencieuse coûterait des millisecondes sans jamais le dire."
+    ],
     "%cpu% et %ram% relevés hors trame (0.75.2)": [
       "Ces variables lisaient des pseudo-fichiers cgroup DANS le chemin d'une image. C'est court (quelques dizaines de µs) mais c'est de l'entrée-sortie bloquante, et elle n'a rien à y faire : sur ce genre de valeur, personne n'a besoin de la fraîcheur à la milliseconde et afficher celle de la trame précédente est équivalent. Un fil dédié échantillonne à intervalle fixe ; les variables ne font plus que lire un dictionnaire. Bénéfice second : le %CPU est un DELTA entre deux relevés — appelé depuis la trame, son intervalle dépendait du moment où quelqu'un demandait la valeur, donc le pourcentage était calculé sur une base irrégulière. À intervalle fixe, il est enfin juste."
     ],
