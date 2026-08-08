@@ -1,7 +1,16 @@
 {
-  "version": "0.74.0",
+  "version": "0.75.2",
   "date": "2026-08-08",
   "changes": {
+    "%cpu% et %ram% relevés hors trame (0.75.2)": [
+      "Ces variables lisaient des pseudo-fichiers cgroup DANS le chemin d'une image. C'est court (quelques dizaines de µs) mais c'est de l'entrée-sortie bloquante, et elle n'a rien à y faire : sur ce genre de valeur, personne n'a besoin de la fraîcheur à la milliseconde et afficher celle de la trame précédente est équivalent. Un fil dédié échantillonne à intervalle fixe ; les variables ne font plus que lire un dictionnaire. Bénéfice second : le %CPU est un DELTA entre deux relevés — appelé depuis la trame, son intervalle dépendait du moment où quelqu'un demandait la valeur, donc le pourcentage était calculé sur une base irrégulière. À intervalle fixe, il est enfin juste."
+    ],
+    "Textes à variables : cadence de rafraîchissement rétablie (0.75.1)": [
+      "Régression de 0.75.0 : en tuile per-frame, `_dyn_text` est appelé à CHAQUE trame, donc `%cpu%` était relu 50 fois par seconde et le moniteur de ressources sautait sans arrêt à l'écran. Le chemin baké imposait un plafond de 2 s (_VARS_CHECK_S) qui n'avait pas suivi le texte dans sa nouvelle machinerie. La valeur rendue est désormais mémorisée et ré-évaluée au plus toutes les 2 s, comme avant — sinon on remplace un problème de performance par un problème d'affichage."
+    ],
+    "★★ Les textes à VARIABLES sortent de l'habillage plein cadre (0.75.0)": [
+      "CAUSE RACINE d'un mur qui perdait 3 images par seconde. Un texte de modèle contenant `%cpu%` ou `%ram%` était BAKÉ dans l'habillage. Ces valeurs changent à chaque évaluation, et la surveillance déclenchait alors un re-bake du chrome PLEIN CADRE : 56 à 73 ms mesurés, environ une fois par seconde. Avec le GIL, cela fige la boucle de composition pendant trois créneaux de 20 ms — 3 images perdues par seconde, mécaniquement, sur tout mur portant un tel texte. Le shard qui en portait DEUX en perdait le double. ★ Ces textes rejoignent la machinerie des HORLOGES : tuile YUV sur leur propre bbox, re-rendue au changement de valeur, pour quelques milliers de pixels au lieu d'un plein cadre. Les textes SANS variable restent bakés — ils ne changent jamais, une tuile per-frame leur coûterait un blend pour rien. ⚠ Ce marteau expliquait pourquoi les gains obtenus ailleurs dans la soirée (bandeau ANC 8,2 → 1,4 ms, vignettes de frise 19,7 → 6,7 ms) ne remontaient pas la cadence : ils étaient noyés."
+    ],
     "★ Vignettes de frise mises à l'échelle UNE fois (0.74.0)": [
       "Chaque bake de frise vidéo re-redimensionnait TOUTES ses vignettes en LANCZOS — une vingtaine de cases sur une frise de deux minutes — alors qu'une vignette est FIGÉE dès sa capture et que sa case ne change pas de taille. Le bloc mis à l'échelle est donc toujours le même, et on le recalculait à chaque passe. La ventilation du bake l'a montré : 19,7 ms de dessin contre 4,5 de conversion, soit 420 ns par pixel. ★ Le bloc est mémorisé DANS la case avec la géométrie qui l'a produit (largeur, hauteur, opacité) : un redimensionnement de la frise le périme et il est recalculé une fois. Ces pics de bake sont ce qui bloque la boucle de composition — le GIL faisant que ni le nice, ni un cœur dédié, ni un thread séparé n'y changent rien (trois essais, trois échecs). La seule voie est de rendre la passe bon marché, comme l'atlas de glyphes l'a fait pour le bandeau ANC."
     ],

@@ -4660,31 +4660,49 @@ def _read_cgroup_cpu_us():
         pass
     return None
 
-def _var_cpu():
-    """Charge CPU du conteneur en %, échantillonnée sur l'intervalle écoulé. Repli sur le temps
-    CPU du PROCESSUS si le cgroup n'est pas lisible (conteneur non cgroup v2)."""
-    now = time.monotonic()
-    us = _read_cgroup_cpu_us()
-    if us is None:
+# ─── Échantillonnage des variables de RESSOURCES, hors trame ─────────────────
+# `%cpu%` et `%ram%` lisent des pseudo-fichiers cgroup. C'est court (quelques dizaines de µs) mais
+# c'est de l'ENTRÉE-SORTIE BLOQUANTE, et elle n'a rien à faire dans le chemin d'une image : sur ce
+# genre de valeur, personne n'a besoin de la fraîcheur à la milliseconde, et afficher celle de la
+# trame précédente est rigoureusement équivalent. Un fil dédié échantillonne donc à intervalle
+# fixe, et les variables ne font plus que LIRE un dictionnaire.
+# Bénéfice second, moins visible : le calcul du %CPU est un DELTA entre deux relevés. Appelé
+# depuis la trame, son intervalle dépendait du moment où quelqu'un demandait la valeur — donc le
+# pourcentage était calculé sur une base irrégulière. À intervalle fixe, il est enfin juste.
+def _var_sample_loop():
+    while True:
         try:
-            t = os.times()
-            us = int((t.user + t.system) * 1e6)
-        except Exception:
-            return "—"
-    prev = _VAR_CACHE.get("cpu_prev")
-    _VAR_CACHE["cpu_prev"] = (now, us)
-    if not prev or now <= prev[0]:
-        return "—" if _VAR_CACHE.get("cpu") is None else _VAR_CACHE["cpu"]
-    pct = (us - prev[1]) / ((now - prev[0]) * 1e6) * 100.0
-    _VAR_CACHE["cpu"] = "%.0f %%" % max(0.0, pct)
-    return _VAR_CACHE["cpu"]
+            now = time.monotonic()
+            us = _read_cgroup_cpu_us()
+            if us is None:
+                try:
+                    t = os.times()
+                    us = int((t.user + t.system) * 1e6)
+                except Exception:                                          # noqa: BLE001
+                    us = None
+            if us is not None:
+                prev = _VAR_CACHE.get("cpu_prev")
+                _VAR_CACHE["cpu_prev"] = (now, us)
+                if prev and now > prev[0]:
+                    pct = (us - prev[1]) / ((now - prev[0]) * 1e6) * 100.0
+                    _VAR_CACHE["cpu"] = "%.0f %%" % max(0.0, pct)
+            try:
+                with open("/sys/fs/cgroup/memory.current", "r") as f:
+                    _VAR_CACHE["ram"] = "%d Mo" % (int(f.read().strip()) // (1024 * 1024))
+            except Exception:                                              # noqa: BLE001
+                pass
+        except Exception:                                                  # noqa: BLE001
+            pass
+        time.sleep(_VARS_CHECK_S)
+
+def _var_cpu():
+    """Charge CPU du conteneur en %, telle que le fil d'échantillonnage l'a relevée. AUCUNE
+    lecture de fichier ici : on rend la dernière valeur connue (cf. _var_sample_loop)."""
+    return _VAR_CACHE.get("cpu") or "—"
 
 def _var_ram():
-    try:
-        with open("/sys/fs/cgroup/memory.current", "r") as f:
-            return "%d Mo" % (int(f.read().strip()) // (1024 * 1024))
-    except Exception:
-        return "—"
+    """Mémoire du conteneur, dernière valeur relevée hors trame."""
+    return _VAR_CACHE.get("ram") or "—"
 
 def _var_uptime():
     d = int(time.time() - _START_TS)
@@ -4966,9 +4984,14 @@ def _tpl_render_dynamic(d, img, i, cfg, comps):
             elif k == "format":
                 ov = _tpl_pseudo_ov(i, comp, rect, bg_default="#000000", bg_op_default=65)
                 _draw_text_overlay(d, ov, _fmt_chip_txt(cfg, None))
-            else:  # text fixe (variables %nom% comprises — cf. _expand_vars)
+            else:  # texte FIXE seulement. Un texte à VARIABLES est rendu en tuile per-frame
+                # (cf. _tpl_var_text_ovs) : le laisser ici le dessinerait deux fois, et surtout sa
+                # valeur changeante forcerait un re-bake de l'habillage PLEIN CADRE — 56 à 73 ms,
+                # jusqu'à une fois par seconde avec un %cpu%.
+                if "%" in str(comp.get("text") or ""):
+                    continue
                 ov = _tpl_pseudo_ov(i, comp, rect)
-                _draw_text_overlay(d, ov, _expand_vars(comp.get("text") or "", cfg))
+                _draw_text_overlay(d, ov, comp.get("text") or "")
         except Exception:
             continue
 
@@ -5107,8 +5130,12 @@ def render_overlays_fg_static():
     BAKÉS dans le chrome caché (rendu une seule fois, re-baké sur édition/tally/MAJ TSL). Sortir le
     texte de la boucle per-frame supprime un re-dessin + une reconversion RGBA→YUV à CHAQUE image
     (coût ∝ nombre de caractères / surface)."""
+    # Les textes à VARIABLES sont exclus : ils passent par les tuiles per-frame (cf.
+    # _tpl_var_text_ovs). Les laisser ici les dessinerait DEUX fois — et surtout, c'est leur
+    # présence dans l'habillage qui déclenchait un re-bake plein cadre à chaque changement.
     fg = [ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") in ("text", "image")
-          and not (ov.get("kind") == "image" and ov.get("layer") == "background")]
+          and not (ov.get("kind") == "image" and ov.get("layer") == "background")
+          and not (ov.get("kind") == "text" and "%" in str(ov.get("text") or ""))]
     if not fg:
         return None
     img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
@@ -5120,12 +5147,67 @@ def render_overlays_fg_static():
             _draw_image_overlay(img, ov)
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
+def _tpl_var_text_ovs():
+    """Pseudo-overlays des TEXTES À VARIABLES des modèles de PiP — même machinerie que les
+    horloges (tuile YUV par bbox, re-rendue au changement de valeur).
+
+    ★ Pourquoi ils ne sont plus bakés dans l'habillage : un texte qui contient `%cpu%` ou `%ram%`
+    change à CHAQUE évaluation, et le mécanisme de surveillance déclenchait alors un re-bake du
+    chrome PLEIN CADRE — 56 à 73 ms mesurés, environ une fois par seconde. Avec le GIL, cela fige
+    la boucle de composition pendant trois créneaux de 20 ms : 3 images perdues par seconde, sur
+    tout mur portant un tel texte. Le diagnostic a coûté une soirée entière parce que les gains
+    obtenus ailleurs (bandeau ANC, vignettes de frise) étaient noyés par ce marteau.
+    En tuile, la même mise à jour ne coûte que sa propre bbox — quelques milliers de pixels.
+    Les textes SANS variable restent bakés : ils ne changent jamais, et une tuile per-frame leur
+    coûterait un blend pour rien."""
+    out = []
+    for i, cfg in enumerate(FLUX_CONFIG):
+        if cfg.get("hidden"):
+            continue
+        for comp in (_tpl_comps(cfg) or ()):
+            if (not isinstance(comp, dict) or comp.get("type") not in ("text", "umd")
+                    or "%" not in str(comp.get("text") or "")):
+                continue
+            try:
+                if not _comp_visible(i, cfg, comp):
+                    continue
+                ov = _tpl_pseudo_ov(i, comp, _comp_rect(cfg, comp))
+                ov.update({{"kind": "vartext", "text": comp.get("text") or "", "src_idx": i}})
+                out.append(ov)
+            except Exception:
+                continue
+    return out
+
 def _dyn_overlays():
-    # Horloges globales (overlays) + horloges des modèles de PiP (pseudo-overlays absolus).
-    return ([ov for ov in OVERLAYS if (not ov.get("hidden")) and ov.get("kind") == "clock"]
-            + _tpl_clock_ovs())
+    # Horloges (mur + modèles) ET textes à VARIABLES : tout ce dont la valeur change en cours de
+    # route, donc tout ce qui n'a rien à faire dans l'habillage caché.
+    return ([ov for ov in OVERLAYS
+             if (not ov.get("hidden")) and (ov.get("kind") == "clock"
+                                            or (ov.get("kind") == "text"
+                                                and "%" in str(ov.get("text") or "")))]
+            + _tpl_clock_ovs() + _tpl_var_text_ovs())
+
+# Valeur RENDUE d'un texte à variables, plafonnée dans le temps. En tuile per-frame, `_dyn_text`
+# est appelé à CHAQUE trame : sans ce plafond, `%cpu%` serait relu 50 fois par seconde et le texte
+# sauterait sans arrêt à l'écran — un moniteur de ressources illisible. Le chemin baké imposait
+# déjà cette limite (_VARS_CHECK_S) ; elle suit le texte dans sa nouvelle machinerie, sinon on
+# remplace un problème de performance par un problème d'affichage.
+_vartext_cache = {{}}    # id du pseudo-overlay → (t, texte rendu)
+
+def _vartext_value(ov):
+    _k = (ov.get("id") or "", ov.get("src_idx"), ov.get("text") or "")
+    _t, _v = _vartext_cache.get(_k, (0.0, None))
+    _now = time.monotonic()
+    if _v is None or (_now - _t) >= _VARS_CHECK_S:
+        _i = ov.get("src_idx")
+        _cfg = FLUX_CONFIG[_i] if isinstance(_i, int) and 0 <= _i < len(FLUX_CONFIG) else None
+        _v = _expand_vars(ov.get("text") or "", _cfg)
+        _vartext_cache[_k] = (_now, _v)
+    return _v
 
 def _dyn_text(ov, now):
+    if ov.get("kind") in ("vartext", "text"):
+        return _vartext_value(ov)
     return _format_clock(ov, now)
 
 def render_overlays_fg(now):
@@ -6132,6 +6214,8 @@ try:
 except Exception as _e:
     log(f"multiview: amorce du chrome échouée ({{_e!r}}) — le boulanger réessaiera", "warning")
 threading.Thread(target=_chrome_baker_loop, daemon=True).start()
+# Ressources (%cpu%, %ram%) : relevées hors trame, cf. _var_sample_loop.
+threading.Thread(target=_var_sample_loop, daemon=True).start()
 
 # Mode tranche : le flowDef porte slice_height → libmxl publie le grain en N tranches égales
 # (commit progressif). Writer forwarde **flow_kw à build_flow_def. Sans slice : inchangé (1 tranche).
@@ -6993,9 +7077,11 @@ while True:
             except Exception:
                 _vsig = _vars_last_sig
             if _vsig != _vars_last_sig:
+                # Plus de `tally_dirty` ici : les textes à variables sont désormais des TUILES
+                # per-frame, dont la signature (`_pf_sig`) déclenche seule leur re-rendu. Remettre
+                # l'habillage plein cadre en cause à chaque changement de %cpu% coûtait 56-73 ms,
+                # près d'une fois par seconde. On garde la surveillance pour la trace seule.
                 _vars_last_sig = _vsig
-                if _vsig is not None:
-                    tally_dirty.set()
         if _chrome_pub is not _chrome_seen:
             _chrome_seen = _chrome_pub
             _cph = _chrome_seen[0]
