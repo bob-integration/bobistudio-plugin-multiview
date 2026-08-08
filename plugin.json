@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.82.0",
+  "version": "0.85.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -115,6 +115,16 @@
       "max": 30,
       "default": 2,
       "scope": "user"
+    },
+    {
+      "key": "vars_check_s",
+      "type": "number",
+      "label": "Rafraîchissement des textes à variables (s)",
+      "min": 0.5,
+      "max": 60,
+      "default": 5,
+      "scope": "user",
+      "help": "Cadence de ré-évaluation des variables de texte (%cpu%, %heure%…). Chaque changement de valeur re-rend le texte DANS la trame : plus c'est fréquent, plus le pic de composition est fréquent. 5 s convient à un indicateur ; descendre à 1 s pour une horloge à la seconde, au prix d'un pic plus régulier."
     },
     {
       "key": "tsl_mode",

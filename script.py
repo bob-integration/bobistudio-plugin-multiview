@@ -1317,15 +1317,34 @@ def _refresh_lat_metrics():
     # kernel (×3 plans sur GPU), et combien de pixels ils couvrent réellement. `us_par_tuile` est
     # le chiffre qui tranche : un coût par tuile très supérieur au travail utile = borné par les
     # lancements (remède : grouper), un coût qui suit la surface = borné par les pixels.
-    _nt = _n_meters.avg() + _n_hist.avg() + _n_clock.avg()
-    metrics["ov_tiles"] = {{"meters": round(_n_meters.avg(), 1), "hist": round(_n_hist.avg(), 1),
-                           "clock_anc": round(_n_clock.avg(), 1), "total": round(_nt, 1),
-                           "lancements_gpu": round(_nt * 3, 1) if GPU else 0,
-                           "kpixels": round(_n_px_blend.avg() / 1000.0, 1),
-                           "us_par_tuile": round(_t_ov_blend.avg() * 1000.0 / _nt, 1) if _nt else None,
-                           "upload_ms": round(_t_ov_upload.avg(), 2),
-                           "sig_ms": round(_t_pf_sig.avg(), 2),
-                           "kernels_ms": round(max(0.0, _t_ov_blend.avg() - _t_ov_upload.avg()), 2)}}
+    # ⚠ `RollingMs.avg()` rend None DEUX FOIS : fenêtre vide, ET fenêtre PÉRIMÉE (aucun échantillon
+    # depuis 2 s). Ce second cas n'a rien d'exotique — un mur en MODE TRANCHE n'alimente pas ces
+    # compteurs de tuiles, et il suffit d'une pause de 2 s dans l'habillage pour l'atteindre. Sans
+    # garde, l'addition ci-dessous levait un TypeError DANS la boucle de composition : le script
+    # sortait en code 1 et l'agent le relançait en boucle — mur NOIR, à cause d'une ligne de
+    # MÉTRIQUE. Une sonde ne doit jamais pouvoir tuer ce qu'elle observe.
+    def _a(r, defaut=None):
+        v = r.avg()
+        return defaut if v is None else v
+    _nt = _a(_n_meters, 0.0) + _a(_n_hist, 0.0) + _a(_n_clock, 0.0)
+    _blend_avg = _a(_t_ov_blend); _upload_avg = _a(_t_ov_upload)
+    metrics["ov_tiles"] = {{"meters": _a(_n_meters), "hist": _a(_n_hist),
+                           "clock_anc": _a(_n_clock), "total": round(_nt, 1),
+                           # Lancements RÉELS : 1 par tuile depuis la fusion des 3 plans (0.85.0),
+                           # 3 par tuile quand le repli est actif. On publie ce qui se passe, pas
+                           # une formule — c'est ce chiffre qui a montré que le mur était borné par
+                           # le LANCEMENT et non par le calcul.
+                           "lancements_gpu": (round(_nt * (3 if _blend3_miss["n"] else 1), 1)
+                                              if GPU else 0),
+                           "kpixels": (round(_a(_n_px_blend) / 1000.0, 1)
+                                       if _a(_n_px_blend) is not None else None),
+                           "us_par_tuile": (round(_blend_avg * 1000.0 / _nt, 1)
+                                            if _nt and _blend_avg is not None else None),
+                           "upload_ms": _upload_avg,
+                           "sig_ms": _a(_t_pf_sig),
+                           "kernels_ms": (round(max(0.0, _blend_avg - _upload_avg), 2)
+                                          if _blend_avg is not None and _upload_avg is not None
+                                          else None)}}
     # PICS par sous-étage sur la fenêtre glissante — c'est eux qui font tomber les trames.
     metrics["compose_peak_ms"] = {{"own": own_lat.mx(), "in_read": _t_in_read.mx(),
                                   "in_place": _t_in_place.mx(), "overlays": _t_overlays.mx(),
@@ -1333,11 +1352,17 @@ def _refresh_lat_metrics():
                                   "ov_blend": _t_ov_blend.mx(), "ov_meters": _t_ov_meters.mx(),
                                   "ov_hist": _t_ov_hist.mx(), "ov_clock": _t_ov_clock.mx(),
                                   "ov_bake": _t_ov_bake.mx(), "output": _t_output.mx()}}
-    # Piles capturées PENDANT un dépassement, les plus fréquentes d'abord. C'est la réponse à
-    # « où part le temps », observée et non déduite.
-    metrics["piles_pic"] = dict(sorted(_piles.items(), key=lambda kv: -kv[1])[:8])
+    # Profil des trames LENTES : échantillons pris tout au long du cycle, retenus a posteriori
+    # (cf. le bloc du chien de garde). C'est la réponse à « où part le temps », observée et non
+    # déduite — et désormais NORMALISABLE : `n_ech` donne le total, donc chaque entrée se lit en
+    # part du temps des trames lentes, pas en nombre brut d'événements arbitraires.
+    metrics["piles_pic"] = dict(sorted(_piles.items(), key=lambda kv: -kv[1])[:12])
+    metrics["piles_pic_stats"] = {{"trames_lentes": _watch["n_lentes"],
+                                  "echantillons": _watch["n_ech"],
+                                  "seuil_ms": round(_watch["seuil_ms"], 2)}}
     metrics["tuile_pin_miss"] = dict(_tuile_pin_miss)   # replis du transfert épinglé — doit rester 0
     metrics["place_miss"] = _place_miss["n"]   # replis du gather fusionné — doit rester à 0
+    metrics["blend3_miss"] = dict(_blend3_miss)   # replis du blend 3-plans fusionné — doit rester à 0
     metrics["hist_prof"] = {{k: dict(v) for k, v in _hist_prof.items()}}
     metrics["cpu_split"] = ({{"compo": [_CPUS[0]], "boulangers": _CPUS[1:]}}
                             if _CPU_SPLIT else None)
@@ -1721,6 +1746,116 @@ def blend_pre(dst, inv_a, src_a):
 _mvk_miss = {{"blend": 0, "blend_pre": 0, "place": 0, "calls": 0}}   # diagnostic : replis numpy
 _mvk_why = {{}}   # diagnostic : signature (shape/dtype) des replis
 _hist_bake = {{"last": 0.0, "max": 0.0}}   # coût UNITAIRE du re-bake d'une frise (pic, cf. render_history_tiles)
+
+# ─── Blend des TROIS PLANS d'une tuile en UN SEUL lancement ──────────────────
+# ★ CE QUI RESTAIT DU ×3. Les versions précédentes ont toutes attaqué le COÛT d'un lancement
+# (cache VRAM 0.70.0, écriture directe dans la vue 0.71.1, cache par élément 0.79.0, transfert
+# épinglé 0.82.0) ; aucune n'a touché leur NOMBRE. Une tuile d'habillage = 3 appels (Y, U, V),
+# donc 63 lancements par trame sur un mur à 21 tuiles.
+#
+# Mesuré le 2026-08-08 sur le mur 906 : `kernels_ms` 2,0 ms pour 63 lancements = **32 µs par
+# lancement**, très au-dessus des 5-10 µs d'un lancement CUDA réel. L'écart est du PYTHON : chaque
+# appel d'ElementwiseKernel revalide et diffuse ses arguments côté hôte. Sur ce mur, dont l'ennemi
+# désigné est le GIL ([[wall-bakers-stall-compose-gil-not-cpu]]), c'est ce temps-là qui compte.
+# Fusionner les trois plans en supprime les deux tiers, côté hôte comme côté GPU.
+#
+# Pourquoi un RawKernel et pas un ElementwiseKernel : les trois plans n'ont PAS la même forme
+# (U/V sont sous-échantillonnés) ni le même alpha (`_oa` pour la luma, `_oa2` pour le chroma).
+# Un seul domaine d'indices les couvre en concaténant les trois, avec l'arithmétique d'index faite
+# dans le kernel. Les destinations sont des VUES du canvas (non contiguës en lignes) → on passe le
+# pas de ligne ; les sources sont contiguës.
+#
+# ⚠ Arithmétique STRICTEMENT identique à `_blend_k` (accumulation uint32, division entière par
+# 255) → résultat OCTET-IDENTIQUE, vérifié au banc sur T4 avant déploiement. Toute divergence se
+# verrait à l'écran ; le repli est donc COMPTÉ et exposé (`blend3_miss` sur :8080), comme pour le
+# gather de placement.
+_blend3_miss = {{"n": 0, "why": None, "calls": 0}}
+_blend3_k = None
+if GPU:
+    try:
+        _TT = "unsigned short" if _DEEP else "unsigned char"
+        _blend3_k = cp.RawKernel(r'''
+extern "C" __global__ void bobi_blend3(
+    TT* dy, const TT* sy, const unsigned char* ay, int hy, int wy, int rdy,
+    TT* du, const TT* su, const unsigned char* auv, int huv, int wuv, int rdu,
+    TT* dv, const TT* sv, int rdv, long long total)
+{{
+    long long i = (long long)blockIdx.x * (long long)blockDim.x + (long long)threadIdx.x;
+    if (i >= total) return;
+    long long ny  = (long long)hy  * (long long)wy;
+    long long nuv = (long long)huv * (long long)wuv;
+    TT* d; const TT* s; const unsigned char* a;
+    int r, c, rd, w;
+    if (i < ny) {{
+        r = (int)(i / (long long)wy); c = (int)(i - (long long)r * (long long)wy);
+        d = dy; s = sy; a = ay; rd = rdy; w = wy;
+    }} else if (i < ny + nuv) {{
+        long long j = i - ny;
+        r = (int)(j / (long long)wuv); c = (int)(j - (long long)r * (long long)wuv);
+        d = du; s = su; a = auv; rd = rdu; w = wuv;
+    }} else {{
+        long long j = i - ny - nuv;
+        r = (int)(j / (long long)wuv); c = (int)(j - (long long)r * (long long)wuv);
+        d = dv; s = sv; a = auv; rd = rdv; w = wuv;
+    }}
+    long long doff = (long long)r * (long long)rd + (long long)c;
+    long long soff = (long long)r * (long long)w  + (long long)c;
+    unsigned int al = (unsigned int)a[soff];
+    d[doff] = (TT)(((unsigned int)d[doff] * (255u - al) + (unsigned int)s[soff] * al) / 255u);
+}}
+'''.replace("TT", _TT), "bobi_blend3")
+    except Exception as _e:                                            # noqa: BLE001
+        _blend3_k = None
+        log(f"multiview: kernel blend3 indisponible ({{_e}}) — repli 3 lancements", "warning")
+
+
+def _blend3_ok(dy, sy, ay, du, su, dv, sv, auv):
+    """Préconditions du kernel fusionné. Strictes DÉLIBÉRÉMENT : au moindre doute on retombe sur
+    les trois lancements éprouvés plutôt que d'écrire de travers dans le canvas."""
+    if _blend3_k is None:
+        return "kernel absent"
+    for _d in (dy, du, dv):
+        if not isinstance(_d, cp.ndarray) or _d.ndim != 2:
+            return "dst non-2D"
+        if _d.strides[1] != _d.itemsize:      # dernière dimension contiguë (vue en x)
+            return "dst colonne non contiguë"
+        if _d.strides[0] % _d.itemsize:
+            return "pas de ligne non multiple"
+    for _s in (sy, su, sv, ay, auv):
+        if not isinstance(_s, cp.ndarray) or not _s.flags.c_contiguous:
+            return "src non contiguë"
+    if sy.shape != dy.shape or ay.shape != dy.shape:
+        return "forme luma"
+    if su.shape != du.shape or sv.shape != dv.shape or auv.shape != du.shape or du.shape != dv.shape:
+        return "forme chroma"
+    if dy.dtype != _NP_DT or sy.dtype != _NP_DT or su.dtype != _NP_DT or sv.dtype != _NP_DT:
+        return "dtype"
+    if ay.dtype != np.uint8 or auv.dtype != np.uint8:
+        return "dtype alpha"
+    return None
+
+
+def _blend3_into(dy, sy, ay, du, su, dv, sv, auv):
+    """Blende les trois plans d'une tuile. UN lancement si possible, sinon les trois d'origine."""
+    _blend3_miss["calls"] += 1
+    _why = _blend3_ok(dy, sy, ay, du, su, dv, sv, auv) if (GPU and not _MVK) else "hors GPU"
+    if _why is None:
+        _ny = dy.shape[0] * dy.shape[1]
+        _nuv = du.shape[0] * du.shape[1]
+        _tot = _ny + 2 * _nuv
+        _blk = 256
+        _blend3_k(((_tot + _blk - 1) // _blk,), (_blk,),
+                  (dy, sy, ay, dy.shape[0], dy.shape[1], dy.strides[0] // dy.itemsize,
+                   du, su, auv, du.shape[0], du.shape[1], du.strides[0] // du.itemsize,
+                   dv, sv, dv.strides[0] // dv.itemsize, _tot))
+        return
+    if _why != "hors GPU":
+        _blend3_miss["n"] += 1
+        _blend3_miss["why"] = _why
+    _blend_into(dy, sy, ay)
+    _blend_into(du, su, auv)
+    _blend_into(dv, sv, auv)
+
 
 def _blend_into(dv, s, aa):
     _mvk_miss["calls"] += 1
@@ -5513,7 +5648,17 @@ _statuses_pub = ()               # signature des statuts de tuile, publiée par 
 # déploiement — l'utilisateur croirait la fonction cassée. On ré-évalue à intervalle borné et on
 # ne re-bake QUE si la valeur RENDUE a changé : une horloge %heure% coûte donc un bake par minute,
 # un %cpu% un bake par échantillon, et un texte sans variable ne coûte RIEN.
-_VARS_CHECK_S  = 2.0
+# ★ CADENCE RÉGLABLE, et par défaut plus lente qu'avant (2 s → 5 s). Le re-rendu d'un texte à
+# variables est du PIL multi-ligne DANS la trame : mesuré à 12,6 % du temps des trames lentes sur
+# le mur 906 (2026-08-08). Sa fréquence est donc un coût direct, et 2 s n'a jamais été un besoin :
+# un moniteur de charge ou un compteur n'a pas à être frais à la seconde. À 5 s le pic est 2,5×
+# moins fréquent, pour un vieillissement qu'aucun opérateur ne perçoit.
+# Réglable par mur (`vars_check_s`) : une horloge à la seconde reste possible sans toucher au code
+# — on ne fige pas une cadence dans le script, cf. la règle « aucune constante en dur ».
+try:
+    _VARS_CHECK_S = max(0.5, float(CONFIG.get("vars_check_s") or 5.0))
+except (TypeError, ValueError):
+    _VARS_CHECK_S = 5.0
 _vars_last_ts  = 0.0
 _vars_last_sig = None
 _bake_wake = threading.Event()   # réveil du boulanger (changement de statut vu par la compo)
@@ -5921,12 +6066,34 @@ def _select_input(i, cfg, target_w, target_h):
     return best[0], best[1], best[2], _classify(best[0], base, best[1], best[2], target_w, target_h)
 
 
+# ★ MÉMOÏSÉ — un `stat()` par proxy, par fenêtre, PAR TRAME, sinon.
+# `_select_input` interroge l'existence de CHAQUE proxy candidat (p2/p4/p8/p16) de CHAQUE fenêtre,
+# à chaque trame : sur un mur à 4 fenêtres, ~16 appels système par trame, 800/s. Mesuré le
+# 2026-08-08 sur le mur 906 : **9,2 % du temps passé dans les trames LENTES**, uniquement là.
+# C'est du pur frais fixe — la présence d'un proxy ne change qu'au rythme des reconfigurations de
+# la pyramide, jamais à celui de la trame.
+# Ce poste était invisible jusqu'ici : il s'exécute en DÉBUT de trame, et l'ancien chien de garde
+# ne photographiait que l'instant du franchissement de seuil, donc la FIN du tour (cf. 0.83.0).
+# TTL court et volontairement conservateur : à 0,5 s on divise déjà les appels par 25, et un proxy
+# qui apparaît ou disparaît est vu en une demi-seconde — très en deçà des tolérances de péremption
+# déjà en place ailleurs (proxy figé → « No Signal »).
+_FLOW_EXISTS_TTL_S = 0.5
+_flow_exists_cache = {{}}      # nom de flux → (instant monotone, présent ?)
+
+
 def _flow_exists(name):
-    """Le flux MXL `name` est-il présent ? (dossier <uuid>.mxl-flow dans le domaine)."""
+    """Le flux MXL `name` est-il présent ? (dossier <uuid>.mxl-flow dans le domaine). Mémoïsé
+    `_FLOW_EXISTS_TTL_S` — cf. le bloc ci-dessus : appelé par trame, c'est un poste à lui seul."""
+    _now = time.monotonic()
+    _hit = _flow_exists_cache.get(name)
+    if _hit is not None and (_now - _hit[0]) < _FLOW_EXISTS_TTL_S:
+        return _hit[1]
     try:
-        return os.path.exists(os.path.join(inst.domain, bobimxl.flow_id(name) + ".mxl-flow"))
+        _v = os.path.exists(os.path.join(inst.domain, bobimxl.flow_id(name) + ".mxl-flow"))
     except Exception:
-        return False
+        _v = False
+    _flow_exists_cache[name] = (_now, _v)
+    return _v
 
 def _scan_proxies_for(cfg):
     """Découvre les proxies pyramide DISPONIBLES pour la source d'une fenêtre en énumérant les
@@ -6957,34 +7124,57 @@ _gc_max_full_ms = 0.0
 # ─── Chien de garde : QUI tient la trame quand elle dépasse ──────────────────
 # Toute la difficulté de cette chasse est là : `compose_peak_ms` dit QUEL ÉTAGE pique, jamais
 # quelle ligne. J'ai dépensé quatre hypothèses là-dessus, trois fausses. Un fil échantillonne donc
-# la pile de la boucle de composition PENDANT qu'une trame dépasse — pas après, où l'on ne verrait
-# que la fin du travail.
-# Coût : un réveil toutes les 2 ms qui compare deux entiers. La capture elle-même n'a lieu qu'au
-# franchissement du seuil, et UNE seule fois par trame (on attend le compteur de trame suivant),
-# sinon une trame de 40 ms produirait vingt piles identiques.
-_watch = {{"t0": 0, "fi": 0, "seuil_ms": 22.0}}
-_piles = {{}}      # signature de pile → nombre de fois observée pendant un dépassement
+# la pile de la boucle de composition PENDANT la trame.
+#
+# ★★ DEUX DÉFAUTS DE MESURE CORRIGÉS LE 2026-08-08 — l'ancienne version capturait AU FRANCHISSEMENT
+# d'un seuil de 22 ms, une seule fois par trame. Elle mentait deux fois :
+#
+#  1. BIAIS DE FIN DE TRAME. Capturer à 22 ms, c'est photographier ce qui tourne À 22 ms —
+#     c'est-à-dire la FIN du tour. L'écriture du grain, dernière instruction du cycle, raflait
+#     ainsi 57 % des captures : elle n'était pas coupable, elle était simplement la dernière sur
+#     les lieux. Un profil doit échantillonner TOUTE la trame, pas son instant de bascule.
+#  2. MAUVAISE POPULATION. Le seuil (22 ms) était AU-DESSUS du budget (20 ms) : les trames qui
+#     perdent réellement un créneau — celles entre 20 et 22 — n'étaient jamais vues. Mesuré :
+#     291 trames perdues pour 21 captures sur 300 s, soit 93 % de la cible manquée.
+#
+# Nouveau principe : on échantillonne EN CONTINU pendant le cycle (ring borné, par trame), et on
+# ne RETIENT le profil qu'a posteriori, si la trame s'est révélée lente. Le seuil de rétention est
+# DÉRIVÉ du budget (`FRAME_INTERVAL`), jamais écrit en dur — cf. la règle « aucune constante de
+# format en dur » : à 25 ou 60 Hz la mesure reste juste toute seule.
+#
+# Coût : un réveil toutes les 2 ms qui lit deux attributs de cadre. On n'appelle PAS
+# `traceback.extract_stack` (qui construit des FrameSummary et va chercher les lignes source via
+# linecache) — sur le chemin chaud d'un mur, avec le GIL comme ennemi désigné, ça se paierait.
+_watch = {{"t0": 0, "fi": 0, "buf": [], "n_lentes": 0, "n_ech": 0,
+           # Rétention = budget de trame. Une trame qui atteint le budget est déjà celle qui perd.
+           "seuil_ms": FRAME_INTERVAL * 1000.0}}
+_PILE_MAX_ECH = 64          # ring par trame : à 2 ms l'échantillon, couvre 128 ms de trame
+_piles = {{}}      # signature de pile → nombre d'ÉCHANTILLONS observés dans des trames lentes
+
+
+def _pile_sig(cadre):
+    """Signature légère des 4 cadres les plus INTERNES (c'est là qu'est le temps ; au-dessus c'est
+    toujours la même boucle). Lecture directe de `f_code`/`f_lineno` : pas de linecache."""
+    bouts = []
+    while cadre is not None and len(bouts) < 4:
+        bouts.append("%s:%d" % (cadre.f_code.co_name, cadre.f_lineno))
+        cadre = cadre.f_back
+    return " < ".join(bouts)
+
 
 def _chien_de_garde():
-    import traceback
-    vue = -1
     while True:
         time.sleep(0.002)
-        t0 = _watch["t0"]; fi = _watch["fi"]
-        if not t0 or fi == vue:
+        t0 = _watch["t0"]
+        if not t0:
+            continue          # hors cycle : la boucle attend son créneau, ce n'est pas du travail
+        buf = _watch["buf"]
+        if len(buf) >= _PILE_MAX_ECH:
             continue
-        if (time.time_ns() - t0) / 1e6 < _watch["seuil_ms"]:
-            continue
-        vue = fi                      # une capture par trame, pas une par réveil
         try:
             cadre = sys._current_frames().get(_thread_compo)
-            if cadre is None:
-                continue
-            # On garde les quelques appels les plus INTERNES : c'est là qu'est le temps. Les
-            # niveaux supérieurs sont toujours les mêmes (la boucle), ils n'apprennent rien.
-            pile = traceback.extract_stack(cadre)[-4:]
-            sig = " < ".join("%s:%d" % (f.name, f.lineno) for f in reversed(pile))
-            _piles[sig] = _piles.get(sig, 0) + 1
+            if cadre is not None:
+                buf.append(_pile_sig(cadre))
         except Exception:                                                  # noqa: BLE001
             pass
 
@@ -7070,7 +7260,9 @@ while True:
             time.sleep(wait)
 
     ts_cycle_start = time.time_ns()   # début du compositing (après l'attente de grille) → own_latency
-    _watch["t0"] = ts_cycle_start; _watch["fi"] += 1   # chien de garde : cette trame commence ICI
+    # Chien de garde : cette trame commence ICI. Le ring d'échantillons est NEUF à chaque trame —
+    # on profile tout le cycle et on décidera à la fin s'il valait la peine d'être retenu.
+    _watch["buf"] = []; _watch["t0"] = ts_cycle_start; _watch["fi"] += 1
     # Diagnostic grain tardif (chantier tissu slice) : retard du TICK lui-même (la boucle a raté
     # sa grille — la pause est ARRIVÉE AVANT le cycle) vs frame LENTE (le cycle a coûté trop cher
     # — la pause est DANS le cycle). Journalisé plus bas (FRAME LENTE, throttlé).
@@ -7480,10 +7672,12 @@ while True:
                                                     _to_xp(_oa), _to_xp(_oa2))
                 _up_ns += time.time_ns() - _tsu
                 _px_blend += (bx1 - bx0) * (by1 - by0)
-                _blend_into(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
                 cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
-                _blend_into(canvas_u[cy0:cy1, cx0:cx1], _ou, _oa2)
-                _blend_into(canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
+                # UN lancement pour les trois plans (cf. _blend3_into) ; repli compté sur les
+                # trois appels d'origine si la moindre précondition manque.
+                _blend3_into(canvas_y[by0:by1, bx0:bx1], _oy, _oa,
+                             canvas_u[cy0:cy1, cx0:cx1], _ou,
+                             canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
         _tuiles_dev_evict()
         _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
@@ -7569,6 +7763,14 @@ while True:
     # DOMINANT (tick raté avant le cycle / gather des entrées / habillage / écriture sortie).
     # Le détail par occurrence reste disponible en `debug`.
     _own_ms_dbg = (ts_out - ts_cycle_start - _sl_waited) / 1e6
+    # ★ RÉTENTION DU PROFIL : la trame vient de finir, on sait ENFIN si elle était lente. Les
+    # échantillons pris tout au long du cycle ne sont versés dans l'histogramme que maintenant —
+    # c'est ce qui supprime le biais de fin de trame de l'ancienne capture au franchissement.
+    if _own_ms_dbg >= _watch["seuil_ms"]:
+        _watch["n_lentes"] += 1
+        for _sig in _watch["buf"]:
+            _piles[_sig] = _piles.get(_sig, 0) + 1
+            _watch["n_ech"] += 1
     if _own_ms_dbg > 15.0 or _tick_late_ms > 10.0:
         try:
             _seg_in = (_t_after_inputs - ts_cycle_start) / 1e6

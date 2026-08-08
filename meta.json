@@ -1,7 +1,31 @@
 {
-  "version": "0.82.0",
+  "version": "0.85.0",
   "date": "2026-08-08",
   "changes": {
+    "Blend d'habillage : les trois plans en UN lancement (0.85.0)": [
+      "Une tuile d'habillage coûtait 3 lancements GPU (Y, U, V), soit 63 par trame sur un mur à 21 tuiles. Les optimisations précédentes (cache VRAM 0.70.0, écriture directe dans la vue 0.71.1, cache par élément 0.79.0, transfert épinglé 0.82.0) avaient toutes attaqué le COÛT d'un lancement ; aucune n'avait touché leur NOMBRE.",
+      "Mesuré avant : 2,0 ms de kernels pour 63 lancements, soit 32 µs par lancement — très au-dessus des 5-10 µs d'un lancement CUDA réel. L'écart est du Python : chaque appel d'ElementwiseKernel revalide et diffuse ses arguments côté hôte, et sur ce mur c'est du temps GIL.",
+      "Un RawKernel couvre désormais les trois plans en un seul domaine d'indices (les plans n'ont ni la même forme — U/V sont sous-échantillonnés — ni le même alpha ; l'arithmétique d'index est faite dans le kernel, le pas de ligne des vues canvas est passé en paramètre).",
+      "Vérifié BIT-EXACT contre les trois lancements d'origine sur 30 tuiles aléatoires (positions, tailles et contenus tirés au hasard), en 8 bits et en 10/12 bits, sur le GPU et l'image de PRODUCTION. Coût mesuré : 1,274 → 0,841 ms par trame pour 21 tuiles, soit −34 %.",
+      "Repli COMPTÉ (`blend3_miss` sur :8080) sur les trois lancements d'origine dès qu'une précondition manque (vue non contiguë, forme ou dtype inattendu) — même discipline que le gather de placement. `lancements_gpu` publie désormais le nombre RÉEL de lancements au lieu d'une formule."
+    ],
+    "Marge de composition : deux postes supprimés du chemin par trame (0.84.0)": [
+      "`_flow_exists` est mémoïsé (TTL 0,5 s). `_select_input` interrogeait l'existence de CHAQUE proxy candidat (p2/p4/p8/p16) de CHAQUE fenêtre à CHAQUE trame — sur un mur à 4 fenêtres, ~16 appels système par trame, 800/s. Mesuré à 9,2 % du temps passé dans les trames lentes, pour une information qui ne change qu'au rythme des reconfigurations de la pyramide.",
+      "Ce poste était invisible avant 0.83.0 : il s'exécute en début de trame, et l'ancien chien de garde ne photographiait que l'instant du franchissement de seuil, donc la fin du tour.",
+      "Les textes à variables se rafraîchissent désormais toutes les 5 s au lieu de 2, et la cadence devient réglable par mur (`vars_check_s`, Réglages du plugin). Le re-rendu est du PIL multi-ligne DANS la trame, mesuré à 12,6 % du temps des trames lentes : sa fréquence est un coût direct. Descendre à 1 s reste possible pour une horloge à la seconde."
+    ],
+    "Correction : une ligne de MÉTRIQUE pouvait tuer le mur (0.83.1)": [
+      "`RollingMs.avg()` rend None dans DEUX cas : fenêtre vide, mais aussi fenêtre PÉRIMÉE (aucun échantillon depuis 2 s). Le calcul du nombre de tuiles d'habillage additionnait trois `avg()` sans garde.",
+      "Conséquence : un mur en MODE TRANCHE (qui n'alimente pas ces compteurs), ou toute pause de 2 s dans l'habillage, levait un TypeError DANS la boucle de composition. Le script sortait en code 1, l'agent le relançait, et le mur restait NOIR en boucle. Constaté sur le mur 906 le 2026-08-08.",
+      "Une sonde ne doit jamais pouvoir tuer ce qu'elle observe : les valeurs manquantes sont désormais publiées telles quelles (null) au lieu d'être calculées de force. Le reste des `avg()` du fichier a été audité — c'était le seul site qui faisait de l'arithmétique non gardée."
+    ],
+    "Profil des trames lentes : échantillonnage continu, retenu a posteriori (0.83.0)": [
+      "L'ancien chien de garde capturait la pile AU FRANCHISSEMENT d'un seuil de 22 ms, une seule fois par trame. Il mentait deux fois. D'abord un biais de fin de trame : photographier ce qui tourne à 22 ms, c'est photographier la FIN du tour — l'écriture du grain, dernière instruction du cycle, raflait 57 % des captures sans être coupable, seulement dernière sur les lieux.",
+      "Ensuite la mauvaise population : le seuil (22 ms) était AU-DESSUS du budget (20 ms), donc les trames qui perdent réellement un créneau — celles entre 20 et 22 — n'étaient jamais vues. Mesuré sur le mur 906 : 291 trames perdues pour 21 captures en 300 s, soit 93 % de la cible manquée.",
+      "Désormais on échantillonne EN CONTINU pendant le cycle (ring borné de 64 échantillons par trame) et on ne RETIENT le profil qu'a posteriori, si la trame s'est révélée lente. Le seuil de rétention est DÉRIVÉ de `FRAME_INTERVAL` au lieu d'être écrit en dur : à 25 ou 60 Hz la mesure reste juste sans y toucher.",
+      "La signature de pile est lue directement sur `f_code`/`f_lineno` au lieu de `traceback.extract_stack`, qui construisait des FrameSummary et allait chercher les lignes source via linecache — inacceptable sur le chemin chaud d'un mur dont l'ennemi désigné est le GIL.",
+      "Nouvelle métrique `piles_pic_stats` (`trames_lentes`, `echantillons`, `seuil_ms`) : l'histogramme devient NORMALISABLE, donc chaque entrée se lit en part du temps des trames lentes et non plus en nombre brut d'événements arbitraires."
+    ],
     "Silence d'un avertissement log10 sur canal muet (0.79.1)": [
       "`np.where(peaks_lin > 0, 20*log10(peaks_lin), MIN)` évalue les DEUX branches : sur un canal muet, log10(0) est calculé puis jeté, en émettant un RuntimeWarning à chaque relevé de VU-mètre. Le résultat affiché était juste, mais le journal du conteneur se remplissait — et un journal bruyant est exactement ce qui masque les vraies pannes."
     ],
