@@ -1,7 +1,10 @@
 {
-  "version": "0.79.1",
+  "version": "0.80.0",
   "date": "2026-08-08",
   "changes": {
+    "★ VU-mètres peints EN VRAM (0.80.0)": [
+      "Les VU changent à chaque trame : leur tuile était peinte sur l hôte puis TÉLÉVERSÉE 50 fois par seconde — 3,2 ms de peinture plus l essentiel des 2,2 ms de transfert, soit plus du tiers d une trame. Le fond statique monte désormais une fois en VRAM et les barres y sont peintes : la tuile ne quitte plus la carte. UN SEUL passage par grille (luma+alpha, puis chroma) — porter la peinture telle quelle aurait fait de chaque rectangle un lancement, jusqu à quatre par canal, donc on serait allé PLUS LENTEMENT. Deux pièges payés comptant : un tableau  d ENTRÉE est const dans cupy, ceux qu on écrit doivent être déclarés en SORTIE ; et cupy compile à la PREMIÈRE invocation, donc en pleine trame — sans verrou, une compilation qui échoue est retentée 50 fois par seconde et le mur tombe à 10 fps (vécu). Le repli hôte est désormais DÉFINITIF et journalisé."
+    ],
     "Silence d'un avertissement log10 sur canal muet (0.79.1)": [
       "`np.where(peaks_lin > 0, 20*log10(peaks_lin), MIN)` évalue les DEUX branches : sur un canal muet, log10(0) est calculé puis jeté, en émettant un RuntimeWarning à chaque relevé de VU-mètre. Le résultat affiché était juste, mais le journal du conteneur se remplissait — et un journal bruyant est exactement ce qui masque les vraies pannes."
     ],

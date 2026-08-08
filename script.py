@@ -1071,6 +1071,79 @@ def _meter_paint_rect(y, u, v, a8, x0, y0, x1, y1, ycc, a):
         u[cy0:cy1, cx0:cx1] = ycc[1]
         v[cy0:cy1, cx0:cx1] = ycc[2]
 
+# ─── VU-mètres peints EN VRAM ────────────────────────────────────────────────
+# Les VU changent à chaque trame : leur tuile était peinte sur l'hôte puis TÉLÉVERSÉE 50 fois par
+# seconde. Mesuré sur le mur 906 : 3,2 ms de peinture + l'essentiel des 2,2 ms de transfert, soit
+# plus du tiers d'une trame de 14,4 ms. Peindre en VRAM supprime les deux — la tuile ne quitte
+# plus la carte.
+# ⚠ PIÈGE ÉVITÉ : porter la peinture telle quelle ferait de CHAQUE rectangle un lancement, et il y
+# en a jusqu'à quatre par canal — sur huit canaux on remplacerait quelques écritures numpy par une
+# trentaine de lancements, donc on irait PLUS LENTEMENT (un lancement coûte 67 µs ici, le calcul
+# ne coûte rien). Un seul passage par grille : luma+alpha, puis chroma.
+# ⚠ `raw` en ENTRÉE est CONST dans cupy : les tableaux qu'on écrit (alpha, V) doivent être déclarés
+# en SORTIE. Écrit autrement, le kernel ne compile pas — et l'échec ne se voit qu'à l'exécution.
+# ⚠ VERROU D'ÉCHEC : cupy compile à la PREMIÈRE invocation, donc en pleine trame. Sans ce verrou,
+# une compilation qui échoue est retentée 50 fois par seconde et le mur tombe à 10 fps — vécu le
+# 2026-08-08. On essaie UNE fois ; en cas d'échec on retombe définitivement sur le chemin hôte.
+_meter_static_vram = {{}}     # clé du fond statique → (y, u, v, a) résidents VRAM
+_METER_VRAM_MAX = 24
+_meter_gpu = {{"ok": GPU, "why": None, "n": 0}}   # verrou : False = chemin hôte définitif
+
+if GPU:
+    _SEG_SRC = """
+        int seg = 0;                       // 0 = fond, 1 = vert, 2 = jaune, 3 = rouge, 4 = crête
+        int rel = px - bx0;
+        if (rel >= 0 && barw > 0) {{
+            int pas = barw + gap;
+            int c = rel / pas;
+            if (c < nch && (rel - c * pas) < barw && py <= bottom) {{
+                int h = bottom - py;       // hauteur du pixel au-dessus du bas des barres
+                if (hh[c] > 0 && h == hh[c])      seg = 4;
+                else if (h >= 0 && h <= ph[c])    seg = (h > ytop) ? 3 : ((h > gtop) ? 2 : 1);
+            }}
+        }}
+    """
+    _meter_luma_k = cp.ElementwiseKernel(
+        "raw T sy, raw uint8 sa, raw int32 ph, raw int32 hh, int32 W, int32 nch, int32 bx0, "
+        "int32 barw, int32 gap, int32 bottom, int32 gtop, int32 ytop, int32 abar, int32 ahold, "
+        "int32 gY, int32 yY, int32 rY, int32 wY",
+        "T out, raw uint8 oa",
+        "int px = i % W; int py = i / W;" + _SEG_SRC + """
+        if (seg == 0)      {{ out = sy[i];      oa[i] = sa[i]; }}
+        else if (seg == 4) {{ out = (T)wY;      oa[i] = (unsigned char)ahold; }}
+        else               {{ out = (T)((seg == 3) ? rY : ((seg == 2) ? yY : gY));
+                             oa[i] = (unsigned char)abar; }}
+        """, "bobi_meter_luma")
+    # Chroma : passage séparé sur SA grille. L'écrire depuis le passage luma ferait courir
+    # plusieurs threads sur le même échantillon. Règle de bord assumée (celle du chemin hôte) :
+    # l'échantillon prend la couleur de ce qui couvre son CENTRE — au pire un liseré d'un
+    # échantillon sur le bord d'une barre.
+    _meter_chroma_k = cp.ElementwiseKernel(
+        "raw T su, raw T sv, raw int32 ph, raw int32 hh, int32 CWd, int32 nch, int32 bx0, "
+        "int32 barw, int32 gap, int32 bottom, int32 gtop, int32 ytop, int32 cw, int32 chh, "
+        "int32 gU, int32 gV, int32 yU, int32 yV, int32 rU, int32 rV, int32 wU, int32 wV",
+        "T out, raw T ov",
+        "int cx = i % CWd; int cy2 = i / CWd; int px = cx*cw + cw/2; int py = cy2*chh + chh/2;"
+        + _SEG_SRC + """
+        if (seg == 0)      {{ out = su[i];  ov[i] = sv[i]; }}
+        else if (seg == 4) {{ out = (T)wU;  ov[i] = (T)wV; }}
+        else if (seg == 3) {{ out = (T)rU;  ov[i] = (T)rV; }}
+        else if (seg == 2) {{ out = (T)yU;  ov[i] = (T)yV; }}
+        else               {{ out = (T)gU;  ov[i] = (T)gV; }}
+        """, "bobi_meter_chroma")
+
+
+def _meter_static_xp(cle, sy, su, sv, sa):
+    """Fond statique du mètre, résident VRAM — monté UNE fois par géométrie."""
+    v = _meter_static_vram.get(cle)
+    if v is None:
+        if len(_meter_static_vram) >= _METER_VRAM_MAX:
+            _meter_static_vram.clear()
+        v = (cp.asarray(sy), cp.asarray(su), cp.asarray(sv), cp.asarray(sa))
+        _meter_static_vram[cle] = v
+    return v
+
+
 def _meter_tile_yuv(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0,
                      tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP,
                      grad="full", grad_side="left"):
@@ -1081,13 +1154,51 @@ def _meter_tile_yuv(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacit
     RGBA par tranche. `tick_w`/`bar_w`/`gap` : voir _draw_meter."""
     sy, su, sv, sa, _sam = _meter_static_yuv(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct,
                                              ch0, tick_w, bar_w, gap, grad, grad_side)
-    y = sy.copy(); u = su.copy(); v = sv.copy(); a8 = sa.copy()
     a_bar = int(220 * opacity_pct / 100); a_hold = int(255 * opacity_pct / 100)
     bars_mh = max(20, mh - 12); bars_bottom = rmy + bars_mh
     to_frac, green_top, yellow_top = _meter_scale_params(scale)
     green_top_px = int(round(green_top * bars_mh)); yellow_top_px = int(round(yellow_top * bars_mh))
     _g = _met_yuv(_MET_GREEN); _yl = _met_yuv(_MET_YELLOW)
     _r = _met_yuv(_MET_RED);   _w = _met_yuv(_MET_WHITE)
+    if _meter_gpu["ok"]:
+        try:
+            _bx0 = (rmx if grad_side == "right" else rmx + tick_w)
+            _ph = np.empty(n, dtype=np.int32); _hh = np.empty(n, dtype=np.int32)
+            for _c in range(n):
+                _ph[_c] = int(round(to_frac(peaks_db[_c]) * bars_mh))
+                _hh[_c] = int(round(to_frac(holds_db[_c]) * bars_mh))
+            _cle = (W, H, rmx, rmy, mw, mh, n, scale, opacity_pct, ch0,
+                    tick_w, bar_w, gap, grad, grad_side)
+            _gy, _gu, _gv, _ga = _meter_static_xp(_cle, sy, su, sv, sa)
+            _dph = cp.asarray(_ph); _dhh = cp.asarray(_hh)
+            y = cp.empty_like(_gy); a8 = cp.empty_like(_ga)
+            _meter_luma_k(_gy, _ga, _dph, _dhh, np.int32(W), np.int32(n), np.int32(_bx0),
+                          np.int32(bar_w), np.int32(gap), np.int32(bars_bottom),
+                          np.int32(green_top_px), np.int32(yellow_top_px),
+                          np.int32(a_bar), np.int32(a_hold),
+                          np.int32(_g[0]), np.int32(_yl[0]), np.int32(_r[0]), np.int32(_w[0]),
+                          y, a8)
+            u = cp.empty_like(_gu); v = cp.empty_like(_gv)
+            _meter_chroma_k(_gu, _gv, _dph, _dhh, np.int32(_gu.shape[1]), np.int32(n),
+                            np.int32(_bx0), np.int32(bar_w), np.int32(gap),
+                            np.int32(bars_bottom), np.int32(green_top_px), np.int32(yellow_top_px),
+                            np.int32(_CW), np.int32(_CH),
+                            np.int32(_g[1]), np.int32(_g[2]), np.int32(_yl[1]), np.int32(_yl[2]),
+                            np.int32(_r[1]), np.int32(_r[2]), np.int32(_w[1]), np.int32(_w[2]),
+                            u, v)
+            am = a8
+            if _CW == 2: am = cp.maximum(am[:, 0::2], am[:, 1::2])
+            if _CH == 2: am = cp.maximum(am[0::2, :], am[1::2, :])
+            return y, u, v, a8, cp.ascontiguousarray(am)
+        except Exception as _e:                                            # noqa: BLE001
+            # VERROU : on ne retente JAMAIS. Une compilation qui échoue en pleine trame, retentée
+            # 50 fois par seconde, avait fait tomber le mur à 10 fps.
+            _meter_gpu["ok"] = False
+            _meter_gpu["why"] = repr(_e)[:300]
+            _meter_gpu["n"] += 1
+            log("multiview: VU-mètres GPU indisponibles, repli hôte DÉFINITIF : %s"
+                % _meter_gpu["why"], "warning")
+    y = sy.copy(); u = su.copy(); v = sv.copy(); a8 = sa.copy()
     for ch in range(n):
         # Colonne à droite → les barres commencent au bord du mètre (cf. _draw_meter.bar_x0).
         bx = (rmx if grad_side == "right" else rmx + tick_w) + ch * (bar_w + gap)
@@ -1333,6 +1444,7 @@ def _refresh_lat_metrics():
                                   "ov_blend": _t_ov_blend.mx(), "ov_meters": _t_ov_meters.mx(),
                                   "ov_hist": _t_ov_hist.mx(), "ov_clock": _t_ov_clock.mx(),
                                   "ov_bake": _t_ov_bake.mx(), "output": _t_output.mx()}}
+    metrics["meter_gpu"] = dict(_meter_gpu)   # ok=False → repli hôte définitif, avec la raison
     metrics["place_miss"] = _place_miss["n"]   # replis du gather fusionné — doit rester à 0
     metrics["hist_prof"] = {{k: dict(v) for k, v in _hist_prof.items()}}
     metrics["cpu_split"] = ({{"compo": [_CPUS[0]], "boulangers": _CPUS[1:]}}
