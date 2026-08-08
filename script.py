@@ -5350,6 +5350,8 @@ def render_overlays_fg(now):
         _draw_text_overlay(d, ov, _dyn_text(ov, now), color_override=_countdown_color(ov, now))
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
+_pf_tile_cache = {{}}   # clé d'élément → ((valeur, couleur, géométrie), tuile) — cf. render_clock_tiles
+
 def render_clock_tiles(now):
     """Horloges en TUILES YUV — UNE par horloge sur sa propre bbox (alignée chroma), comme
     render_meters. Évite la bbox-UNION quasi plein écran quand les horloges sont DISPERSÉES (le blend
@@ -5361,7 +5363,25 @@ def render_clock_tiles(now):
     if not clk:
         return None
     tiles = []
+    _vus = set()
     for ov in clk:
+        # ── CACHE PAR ÉLÉMENT ────────────────────────────────────────────────────────────────
+        # Le groupe entier était re-rendu dès qu'UN de ses éléments changeait. Avec un texte à
+        # variables dedans (`%cpu%`, qui bouge toutes les 2 s), les horloges — qui ne changent
+        # qu'à la seconde — étaient redessinées avec lui : pic d'`ov_clock` mesuré à 20,4 ms,
+        # pour une moyenne de 1,7. C'est la troisième fois ce soir qu'un cache trop grossier
+        # fait payer tout le monde au rythme du plus rapide.
+        # Bénéfice second : une tuile inchangée garde son IDENTITÉ, donc le cache VRAM la
+        # reconnaît et ne la retéléverse pas.
+        _val = _dyn_text(ov, now)
+        _col = _countdown_color(ov, now)
+        _cle = ov.get("id") or ("%s@%s" % (ov.get("kind"), ov.get("x")))
+        _vus.add(_cle)
+        _hit = _pf_tile_cache.get(_cle)
+        if _hit is not None and _hit[0] == (_val, _col, ov.get("x"), ov.get("y"),
+                                            ov.get("w"), ov.get("h")):
+            tiles.append(_hit[1])
+            continue
         x, y, w, h = _overlay_geom(ov)
         # bbox locale = rect de l'overlay, bornée à la sortie et alignée chroma (rgba_to_yuv
         # sous-échantillonne par _CW/_CH) : origine ramenée à un multiple, dimensions complétées.
@@ -5376,7 +5396,14 @@ def render_clock_tiles(now):
         ovs = dict(ov); ovs["x"] = x - bx0; ovs["y"] = y - by0   # même overlay, coords LOCALES à la tuile
         _draw_text_overlay(dd, ovs, _dyn_text(ov, now), color_override=_countdown_color(ov, now))
         oy, ou, ovv, oa, oa2 = rgba_to_yuv(tile)
-        tiles.append((bx0, by0, bx1, by1, oy, ou, ovv, oa, oa2))
+        _t = (bx0, by0, bx1, by1, oy, ou, ovv, oa, oa2)
+        _pf_tile_cache[_cle] = ((_val, _col, ov.get("x"), ov.get("y"),
+                                 ov.get("w"), ov.get("h")), _t)
+        tiles.append(_t)
+    # Purge des éléments disparus (horloge retirée, cellule masquée) : sans ça le cache
+    # grossirait à chaque édition du mur.
+    for _k in [_k for _k in _pf_tile_cache if _k not in _vus]:
+        _pf_tile_cache.pop(_k, None)
     return tiles or None
 
 dyn_rgba     = None              # couche d'habillage des MODÈLES (cachée, re-bake sur dirty)

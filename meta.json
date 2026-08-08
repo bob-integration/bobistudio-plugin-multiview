@@ -1,7 +1,10 @@
 {
-  "version": "0.78.0",
+  "version": "0.79.0",
   "date": "2026-08-08",
   "changes": {
+    "★ Tuiles per-frame : cache PAR ÉLÉMENT (0.79.0)": [
+      "Le groupe des tuiles per-frame était re-rendu EN ENTIER dès qu'un seul de ses éléments changeait. Depuis que les textes à variables l'ont rejoint, `%cpu%` — qui bouge toutes les 2 s — entraînait les horloges avec lui, alors qu'elles ne changent qu'à la seconde. Pic d'`ov_clock` mesuré à 20,4 ms pour une moyenne de 1,7, et le segment `overlays` dominait 100 % des trames lentes. C'est la troisième fois de la soirée qu'un cache trop grossier fait payer tout le monde au rythme du plus rapide — après la signature commune horloges/ANC et le re-bake du chrome. Chaque élément a désormais sa propre entrée, keyée sur sa valeur, sa couleur et sa géométrie. Bénéfice second : une tuile inchangée garde son IDENTITÉ, donc le cache VRAM la reconnaît et ne la retéléverse pas."
+    ],
     "★ Placement GPU fusionné : indices cachés, gather écrit dans le canvas (0.78.0)": [
       "in_place était le plus gros poste restant (5 à 8 ms pour deux tuiles). Pour chaque plan,  coûtait deux arange, deux multiplications, deux astype, un gather qui ALLOUE, puis une recopie dans la vue — une huitaine de lancements et deux tableaux temporaires. À trois plans par tuile et deux tuiles, une quarantaine de lancements par trame, alors que le GPU est à 40 % : on ne le sature pas, on l'attend. ★ Les INDICES ne dépendent que des tailles source et destination : ils ne changent JAMAIS d'une trame à l'autre, ils sont désormais calculés une fois et gardés en VRAM. Et le gather écrit DIRECTEMENT dans la vue du canvas, en un seul lancement, au lieu de produire un tableau qu'on recopie. Mêmes formules d'indices que resize_plane, donc rendu identique. Repli plan par plan à la moindre surprise, et les replis sont COMPTÉS ( sur :8080) — une régression silencieuse coûterait des millisecondes sans jamais le dire."
     ],
