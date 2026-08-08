@@ -1329,6 +1329,7 @@ def _refresh_lat_metrics():
                                   "ov_blend": _t_ov_blend.mx(), "ov_meters": _t_ov_meters.mx(),
                                   "ov_hist": _t_ov_hist.mx(), "ov_clock": _t_ov_clock.mx(),
                                   "ov_bake": _t_ov_bake.mx(), "output": _t_output.mx()}}
+    metrics["hist_prof"] = {{k: dict(v) for k, v in _hist_prof.items()}}
     metrics["cpu_split"] = ({{"compo": [_CPUS[0]], "boulangers": _CPUS[1:]}}
                             if _CPU_SPLIT else None)
     metrics["anc_bake"] = dict(_anc_prof)
@@ -3397,10 +3398,21 @@ def _vh_render(unit, rect, name, now):
         # redimensionnement est payé par le THREAD BOULANGER, pas par la trame. Avec des vignettes
         # stockées à 144 px (VH_THUMB_H), le facteur d'échelle est proche de 1 → LANCZOS est à la
         # fois net et bon marché.
-        up = np.asarray(Image.fromarray(img).resize((tw, th), Image.LANCZOS))
-        blk = np.empty((th, tw, 4), dtype=np.uint8)
-        blk[..., 0:3] = up
-        blk[..., 3] = a_bg
+        # ★ La vignette est FIGÉE une fois capturée, et sa case ne change pas de taille : son bloc
+        # mis à l'échelle est donc TOUJOURS LE MÊME. On le calculait pourtant à chaque bake — un
+        # LANCZOS par case, soit une vingtaine par passe sur une frise de 2 minutes, refaits pour
+        # rien. Mesuré le 2026-08-08 : 19,7 ms de dessin par bake, contre 4,5 de conversion.
+        # Le bloc est mémorisé DANS la case, avec la géométrie qui l'a produit : un changement de
+        # taille de frise (ou d'opacité) le périme, et il est recalculé une seule fois.
+        _memo = c.get("_blk")
+        if _memo is not None and _memo[0] == (tw, th, a_bg):
+            blk = _memo[1]
+        else:
+            up = np.asarray(Image.fromarray(img).resize((tw, th), Image.LANCZOS))
+            blk = np.empty((th, tw, 4), dtype=np.uint8)
+            blk[..., 0:3] = up
+            blk[..., 3] = a_bg
+            c["_blk"] = ((tw, th, a_bg), blk)
         arr[sc + oy:sc + oy + th, ox:ox + tw] = blk
         if c.get("pinned") and c.get("evt"):
             # Vignette CAPTURÉE À L'INSTANT de l'événement : liseré à la couleur de l'événement.
@@ -3603,6 +3615,10 @@ def _hist_tile(rect, arr):
     oy, ou, ov, oa, oa2 = rgba_to_yuv(sub)   # rgba_to_yuv accepte un ndarray RGBA (np.array(img))
     return (bx0, by0, bx1, by1, oy, ou, ov, oa, oa2)
 
+# Banc : où vont les millisecondes d'un bake de frise — dessin contre conversion, par essence.
+_hist_prof = {{"video": {{"draw": 0.0, "yuv": 0.0, "px": 0}},
+              "audio": {{"draw": 0.0, "yuv": 0.0, "px": 0}}}}
+
 def _hist_bake_one(key, kind, unit, rect, cfg_src, name, now):
     """Fabrique la tuile YUV d'UNE frise (dessin RGBA + conversion). ★ APPELÉ PAR LE THREAD
     BOULANGER SEULEMENT ★ — jamais par la boucle de composition (c'est tout l'objet de la 0.40.0).
@@ -3611,7 +3627,15 @@ def _hist_bake_one(key, kind, unit, rect, cfg_src, name, now):
     try:
         img = (_vh_render(unit, rect, name, now) if kind == "video"
                else _ah_render(unit, rect, cfg_src, now))
+        # Ventilation du bake : DESSIN (agrégation numpy + tracé RGBA) contre CONVERSION en YUV.
+        # Les deux appellent des remèdes opposés — rendre le dessin incrémental (ne redessiner que
+        # les colonnes neuves) ou rendre la conversion moins chère. Sur le bandeau ANC, la même
+        # ventilation avait montré une moitié-moitié qu'on n'aurait pas devinée.
+        _ts_conv = time.time_ns()
+        _hist_prof[kind]["draw"] = round((_ts_conv - _ts_hb) / 1e6, 2)
         t = _hist_tile(rect, img)
+        _hist_prof[kind]["yuv"] = round((time.time_ns() - _ts_conv) / 1e6, 2)
+        _hist_prof[kind]["px"] = int(rect[2]) * int(rect[3])
         if t is None:
             _hist_warn(key, kind, rect, "tuile vide (rect hors canvas ou dégénéré)")
     except Exception as _e:
