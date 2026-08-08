@@ -2680,11 +2680,21 @@ function _mvFillVarSelect() {
     _mvLoadVars().then(cat => {
         sel.innerHTML = '';
         sel.appendChild(new Option(T('plugin.multiview.insert_var_pick') || 'Insérer une variable…', ''));
-        // « system » (ce conteneur) puis « infra » (le nœud, l'orchestrateur) : la seconde famille
-        // décrit la MACHINE, donc elle vaut pour un overlay de mur comme pour un composant de
-        // cellule — contrairement aux variables de source, qui n'ont de sens que dans une fenêtre.
-        (cat.system || []).forEach(v => sel.appendChild(new Option(v.label + '  (%' + v.name + '%)', v.name)));
-        (cat.infra || []).forEach(v => sel.appendChild(new Option(v.label + '  (%' + v.name + '%)', v.name)));
+        // Un menu se parcourt à la souris : une liste plate de trente entrées se lit mal. On
+        // groupe donc par question posée — ce conteneur, la machine qui le porte, ses liens, le
+        // contrôleur. Les variables de SOURCE restent absentes : elles décrivent la source d'une
+        // FENÊTRE, et un overlay de mur n'en a pas.
+        const grp = (titre, liste) => {
+            if (!liste || !liste.length) return;
+            const og = document.createElement('optgroup');
+            og.label = titre;
+            liste.forEach(v => og.appendChild(new Option(v.label + '  (%' + v.name + '%)', v.name)));
+            sel.appendChild(og);
+        };
+        grp(T('plugin.multiview.vars_grp_sys') || 'Ce conteneur', cat.system);
+        grp(T('plugin.multiview.vars_grp_node') || 'Nœud', cat.noeud);
+        grp(T('plugin.multiview.vars_grp_rdma') || 'RDMA', cat.rdma);
+        grp(T('plugin.multiview.vars_grp_orch') || 'Orchestrateur', cat.orchestrateur);
         sel.dataset.filled = '1';
         sel.onchange = () => {
             const v = sel.value; sel.value = '';

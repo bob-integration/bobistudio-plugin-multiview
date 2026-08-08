@@ -4706,9 +4706,18 @@ def _var_sample_loop():
 # besoin de son adresse et d'un jeton, et créerait une dépendance inverse pour un simple affichage.
 _TELEMETRIE = {{}}      # {{"noeud": {{...}}, "orchestrateur": {{...}}}} — dernière poussée reçue
 
-def _tel(section, cle, suffixe="", defaut="—"):
+def _tel(section, cle, suffixe="", defaut="—", cible=None):
+    """Valeur de télémétrie. `cible` = nom d'un nœud ; absente, on prend le nœud de CE mur.
+    Un nœud inconnu du cache rend le défaut — jamais la valeur d'un autre nœud, qui donnerait un
+    affichage crédible et faux."""
     try:
-        v = (_TELEMETRIE.get(section) or {{}}).get(cle)
+        if cible:
+            src = (_TELEMETRIE.get("noeuds") or {{}}).get(cible)
+            if src is None:
+                return defaut
+        else:
+            src = _TELEMETRIE.get(section) or {{}}
+        v = src.get(cle)
         return defaut if v is None else ("%s%s" % (v, suffixe))
     except Exception:                                                      # noqa: BLE001
         return defaut
@@ -4758,13 +4767,21 @@ _TEXT_VARS = {{
     # NŒUD et ORCHESTRATEUR : valeurs poussées par le contrôleur (cf. _TELEMETRIE). « — » tant
     # qu'aucune poussée n'est arrivée — jamais une valeur inventée ni celle du conteneur, qui
     # ferait croire à un nœud au repos alors qu'on n'en sait rien.
-    "cpu_noeud":  lambda: _tel("noeud", "cpu_pct", " %"),
-    "ram_noeud":  lambda: _tel("noeud", "ram_pct", " %"),
-    "ram_noeud_mo": lambda: _tel("noeud", "ram_used_mb", " Mo"),
-    "disque_noeud": lambda: _tel("noeud", "disk_pct", " %"),
-    "temp_noeud": lambda: _tel("noeud", "temp_c", " °C"),
-    "charge_noeud": lambda: _tel("noeud", "load1"),
-    "nom_noeud":  lambda: _tel("noeud", "nom"),
+    "cpu_noeud":  lambda c=None: _tel("noeud", "cpu_pct", " %", cible=c),
+    "ram_noeud":  lambda c=None: _tel("noeud", "ram_pct", " %", cible=c),
+    "ram_noeud_mo": lambda c=None: _tel("noeud", "ram_used_mb", " Mo", cible=c),
+    "disque_noeud": lambda c=None: _tel("noeud", "disk_pct", " %", cible=c),
+    "temp_noeud": lambda c=None: _tel("noeud", "temp_c", " °C", cible=c),
+    "charge_noeud": lambda c=None: _tel("noeud", "load1", cible=c),
+    "nom_noeud":  lambda c=None: _tel("noeud", "nom", cible=c),
+    # RDMA : remplissage des liens de réplication. `rdma_pct` = (rx+tx) rapporté au débit NOMINAL
+    # du lien — c'est la question « reste-t-il de la place ? », celle qu'on se pose avant de
+    # déplacer un flux. rx/tx séparés pour savoir DANS QUEL SENS ça se remplit.
+    "rdma_pct":   lambda c=None: _tel("noeud", "rdma_pct", " %", cible=c),
+    "rdma_rx":    lambda c=None: _tel("noeud", "rdma_rx_gbps", " Gb/s", cible=c),
+    "rdma_tx":    lambda c=None: _tel("noeud", "rdma_tx_gbps", " Gb/s", cible=c),
+    "rdma_debit": lambda c=None: _tel("noeud", "rdma_rate_gbps", " Gb/s", cible=c),
+    "rdma_liens": lambda c=None: _tel("noeud", "rdma_liens", cible=c),
     "cpu_orch":   lambda: _tel("orchestrateur", "cpu_pct", " %"),
     "ram_orch":   lambda: _tel("orchestrateur", "ram_pct", " %"),
     "disque_orch": lambda: _tel("orchestrateur", "disk_pct", " %"),
@@ -4806,7 +4823,11 @@ _SRC_VARS = {{
 for _n in range(2, 10):
     _SRC_VARS["src_label%d" % _n] = (lambda n: (lambda c: _src_label(c, n)))(_n)
 
-_VAR_RE = re.compile(r"%([a-zA-Z_][a-zA-Z0-9_]*)%")
+# `%nom%` ou `%nom:cible%` — la cible désigne un NŒUD par son nom. Sans elle, les variables
+# d'infra parlent du nœud qui porte ce mur, ce qui est le cas d'usage courant ; avec elle, un mur
+# de supervision peut afficher n'importe quel nœud du parc. Le nom d'un nœud comporte des tirets
+# (`dl360-1`), d'où leur admission dans l'argument mais pas dans le nom de variable.
+_VAR_RE = re.compile(r"%([a-zA-Z_][a-zA-Z0-9_]*)(?::([A-Za-z0-9_.\-]+))?%")
 
 def _texts_with_vars():
     """Textes bruts susceptibles de contenir des variables (composants `text`/`umd` fixes des
@@ -4843,9 +4864,18 @@ def _expand_vars(txt, cfg=None):
         return txt
     def _sub(m):
         k = m.group(1)
+        arg = m.group(2)
         fn = _TEXT_VARS.get(k)
         if fn is not None:
             try:
+                # Les variables d'INFRA acceptent une cible ; les autres l'ignorent. On tente
+                # d'abord avec, on retombe sans : une variable qui n'en veut pas ne doit pas
+                # échouer parce que quelqu'un en a écrit une.
+                if arg:
+                    try:
+                        return str(fn(arg))
+                    except TypeError:
+                        pass
                 return str(fn())
             except Exception:
                 return "—"
@@ -5792,7 +5822,10 @@ class MvControlHandler(BaseHTTPRequestHandler):
         if not isinstance(b, dict):
             self.send_response(400); self.end_headers(); return
         _TELEMETRIE.clear()
-        for _sec in ("noeud", "orchestrateur"):
+        # `noeuds` (au pluriel) porte TOUS les nœuds nommés : c'est lui qui permet à un mur de
+        # supervision d'afficher une autre machine que la sienne (`%cpu_noeud:dl360-1%`). L'oublier
+        # ici faisait silencieusement retomber tout ciblage sur « — ».
+        for _sec in ("noeud", "orchestrateur", "noeuds"):
             if isinstance(b.get(_sec), dict):
                 _TELEMETRIE[_sec] = b[_sec]
         self.send_response(200); self.send_header("Content-Type", "application/json")
