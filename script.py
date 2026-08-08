@@ -723,7 +723,11 @@ def _update_peaks(state, n_channels, now):
         return None, None, "absence"
     # float32 déjà normalisé → 0 dBFS = |1.0| (plus de dépack s24be / full_scale).
     peaks_lin = np.max(np.abs(r), axis=0).astype(np.float64)  # (channels,)
-    peak_db = np.where(peaks_lin > 0, 20.0 * np.log10(peaks_lin), METER_MIN_DB - 1)
+    # `np.where` évalue les DEUX branches : sur un canal muet, log10(0) est calculé puis jeté, en
+    # émettant un RuntimeWarning à chaque relevé. Le résultat était juste, mais le journal se
+    # remplissait — et un journal bruyant est exactement ce qui masque les vraies pannes.
+    with np.errstate(divide="ignore"):
+        peak_db = np.where(peaks_lin > 0, 20.0 * np.log10(peaks_lin), METER_MIN_DB - 1)
     peak_db = np.clip(peak_db, METER_MIN_DB, 0.0)
     peak_db = peak_db[:n_channels]
     # Holds avec decay

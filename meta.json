@@ -1,7 +1,10 @@
 {
-  "version": "0.79.0",
+  "version": "0.79.1",
   "date": "2026-08-08",
   "changes": {
+    "Silence d'un avertissement log10 sur canal muet (0.79.1)": [
+      "`np.where(peaks_lin > 0, 20*log10(peaks_lin), MIN)` évalue les DEUX branches : sur un canal muet, log10(0) est calculé puis jeté, en émettant un RuntimeWarning à chaque relevé de VU-mètre. Le résultat affiché était juste, mais le journal du conteneur se remplissait — et un journal bruyant est exactement ce qui masque les vraies pannes."
+    ],
     "★ Tuiles per-frame : cache PAR ÉLÉMENT (0.79.0)": [
       "Le groupe des tuiles per-frame était re-rendu EN ENTIER dès qu'un seul de ses éléments changeait. Depuis que les textes à variables l'ont rejoint, `%cpu%` — qui bouge toutes les 2 s — entraînait les horloges avec lui, alors qu'elles ne changent qu'à la seconde. Pic d'`ov_clock` mesuré à 20,4 ms pour une moyenne de 1,7, et le segment `overlays` dominait 100 % des trames lentes. C'est la troisième fois de la soirée qu'un cache trop grossier fait payer tout le monde au rythme du plus rapide — après la signature commune horloges/ANC et le re-bake du chrome. Chaque élément a désormais sa propre entrée, keyée sur sa valeur, sa couleur et sa géométrie. Bénéfice second : une tuile inchangée garde son IDENTITÉ, donc le cache VRAM la reconnaît et ne la retéléverse pas."
     ],
