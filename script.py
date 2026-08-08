@@ -2375,6 +2375,99 @@ def _anc_units():
                     continue
     return out
 
+# ─── Atlas de glyphes : le bandeau ANC composé par RECOPIE ───────────────────
+# Un bandeau de timecode se re-dessine 25 fois par seconde — le timecode change, par définition.
+# Chaque re-dessin coûtait ~8 ms mesurés (4,2 de rendu PIL + 4,1 de conversion RGBA→YUV) pour deux
+# bandes de 830×34, soit 71 ns par pixel là où la conversion plein cadre du chrome tourne à 6,5.
+# C'est du coût FIXE par appel (création d'image, petits tableaux numpy), pas du travail utile :
+# le fond, le cadre et les libellés sont identiques d'une trame à l'autre, seuls les CHIFFRES
+# changent, et on redessinait tout.
+#
+# L'atlas rend chaque caractère UNE fois, déjà converti en YUV et DÉJÀ COMPOSITÉ sur le fond du
+# bandeau. C'est possible parce que ce fond est UNIFORME : « glyphe sur fond » ne dépend alors pas
+# de la position. Composer une ligne devient une suite de recopies mémoire, sans arithmétique.
+#
+# ⚠ L'avance est forcée PAIRE : en 4:2:2 un glyphe posé à une abscisse impaire tomberait entre deux
+# échantillons de chrominance, et la recopie décalerait la couleur d'un demi-pixel. Les chiffres
+# tabulaires d'un timecode s'en accommodent naturellement (c'est ce que fait tout incrustateur) ;
+# pour un texte à chasse variable, on retombe sur le rendu PIL complet plutôt que de le
+# monospacer en douce.
+_glyph_atlas = {{}}       # (police, taille, couleur, a_bg, hauteur) → {{"adv": n, "car": {{c: tuiles}}}}
+_ATLAS_MAX = 12          # jeux distincts gardés — au-delà, la config change trop pour qu'il serve
+
+def _atlas_pour(cle_police, taille, couleur, a_bg, h):
+    """Jeu de glyphes pré-convertis pour ce style, ou None si la police est illisible."""
+    cle = (cle_police, int(taille), couleur, int(a_bg), int(h))
+    jeu = _glyph_atlas.get(cle)
+    if jeu is not None:
+        return jeu
+    if len(_glyph_atlas) >= _ATLAS_MAX:
+        _glyph_atlas.clear()          # style qui change sans cesse : l'atlas ne sert plus, on repart
+    fnt = _overlay_font(cle_police, taille)
+    if fnt is None:
+        return None
+    jeu = {{"adv": 0, "car": {{}}, "fnt": fnt, "couleur": couleur, "a_bg": a_bg, "h": int(h)}}
+    _glyph_atlas[cle] = jeu
+    return jeu
+
+def _glyphe(jeu, c, pad):
+    """Tuiles YUV du caractère `c`, glyphe DÉJÀ composité sur le fond du bandeau. None si échec."""
+    t = jeu["car"].get(c)
+    if t is not None:
+        return t
+    try:
+        fnt = jeu["fnt"]
+        # Avance commune à tous les caractères du jeu, forcée PAIRE (cf. bloc ci-dessus).
+        if not jeu["adv"]:
+            larg = max(int(fnt.getlength(x)) for x in "0123456789:;")
+            jeu["adv"] = larg + (larg % 2)
+        adv, h = jeu["adv"], jeu["h"]
+        img = Image.new("RGBA", (adv, h), (0, 0, 0, jeu["a_bg"]))
+        ImageDraw.Draw(img, "RGBA").text((0, pad), c, font=fnt, fill=jeu["couleur"])
+        t = rgba_to_yuv(img)
+        jeu["car"][c] = t
+        return t
+    except Exception:                                                      # noqa: BLE001
+        return None
+
+def _bandeau_par_glyphes(txt, larg, h, pad, cle_police, taille, couleur, a_bg):
+    """Bandeau composé par recopie de glyphes → (y, u, v, a, a2), ou None si non applicable.
+
+    Non applicable = police illisible, texte trop large pour l'avance fixe, ou un caractère dont
+    le rendu échoue. Dans tous ces cas on rend la main au chemin PIL complet : mieux vaut payer
+    8 ms que d'afficher un bandeau tronqué ou décalé."""
+    jeu = _atlas_pour(cle_police, taille, couleur, a_bg, h)
+    if jeu is None:
+        return None
+    g0 = _glyphe(jeu, "0", pad)
+    if g0 is None:
+        return None
+    adv = jeu["adv"]
+    if adv <= 0 or pad + len(txt) * adv > larg:
+        return None            # ne tient pas : le rendu PIL sait rétrécir, pas nous
+    # Fond uniforme, construit directement en YUV — ni PIL ni conversion.
+    y = np.full((h, larg), _NEUTRAL if False else 0, dtype=_NP_DT)
+    u = np.full((h // _CH, larg // _CW), _NEUTRAL, dtype=_NP_DT)
+    v = np.full((h // _CH, larg // _CW), _NEUTRAL, dtype=_NP_DT)
+    a = np.full((h, larg), a_bg, dtype=np.uint8)
+    a2 = np.full((h // _CH, larg // _CW), a_bg, dtype=np.uint8)
+    x = pad - (pad % _CW)      # l'origine aussi doit être paire
+    for c in txt:
+        t = _glyphe(jeu, c, pad)
+        if t is None:
+            return None
+        gy, gu, gv, ga, ga2 = t
+        if gy.shape != (h, adv):
+            return None
+        y[:, x:x + adv] = gy
+        a[:, x:x + adv] = ga
+        u[:, x // _CW:(x + adv) // _CW] = gu
+        v[:, x // _CW:(x + adv) // _CW] = gv
+        a2[:, x // _CW:(x + adv) // _CW] = ga2
+        x += adv
+    return y, u, v, a, a2
+
+
 # Banc : ventilation d'un bake ANC — dessin PIL contre conversion RGBA→YUV, et surface traitée.
 # 5,7 ms pour deux bandes de ~830x34 px est deux ordres de grandeur au-dessus du travail utile ;
 # sans cette ventilation on ne sait pas lequel des deux étages est en cause.
@@ -2417,16 +2510,33 @@ def render_anc_tiles(now):
         if bx1 <= bx0 or by1 <= by0:
             continue
         a_bg = max(0, min(100, int(flags.get("anc_opacity") or 60))) * 255 // 100
+        # Un checksum invalide = métadonnée corrompue → texte en rouge (signal d'alarme).
+        bad = "CRC!" in txt
+        _coul = (255, 90, 90, 255) if bad else (235, 235, 235, 255)
+        _al = (flags.get("align") or "left")
+        # CHEMIN RAPIDE : composition par recopie de glyphes pré-convertis. Le fond du bandeau est
+        # uniforme, donc chaque caractère peut être composité UNE fois sur ce fond et réutilisé à
+        # n'importe quelle position. Un timecode ne coûte alors plus que quelques memcpy, au lieu
+        # d'un rendu PIL + une conversion RGBA→YUV de toute la bande à chaque trame.
+        _rapide = _bandeau_par_glyphes(txt, bx1 - bx0, by1 - by0, pad,
+                                       flags.get("font") or "dejavu-sans-bold", size, _coul, a_bg)
+        if _rapide is not None and _al == "left":
+            _ts_y = time.time_ns()
+            _anc_prof["yuv"] += (time.time_ns() - _ts_y) / 1e6
+            _anc_prof["px"] += (bx1 - bx0) * (by1 - by0)
+            _anc_prof["n"] += 1
+            _anc_prof["glyphes"] = _anc_prof.get("glyphes", 0) + 1
+            oy, ou, ov, oa, oa2 = _rapide
+            tiles.append((bx0, by0, bx1, by1, oy, ou, ov, oa, oa2))
+            continue
+        _anc_prof["pil_n"] = _anc_prof.get("pil_n", 0) + 1
         tile = Image.new("RGBA", (bx1 - bx0, by1 - by0), (0, 0, 0, 0))
         d = ImageDraw.Draw(tile, "RGBA")
         d.rectangle([0, 0, bx1 - bx0 - 1, by1 - by0 - 1], fill=(0, 0, 0, a_bg))
-        # Un checksum invalide = métadonnée corrompue → texte en rouge (signal d'alarme).
-        bad = "CRC!" in txt
         # ALIGNEMENT du bandeau. Les composants texte passent par _draw_text_overlay, qui gère
         # déjà `align` ; l'ANC dessine sa propre tuile et écrivait en dur en haut à GAUCHE. On
         # calcule ici l'abscisse à partir de la largeur mesurée du texte. Bornée à `pad` : un
         # texte plus large que la tuile reste lisible par la gauche au lieu de déborder à gauche.
-        _al = (flags.get("align") or "left")
         _tx = pad
         if _al in ("center", "right"):
             try:
@@ -2435,8 +2545,7 @@ def render_anc_tiles(now):
                 _tw = 0
             _avail = (bx1 - bx0) - 2 * pad
             _tx = max(pad, pad + int((_avail - _tw) / (2 if _al == "center" else 1)))
-        d.text((_tx, pad), txt, font=fnt,
-               fill=(255, 90, 90, 255) if bad else (235, 235, 235, 255))
+        d.text((_tx, pad), txt, font=fnt, fill=_coul)
         _ts_y = time.time_ns()
         oy, ou, ov, oa, oa2 = rgba_to_yuv(tile)
         _anc_prof["yuv"] += (time.time_ns() - _ts_y) / 1e6
