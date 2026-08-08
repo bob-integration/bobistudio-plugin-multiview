@@ -1329,6 +1329,8 @@ def _refresh_lat_metrics():
                                   "ov_blend": _t_ov_blend.mx(), "ov_meters": _t_ov_meters.mx(),
                                   "ov_hist": _t_ov_hist.mx(), "ov_clock": _t_ov_clock.mx(),
                                   "ov_bake": _t_ov_bake.mx(), "output": _t_output.mx()}}
+    metrics["cpu_split"] = ({{"compo": [_CPUS[0]], "boulangers": _CPUS[1:]}}
+                            if _CPU_SPLIT else None)
     metrics["anc_bake"] = dict(_anc_prof)
     metrics["clock_tz_unknown"] = dict(_ZONE_BAD)
     # Profiling du compositing : ventilation de own_latency (entrées / habillage / sortie).
@@ -5268,17 +5270,54 @@ def _chrome_bake_pass():
 
 _bake_errs = [0.0]
 
+# ─── Séparation des cœurs : la composition d'un côté, les boulangers de l'autre ──────────────
+# `nice` ne suffit pas. Il arbitre le CPU, pas la bande passante mémoire, et surtout il n'empêche
+# pas les deux fils d'atterrir sur le MÊME cœur : le conteneur est épinglé sur N cœurs et tous ses
+# threads y flottent librement. Mesuré le 2026-08-08 : un boulangeage de frise coûte jusqu'à 44 ms
+# et les pics de `own` de la compo valent exactement ça — le fil de compo est bien stallé pendant
+# qu'une passe s'exécute, alors qu'elle est censée être parallèle. Or le shard n'utilise que
+# 0,83 cœur sur 3 : ce n'est pas la puissance qui manque, c'est l'isolement.
+# ⛔ ESSAYÉ, ÉCARTÉ (2026-08-08) — désactivé par défaut, `cpu_split` pour le rejouer.
+# Réserver le premier cœur du cpuset à la composition et reléguer les boulangers sur les autres a
+# DÉGRADÉ le mur : 39,2 fps contre 43,7, `own` 17,5 contre 15,5, et surtout des pics INCHANGÉS à
+# 45-50 ms. Deux enseignements :
+#   • confiner la composition sur UN cœur lui fait perdre ce qu'elle tirait des trois (les kernels
+#     numpy/mvk et les threads internes de cupy s'y répartissaient) ;
+#   • les pics n'ayant pas bougé d'un millimètre, la cause du stall n'est PAS la concurrence CPU.
+# Avec le nice (sans effet) et le boulanger dédié (pire), c'est le troisième essai de parallélisme
+# qui échoue sans déplacer les pics. L'explication qui reste, et qui les couvre tous les trois :
+# le GIL. Un boulangeage PIL de 40 ms qui ne relâche pas le verrou global bloque le fil de
+# composition quel que soit son cœur et quelle que soit sa priorité. Aucun épinglage n'y peut rien
+# — il faudrait un PROCESSUS séparé, ou rendre la passe bon marché (ce qu'a fait l'atlas de
+# glyphes pour le bandeau ANC : 8,21 → 1,37 ms, et ce gain-là, lui, a tenu).
+# L'affinité est PAR THREAD sous Linux et s'HÉRITE à la création : chaque boulanger pose donc la
+# sienne au démarrage, et la compo pose la sienne APRÈS le lancement des threads — sinon ils
+# naîtraient tous confinés sur le cœur de la compo, le contraire du but.
+_CPUS = []
+try:
+    _CPUS = sorted(os.sched_getaffinity(0))
+except Exception:                                                          # noqa: BLE001
+    _CPUS = []
+_CPU_SPLIT = len(_CPUS) >= 2 and _as_bool(CONFIG.get("cpu_split", False), False)
+
 def _nice_baker():
     """Le boulanger est un thread SECONDAIRE : sous contention, la boucle de composition doit
     gagner. Sous Linux, `nice` est PAR THREAD (setpriority(PRIO_PROCESS, 0) = thread courant) →
     on peut dé-prioriser le boulanger sans toucher à la compo. Sans ça, sur un nœud sans cœur
     libre, les 40-55 ms de PIL du boulanger volent le cœur (ou le GIL) au tick de la compo, qui
     se réveille en retard et rate son slot de grille — le pic serait sorti de la trame pour
-    revenir par la fenêtre. Best-effort (échec silencieux si la plateforme refuse)."""
+    revenir par la fenêtre. Best-effort (échec silencieux si la plateforme refuse).
+
+    Pose AUSSI l'affinité : tous les cœurs SAUF le premier, réservé à la composition."""
     try:
         os.setpriority(os.PRIO_PROCESS, 0, 10)
     except Exception:
         pass
+    if _CPU_SPLIT:
+        try:
+            os.sched_setaffinity(0, set(_CPUS[1:]))
+        except Exception:                                                  # noqa: BLE001
+            pass
 
 def _chrome_baker_loop():
     """Thread BOULANGER de l'habillage. Sérialisé (une passe à la fois) : à quelques bakes/s son
@@ -6562,6 +6601,16 @@ _gc_last_full_ms = 0.0
 _gc_max_full_ms = 0.0
 
 _thread_compo = threading.get_ident()   # à partir d'ici, ce thread SEUL libère les mappings
+# Affinité de la COMPOSITION : le premier cœur du cpuset, pour elle seule. Posée ICI, après le
+# lancement des boulangers — l'affinité s'hérite à la création, la poser plus tôt les confinerait
+# tous sur ce même cœur.
+if _CPU_SPLIT:
+    try:
+        os.sched_setaffinity(0, {{_CPUS[0]}})
+        log("multiview: composition épinglée sur le cœur %d, boulangers sur %s"
+            % (_CPUS[0], _CPUS[1:]), "info")
+    except Exception as _e:                                                # noqa: BLE001
+        log("multiview: séparation des cœurs impossible (%s)" % _e, "warning")
 
 while True:
     # Fermetures/GC mis en file par les autres threads : on les exécute ICI, avant toute

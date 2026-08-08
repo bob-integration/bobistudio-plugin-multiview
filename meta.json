@@ -1,7 +1,13 @@
 {
-  "version": "0.72.3",
+  "version": "0.73.1",
   "date": "2026-08-08",
   "changes": {
+    "Cœur dédié au boulanger : essayé, ÉCARTÉ (0.73.1)": [
+      "Réserver un cœur à la composition a dégradé le mur (39,2 fps contre 43,7 ; own 17,5 contre 15,5) avec des pics INCHANGÉS à 45-50 ms. Confiner la composition sur un seul cœur lui fait perdre ce qu'elle tirait des trois ; et l'immobilité des pics dit que le stall ne vient pas de la concurrence CPU. Troisième essai de parallélisme qui échoue sans déplacer les pics, après le nice et le boulanger ANC dédié. L'explication qui les couvre tous : le GIL — un boulangeage PIL de 40 ms qui ne relâche pas le verrou bloque la composition quel que soit son cœur et sa priorité. La voie n'est donc pas de paralléliser mais de rendre chaque passe bon marché, comme l'a fait l'atlas de glyphes. Désactivé par défaut, réglage `cpu_split` pour rejouer l'essai."
+    ],
+    "★ Cœur RÉSERVÉ à la composition, boulangers relégués sur les autres (0.73.0)": [
+      "Le nice ne suffisait pas : il arbitre le CPU, pas la bande passante mémoire, et surtout il n'empêche pas les deux fils d'atterrir sur le MÊME cœur — le conteneur est épinglé sur N cœurs et tous ses threads y flottent. Mesuré : un boulangeage de frise coûte jusqu'à'44 ms, et les pics de  de la composition valent exactement ça, donc elle est bien stallée pendant une passe censée être parallèle. Or le shard n'utilise que 0,83 cœur sur 3 : ce n'est pas la puissance qui manque, c'est l'isolement. Le premier cœur du cpuset est désormais réservé à la composition, les boulangers vivent sur les autres. ⚠ L'affinité s'HÉRITE à la création : les boulangers posent la leur eux-mêmes au démarrage et la composition pose la sienne APRÈS les avoir lancés, sinon ils naîtraient tous confinés sur le cœur de la compo — le contraire du but. Réglage  pour désactiver."
+    ],
     "Retour de la frise audio à 5 Hz — ralentir ne rapportait rien (0.72.3)": [
       "La descente à 1 Hz de 0.72.2 a bien divisé par cinq la fréquence des boulangeages (11,5 → 4,5 par seconde), mais n'a rapporté qu'UNE image par seconde : 43,7 fps contre 42,6. Les pics de `own` sont restés à 42-45 ms — soit exactement le coût d'UN boulangeage. Ce n'est donc pas la fréquence des passes qui coûte la cadence, c'est le fait qu'une seule passe stalle la boucle de composition pendant des dizaines de millisecondes. Rendre la frise saccadée pour une image par seconde est un mauvais échange : retour à 5 Hz. La piste qui reste porte sur le COÛT et le PLACEMENT d'une passe, pas sur leur nombre."
     ],
