@@ -4695,6 +4695,25 @@ def _var_sample_loop():
             pass
         time.sleep(_VARS_CHECK_S)
 
+# ─── Télémétrie POUSSÉE par l'orchestrateur (nœud, contrôleur) ───────────────
+# Un conteneur ne peut pas mesurer son NŒUD : il ne voit que son propre cgroup. L'orchestrateur,
+# lui, échantillonne déjà la santé de chaque nœud et la sienne. Il POUSSE donc ces valeurs ici
+# (POST :8082/telemetry), et les variables ne font que les lire — même contrat que %cpu%/%ram% :
+# aucune E/S dans le chemin d'une image, et l'affichage d'une valeur vieille de quelques secondes
+# est sans conséquence pour un indicateur de charge.
+# Choix ASSUMÉ du sens de la poussée : c'est l'orchestrateur qui parle aux conteneurs (comme pour
+# tout le reste du contrôle), et non l'inverse. Un mur qui interrogerait l'API du contrôleur aurait
+# besoin de son adresse et d'un jeton, et créerait une dépendance inverse pour un simple affichage.
+_TELEMETRIE = {{}}      # {{"noeud": {{...}}, "orchestrateur": {{...}}}} — dernière poussée reçue
+
+def _tel(section, cle, suffixe="", defaut="—"):
+    try:
+        v = (_TELEMETRIE.get(section) or {{}}).get(cle)
+        return defaut if v is None else ("%s%s" % (v, suffixe))
+    except Exception:                                                      # noqa: BLE001
+        return defaut
+
+
 def _var_cpu():
     """Charge CPU du conteneur en %, telle que le fil d'échantillonnage l'a relevée. AUCUNE
     lecture de fichier ici : on rend la dernière valeur connue (cf. _var_sample_loop)."""
@@ -4736,6 +4755,19 @@ _TEXT_VARS = {{
     "date":       lambda: _var_now("%d/%m/%Y"),
     "cpu":        _var_cpu,
     "ram":        _var_ram,
+    # NŒUD et ORCHESTRATEUR : valeurs poussées par le contrôleur (cf. _TELEMETRIE). « — » tant
+    # qu'aucune poussée n'est arrivée — jamais une valeur inventée ni celle du conteneur, qui
+    # ferait croire à un nœud au repos alors qu'on n'en sait rien.
+    "cpu_noeud":  lambda: _tel("noeud", "cpu_pct", " %"),
+    "ram_noeud":  lambda: _tel("noeud", "ram_pct", " %"),
+    "ram_noeud_mo": lambda: _tel("noeud", "ram_used_mb", " Mo"),
+    "disque_noeud": lambda: _tel("noeud", "disk_pct", " %"),
+    "temp_noeud": lambda: _tel("noeud", "temp_c", " °C"),
+    "charge_noeud": lambda: _tel("noeud", "load1"),
+    "nom_noeud":  lambda: _tel("noeud", "nom"),
+    "cpu_orch":   lambda: _tel("orchestrateur", "cpu_pct", " %"),
+    "ram_orch":   lambda: _tel("orchestrateur", "ram_pct", " %"),
+    "disque_orch": lambda: _tel("orchestrateur", "disk_pct", " %"),
     "fps":        lambda: "%.1f" % (metrics.get("fps") or 0.0),
     "format":     _var_format,
     "entrees":    lambda: str(sum(1 for c in FLUX_CONFIG if (c.get("path") or "").strip())),
@@ -5753,6 +5785,19 @@ class MvControlHandler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         try: return json.loads(self.rfile.read(n).decode()) if n else {{}}
         except Exception: return {{}}
+    def _do_telemetry(self):
+        """Télémétrie du NŒUD et du CONTRÔLEUR, poussée par l'orchestrateur. Remplace le cache en
+        bloc : une poussée partielle vaut mieux qu'un panachage de valeurs d'âges différents."""
+        b = self._json()
+        if not isinstance(b, dict):
+            self.send_response(400); self.end_headers(); return
+        _TELEMETRIE.clear()
+        for _sec in ("noeud", "orchestrateur"):
+            if isinstance(b.get(_sec), dict):
+                _TELEMETRIE[_sec] = b[_sec]
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.end_headers(); self.wfile.write(b'{{"ok": true}}')
+
     def do_POST(self):
         if self.path == "/window":
             return self._do_window()
@@ -5770,6 +5815,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
             return self._do_overlay_text()
         if self.path == "/log_level":
             return self._do_log_level()
+        if self.path == "/telemetry":
+            return self._do_telemetry()
         if self.path != "/input":
             self.send_response(404); self.end_headers(); return
         b = self._json()
@@ -7124,7 +7171,13 @@ while True:
         # MODÈLES DE PIP (`_tpl_clock_ovs`) — un mur dont la liste `overlays` est vide en a quand
         # même, c'est ce qui m'a fait conclure à tort qu'il n'y en avait pas ici.
         _ts_sig0 = time.time_ns()
-        _clk_sig = tuple((_dyn_text(ov, now), _countdown_color(ov, now)) for ov in _dyn_overlays())
+        _dyn_ovs = _dyn_overlays()
+        _clk_sig = tuple((_dyn_text(ov, now), _countdown_color(ov, now)) for ov in _dyn_ovs)
+        # Valeurs RENDUES des textes dynamiques (horloges et textes à variables) — diagnostic.
+        # Sans ça, une variable qui rend « — » se voit à l'écran mais nulle part dans les
+        # métriques : il faut une capture d'image pour savoir si le mur reçoit sa télémétrie.
+        metrics["dyn_text"] = {{(ov.get("id") or ov.get("kind") or "?"): v[0]
+                               for ov, v in zip(_dyn_ovs, _clk_sig)}}
         _a_sig = _anc_sig()
         _t_pf_sig.push((time.time_ns() - _ts_sig0) / 1e6)
         _pf_neuf = False

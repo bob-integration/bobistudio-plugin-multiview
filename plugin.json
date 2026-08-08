@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.75.2",
+  "version": "0.76.1",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -368,7 +368,8 @@
       "/chrono",
       "/overlay_text",
       "/log_level",
-      "/clock_tz"
+      "/clock_tz",
+      "/telemetry"
     ],
     "read_endpoints": [
       "/state",

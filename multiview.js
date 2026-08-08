@@ -2680,7 +2680,11 @@ function _mvFillVarSelect() {
     _mvLoadVars().then(cat => {
         sel.innerHTML = '';
         sel.appendChild(new Option(T('plugin.multiview.insert_var_pick') || 'Insérer une variable…', ''));
+        // « system » (ce conteneur) puis « infra » (le nœud, l'orchestrateur) : la seconde famille
+        // décrit la MACHINE, donc elle vaut pour un overlay de mur comme pour un composant de
+        // cellule — contrairement aux variables de source, qui n'ont de sens que dans une fenêtre.
         (cat.system || []).forEach(v => sel.appendChild(new Option(v.label + '  (%' + v.name + '%)', v.name)));
+        (cat.infra || []).forEach(v => sel.appendChild(new Option(v.label + '  (%' + v.name + '%)', v.name)));
         sel.dataset.filled = '1';
         sel.onchange = () => {
             const v = sel.value; sel.value = '';
