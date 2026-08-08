@@ -1,5 +1,5 @@
 {
-  "version": "0.81.0",
+  "version": "0.82.0",
   "date": "2026-08-08",
   "changes": {
     "Silence d'un avertissement log10 sur canal muet (0.79.1)": [

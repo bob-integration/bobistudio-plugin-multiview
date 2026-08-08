@@ -1336,6 +1336,7 @@ def _refresh_lat_metrics():
     # Piles capturées PENDANT un dépassement, les plus fréquentes d'abord. C'est la réponse à
     # « où part le temps », observée et non déduite.
     metrics["piles_pic"] = dict(sorted(_piles.items(), key=lambda kv: -kv[1])[:8])
+    metrics["tuile_pin_miss"] = dict(_tuile_pin_miss)   # replis du transfert épinglé — doit rester 0
     metrics["place_miss"] = _place_miss["n"]   # replis du gather fusionné — doit rester à 0
     metrics["hist_prof"] = {{k: dict(v) for k, v in _hist_prof.items()}}
     metrics["cpu_split"] = ({{"compo": [_CPUS[0]], "boulangers": _CPUS[1:]}}
@@ -1764,6 +1765,49 @@ def _blend_pre_into(dv, ia, sa):
 # n'auraient que des défauts de cache, et feraient churner la VRAM pour rien).
 _ov_dev = {{}}          # id(tuile hôte) → (tuile hôte, tuile téléversée)
 _ov_dev_vus = set()    # ids touchés par la trame courante (base de l'éviction)
+
+# ─── Téléversement ÉPINGLÉ des tuiles per-frame ──────────────────────────────
+# Les tuiles qui changent à chaque trame (VU-mètres) montent en VRAM par cinq `cp.asarray`
+# successifs sur des tableaux numpy ORDINAIRES. Une source pageable oblige CUDA à passer par un
+# tampon intermédiaire et rend la copie SYNCHRONE : la boucle attend. Le chien de garde l'a mesuré
+# comme 30 % des dépassements de trame — le deuxième poste après le point de synchronisation.
+# Motif déjà employé dans ce fichier pour les plans vidéo (`_place_batch`) : on rassemble tout
+# dans un tampon hôte ÉPINGLÉ persistant, un SEUL transfert, puis on redécoupe des vues côté
+# carte. Les cinq tableaux n'ont pas le même type (YUV en _NP_DT, alphas en uint8) : on travaille
+# donc en OCTETS, avec des offsets alignés pour que les vues typées restent valides.
+_pin_tuile = {{"host": None, "dev": None, "cap": 0}}
+_tuile_pin_miss = {{"n": 0, "why": None}}
+
+def _tuile_vram(t):
+    """Tuile per-frame montée en VRAM en UN transfert épinglé. None = non applicable (repli)."""
+    try:
+        bx0, by0, bx1, by1, y, u, v, a, a2 = t
+        arrs = (y, u, v, a, a2)
+        tailles = [x.nbytes for x in arrs]
+        # Offsets alignés sur 8 octets : une vue uint16 sur un offset impair serait invalide.
+        offs, o = [], 0
+        for n in tailles:
+            offs.append(o); o += (n + 7) & ~7
+        total = o
+        if _pin_tuile["cap"] < total:
+            cap = max(total, _pin_tuile["cap"] * 2)
+            _pin_tuile["host"] = np.frombuffer(cp.cuda.alloc_pinned_memory(cap), dtype=np.uint8,
+                                               count=cap)
+            _pin_tuile["dev"] = cp.empty(cap, dtype=cp.uint8)
+            _pin_tuile["cap"] = cap
+        host = _pin_tuile["host"]; dev = _pin_tuile["dev"]
+        for x, off, n in zip(arrs, offs, tailles):
+            host[off:off + n] = np.ascontiguousarray(x).view(np.uint8).ravel()
+        dev[:total].set(host[:total])            # UN seul H2D, depuis de la mémoire épinglée
+        vues = []
+        for x, off, n in zip(arrs, offs, tailles):
+            vues.append(dev[off:off + n].view(x.dtype).reshape(x.shape))
+        return (bx0, by0, bx1, by1) + tuple(vues)
+    except Exception as _e:                                                # noqa: BLE001
+        _tuile_pin_miss["n"] += 1
+        _tuile_pin_miss["why"] = repr(_e)[:160]
+        return None
+
 
 def _tuile_dev(t):
     """Tuile prête pour le backend, en réutilisant sa copie VRAM tant que la tuile hôte est LA MÊME.
@@ -7424,9 +7468,16 @@ while True:
                 if _cache:
                     (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) = _tuile_dev(_tuile)
                 else:
-                    (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) = _tuile
-                    _oy, _ou, _ov, _oa, _oa2 = (_to_xp(_oy), _to_xp(_ou), _to_xp(_ov),
-                                                _to_xp(_oa), _to_xp(_oa2))
+                    # Tuile qui change à chaque trame : un seul transfert épinglé au lieu de cinq
+                    # copies pageables synchrones (cf. _tuile_vram). Repli COMPTÉ sur l'ancien
+                    # chemin — une tuile qui disparaîtrait en silence serait pire que lente.
+                    _v = _tuile_vram(_tuile) if GPU else None
+                    if _v is not None:
+                        (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) = _v
+                    else:
+                        (bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2) = _tuile
+                        _oy, _ou, _ov, _oa, _oa2 = (_to_xp(_oy), _to_xp(_ou), _to_xp(_ov),
+                                                    _to_xp(_oa), _to_xp(_oa2))
                 _up_ns += time.time_ns() - _tsu
                 _px_blend += (bx1 - bx0) * (by1 - by0)
                 _blend_into(canvas_y[by0:by1, bx0:bx1], _oy, _oa)
