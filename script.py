@@ -2595,6 +2595,15 @@ def _anc_sig():
 HIST_DURATIONS = (10, 30, 60, 120)     # durées offertes (s) — défaut 30
 HIST_MAX_S     = 120                   # profondeur des rings (= plus longue durée offerte)
 VH_TICK_S      = 0.2                   # période d'échantillonnage vidéo (5 Hz) → ruban à 200 ms près
+# Granularité de l'HORODATAGE de l'échelle dans la signature de la frise. À la seconde, chaque
+# unité se re-boulangeait 1×/s — sur un mur qui en porte treize, cela faisait 13 boulangeages par
+# seconde, chacun coûtant 3 à 5 ms et pointant à 34. Ces à-coups tombent sur les MÊMES cœurs
+# épinglés que la boucle de composition et la stallent : mesuré le 2026-08-08, les pics de `own`
+# montaient à 52 ms pour une moyenne de 15, tous les étages enflant ensemble — signature d'un
+# blocage global, pas d'une opération chère.
+# Sur une frise qui couvre 30 à 120 s, une échelle vieille de quelques secondes est invisible.
+# Même raisonnement et même valeur que AH_RECOMPOSE_S côté audio, qui l'appliquait déjà.
+VH_LABEL_S     = 5.0                   # …horodatage de l'échelle rafraîchi à 0,2 Hz (5 s)
 # ★ CADENCE DES VIGNETTES = DÉDUITE DE LA PLACE (0.39.0 — plus de « une par seconde » figée, qui
 # donnait des vignettes-timbres illisibles et 1 gather/s pour rien). On calcule combien de vignettes
 # tiennent dans la bande SANS DÉFORMATION (largeur d'une vignette = hauteur de bande × ratio de la
@@ -2630,6 +2639,13 @@ AH_COL_PX      = 1                     # ENVELOPPE : une colonne PAR PIXEL (fine
                                        # finesse ne coûte RIEN (les crêtes sont déjà calculées ; le
                                        # coût était dans les écritures numpy stridées, cf. _hist_fill).
                                        # Cran de repli si un jour on veut épaissir le trait.
+# ⚠ NE PAS RALENTIR pour gagner de la cadence — essayé et ÉCARTÉ le 2026-08-08. Cette valeur est
+# bien la fréquence de boulangeage dominante d'un mur (à 0,2 s, deux frises audio font 10 passes
+# par seconde à elles seules). Mais la passer à 1 Hz n'a rapporté qu'UNE image par seconde
+# (43,7 fps contre 42,6) : les à-coups sont devenus cinq fois plus rares SANS DEVENIR PLUS PETITS —
+# les pics de `own` sont restés à 42-45 ms, la valeur d'un seul boulangeage. Ce n'est donc pas la
+# FRÉQUENCE des passes qui coûte la cadence, c'est le fait qu'UNE passe stalle la composition
+# pendant des dizaines de millisecondes. Ralentir la frise la rendrait saccadée pour rien.
 AH_RECOMPOSE_S = 0.2                   # …redessinée au changement de colonne, 5 Hz max (~2,3 ms/passe)
 AH_MAX         = int(HIST_MAX_S / AH_TICK_S)   # 6000 relevés (120 s) par flux audio
 AH_LANE_MIN_PX = 10                    # hauteur MINIMALE d'une piste de canal : en dessous, on
@@ -3660,10 +3676,14 @@ def render_history_tiles(now):
                 with _hist_lock:
                     stv = _vh.get(name)
                     ver = stv["ver"] if stv else -1
-                # `int(now)` : l'HORODATAGE ABSOLU de l'échelle change chaque seconde — sans lui la
-                # frise afficherait une heure périmée entre deux vignettes (une par ~6 s).
+                # HORODATAGE ABSOLU de l'échelle : sans lui, la frise afficherait une heure
+                # périmée entre deux vignettes (une par ~6 s). Mais à la SECONDE il forçait un
+                # re-boulangeage par seconde et par unité, dont le coût retombait en à-coups sur
+                # les cœurs de la composition (cf. VH_LABEL_S). Arrondi à VH_LABEL_S : l'échelle
+                # peut avoir quelques secondes de retard, ce qui ne se voit pas sur 30 à 120 s.
                 sig = (rect, dur, ver, int(unit.get("opacity") or 85),
-                       _as_bool(unit.get("events", True), True), int(now), name)
+                       _as_bool(unit.get("events", True), True),
+                       int(now / VH_LABEL_S), name)
             else:
                 # Pas de recomposition = arrivée d'une nouvelle COLONNE, plafonné à AH_RECOMPOSE_S
                 # (5 Hz) : au-delà, l'enveloppe n'avance que de 1-2 px (invisible) et on paierait le
