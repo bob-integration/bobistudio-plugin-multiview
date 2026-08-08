@@ -1,7 +1,32 @@
 {
-  "version": "0.85.0",
+  "version": "0.90.0",
   "date": "2026-08-08",
   "changes": {
+    "Ventilation du coût par appel du blend (0.90.0)": [
+      "Le profil donne _blend3_into à 22,2 % du temps de composition pour 22 appels, soit ~79 µs par appel — très au-dessus des 5-10 µs d'un lancement CUDA, qui est de surcroît asynchrone. Ces 79 µs sont donc du Python.",
+      "blend3_us ventile désormais préconditions (_blend3_ok) et lancement du kernel. Ce partage décide du remède : mémoïser la vérification, qui est quelques lignes sans risque de rendu, ou bâtir un kernel groupé par couches, dont la table de paramètres est elle-même du travail Python par tuile et pourrait annuler le gain."
+    ],
+    "Sonde : en combien de couches les tuiles d'habillage se partagent-elles ? (0.89.0)": [
+      "Mesure préalable au groupement inter-tuiles. Un kernel unique sur toutes les tuiles ferait écrire deux threads au même pixel dans un ordre indéfini dès que deux tuiles se recouvrent — or le blend n'est pas commutatif, et le code garantit un recouvrement : l'étiquette SILENCE a la MÊME bbox que son meter et doit être blendée APRÈS.",
+      "Le groupement ne peut donc réunir que des tuiles deux à deux disjointes.  publie le nombre de couches obtenues par affectation gloutonne en préservant l'ordre : c'est le nombre de lancements que le groupement atteindrait au mieux, et donc le chiffre qui décide si le chantier vaut d'être mené."
+    ],
+    "Sortie écrite directement dans le grain, et un commentaire faux corrigé (0.88.0)": [
+      "La sortie progressive faisait un D2H vers un tampon épinglé PUIS une recopie plein cadre de ce tampon vers le grain — 3,1 Mo de memcpy hôte par trame, mesurés à 9,9 % du temps de composition, soit autant que les downloads eux-mêmes (9,4 %). Les trois plans sont désormais déversés directement dans le grain : un tampon épinglé de 3,1 Mo et une passe mémoire disparaissent du chemin critique.",
+      "Le code affirmait qu'« un .get direct dans le grain, mmap non épinglé, serait ~4× plus lent, banc Phase 0 ». Re-mesuré sur le P5000 de production (1920x1080 YUV420, 200 itérations) : D2H épinglé + memcpy 0,788 ms, D2H direct 0,717 ms — soit 0,91×, plus RAPIDE et non 4× plus lent. L'affirmation était fausse et avait un coût : elle avait fait classer cette piste comme un cul-de-sac.",
+      "Le grain ÉPINGLÉ ferait 0,563 ms, mais n'est pas retenu : 0,225 ms sur une trame de 8,4 ne paie pas un cudaHostRegister sur chaque tampon de l'anneau MXL, avec son roulement et le cas du flux recréé sous nous. C'est le chemin de sortie — une erreur n'y donne pas une tuile décalée mais une image corrompue.",
+      "Repli compté (out_direct_miss) sur l'ancien chemin. Ne concerne que la sortie progressive ; l'entrelacée garde _out_host."
+    ],
+    "Étiquette SILENCE/ABSENCE mise en cache — le poste n°1 de la composition (0.87.0)": [
+      "Le profil de régime (12 350 trames, 61 983 échantillons) montre `_meter_label_tile → rgba_to_yuv` à 19,6 % du temps de composition, réparti sur trois sites d'appel — soit ~2,2 ms sur 11, ce qui recoupe `ov_meters` à 2,9 ms.",
+      "La fonction portait pourtant « Banc 2026-07-14 : < 0,05 ms par meter muet, la cacher ne rapporte RIEN de mesurable. Ne pas optimiser ce chemin. » Cette mesure était juste et a cessé de l'être : elle supposait quelques meters muets occasionnels. Sur un mur dont plusieurs entrées sont muettes en permanence, l'étiquette est re-rendue PIL → RGBA → YUV à chaque trame et pour chacun.",
+      "Il a fallu le bon instrument pour le voir : le profil des trames LENTES ne le montrait pas, parce que ce poste ne fait pas déborder une trame — il coûte cher à TOUTES.",
+      "Le texte ne dépend que de l'état et de la géométrie, jamais des niveaux. On cache le TUPLE COMPLET (et non seulement les plans YUV comme `_meter_grad_tile`) : renvoyer le même objet fait aussi mordre le cache VRAM, donc le téléversement disparaît en plus du rendu. Cache borné, vidé franchement à 64 entrées."
+    ],
+    "Profil de RÉGIME : toutes les trames, pas seulement les lentes (0.86.0)": [
+      "`piles_pic` répond à « qu'est-ce qui fait DÉBORDER une trame ». C'était la bonne question tant qu'on perdait 0,41 trame/s ; à 0,02/s il ne récolte plus que quelques trames par fenêtre de 5 minutes et ses pourcentages deviennent ininterprétables — mesuré, deux fenêtres consécutives ont donné le même appel à 5 % puis à 32 %.",
+      "Pour gagner de la MARGE, la question est « où part le temps en régime », et il faut donc profiler toutes les trames. Même flux d'échantillons (le fil tourne déjà toutes les 2 ms), versé sans condition dans un second histogramme `piles_tout`, avec ses compteurs `piles_tout_stats`.",
+      "Chaque échantillon vaut ~2 ms de temps de composition : une entrée à X % des échantillons vaut donc X % du temps de compo. C'est un profil pondéré par le TEMPS, la seule forme qui permette de comparer deux postes. Coût : ~5 échantillons par trame, ~250 mises à jour de dict par seconde."
+    ],
     "Blend d'habillage : les trois plans en UN lancement (0.85.0)": [
       "Une tuile d'habillage coûtait 3 lancements GPU (Y, U, V), soit 63 par trame sur un mur à 21 tuiles. Les optimisations précédentes (cache VRAM 0.70.0, écriture directe dans la vue 0.71.1, cache par élément 0.79.0, transfert épinglé 0.82.0) avaient toutes attaqué le COÛT d'un lancement ; aucune n'avait touché leur NOMBRE.",
       "Mesuré avant : 2,0 ms de kernels pour 63 lancements, soit 32 µs par lancement — très au-dessus des 5-10 µs d'un lancement CUDA réel. L'écart est du Python : chaque appel d'ElementwiseKernel revalide et diffuse ses arguments côté hôte, et sur ce mur c'est du temps GIL.",

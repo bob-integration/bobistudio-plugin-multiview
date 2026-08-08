@@ -95,6 +95,7 @@ _t_in_read = RollingMs(); _t_in_place = RollingMs()
 # en pleine trame). Sans ce comptage, `ov_blend` ne dit pas s'il est cher parce qu'il y a beaucoup
 # de pixels ou parce qu'il y a beaucoup d'appels — deux problèmes aux remèdes opposés.
 _n_meters = RollingMs(); _n_hist = RollingMs(); _n_clock = RollingMs(); _n_px_blend = RollingMs()
+_couches_tuiles = RollingMs()   # couches sans recouvrement par trame (sonde 0.89.0)
 # Dans `ov_blend`, deux coûts cohabitent et appellent des remèdes OPPOSÉS : le TRANSFERT des tuiles
 # vers la VRAM (5 tableaux par tuile, depuis de la mémoire hôte pageable) et les LANCEMENTS de
 # kernel du blend lui-même (3 par tuile). Si c'est le transfert qui domine, le remède est de garder
@@ -1360,9 +1361,22 @@ def _refresh_lat_metrics():
     metrics["piles_pic_stats"] = {{"trames_lentes": _watch["n_lentes"],
                                   "echantillons": _watch["n_ech"],
                                   "seuil_ms": round(_watch["seuil_ms"], 2)}}
+    # Profil de RÉGIME (toutes les trames) : c'est celui-ci qu'on lit pour gagner de la MARGE ;
+    # `piles_pic` ne répond qu'à « qui fait déborder ». Chaque échantillon vaut ~2 ms de compo,
+    # donc les parts se lisent directement en pourcentage du temps de composition.
+    metrics["piles_tout"] = dict(sorted(_piles_tout.items(), key=lambda kv: -kv[1])[:16])
+    metrics["piles_tout_stats"] = dict(_prof_tout)
     metrics["tuile_pin_miss"] = dict(_tuile_pin_miss)   # replis du transfert épinglé — doit rester 0
     metrics["place_miss"] = _place_miss["n"]   # replis du gather fusionné — doit rester à 0
     metrics["blend3_miss"] = dict(_blend3_miss)   # replis du blend 3-plans fusionné — doit rester à 0
+    metrics["out_direct_miss"] = dict(_out_direct_miss)   # replis de l'écriture directe — doit rester à 0
+    # Combien de LANCEMENTS le groupement inter-tuiles pourrait au mieux atteindre (cf.
+    # _compter_couches). À comparer à `ov_tiles.total` : c'est le rapport qui dit si ça vaut la peine.
+    metrics["blend_couches"] = {{"moy": _couches_tuiles.avg(), "max": _couches_tuiles.mx()}}
+    # Ventilation du coût PAR APPEL de `_blend3_into`, en µs : préconditions vs lancement.
+    # C'est ce partage qui décide entre « mémoïser le contrôle » et « bâtir un kernel groupé ».
+    metrics["blend3_us"] = {{"check": _t_b3_check.avg(), "check_max": _t_b3_check.mx(),
+                            "call": _t_b3_call.avg(), "call_max": _t_b3_call.mx()}}
     metrics["hist_prof"] = {{k: dict(v) for k, v in _hist_prof.items()}}
     metrics["cpu_split"] = ({{"compo": [_CPUS[0]], "boulangers": _CPUS[1:]}}
                             if _CPU_SPLIT else None)
@@ -1769,6 +1783,31 @@ _hist_bake = {{"last": 0.0, "max": 0.0}}   # coût UNITAIRE du re-bake d'une fri
 # 255) → résultat OCTET-IDENTIQUE, vérifié au banc sur T4 avant déploiement. Toute divergence se
 # verrait à l'écran ; le repli est donc COMPTÉ et exposé (`blend3_miss` sur :8080), comme pour le
 # gather de placement.
+def _compter_couches(bboxes):
+    """Nombre de COUCHES sans recouvrement nécessaires pour blender ces tuiles DANS L'ORDRE.
+
+    Le blend n'est pas commutatif : deux tuiles qui se recouvrent doivent être appliquées l'une
+    après l'autre. Un lancement GPU groupé ne peut donc contenir que des tuiles deux à deux
+    disjointes. Affectation gloutonne, ordre préservé : chaque tuile va dans la PREMIÈRE couche
+    où elle ne touche personne — donc une tuile ne peut jamais doubler une tuile antérieure qui
+    la recouvre, puisque celle-ci occupe une couche de rang inférieur ou égal.
+
+    C'est un MAJORANT du nombre de lancements atteignable par le groupement inter-tuiles, et donc
+    la mesure qui décide si ce chantier vaut d'être mené : à 21 tuiles, 2 couches valent le
+    travail, 15 ne le valent pas. Coût : O(tuiles × couches) sur des entiers, quelques µs.
+    """
+    couches = []
+    for (x0, y0, x1, y1) in bboxes:
+        for c in couches:
+            if all(x1 <= ox0 or ox1 <= x0 or y1 <= oy0 or oy1 <= y0
+                   for (ox0, oy0, ox1, oy1) in c):
+                c.append((x0, y0, x1, y1))
+                break
+        else:
+            couches.append([(x0, y0, x1, y1)])
+    return len(couches)
+
+
 _blend3_miss = {{"n": 0, "why": None, "calls": 0}}
 _blend3_k = None
 if GPU:
@@ -1835,10 +1874,24 @@ def _blend3_ok(dy, sy, ay, du, su, dv, sv, auv):
     return None
 
 
+# VENTILATION du coût PAR APPEL (0.90.0). Le profil de régime donne `_blend3_into` à 22,2 % du
+# temps de composition pour 22 appels, soit ~79 µs par appel — très au-dessus des 5-10 µs d'un
+# lancement CUDA, qui est de surcroît ASYNCHRONE. Ces 79 µs sont donc du Python, et il faut savoir
+# LEQUEL avant de choisir le remède : mémoïser la vérification de préconditions (quelques lignes,
+# aucun risque de rendu) ou bâtir un kernel groupé par couches (grosse machinerie, et la table de
+# paramètres est elle-même du travail Python par tuile — elle pourrait annuler le gain).
+# Deux horodatages par appel, ~100 ns chacun : négligeable devant les 79 µs qu'on mesure.
+_t_b3_check = RollingMs()      # µs passées dans _blend3_ok
+_t_b3_call  = RollingMs()      # µs passées dans le lancement du kernel
+
+
 def _blend3_into(dy, sy, ay, du, su, dv, sv, auv):
     """Blende les trois plans d'une tuile. UN lancement si possible, sinon les trois d'origine."""
     _blend3_miss["calls"] += 1
+    _t0b3 = time.perf_counter_ns()
     _why = _blend3_ok(dy, sy, ay, du, su, dv, sv, auv) if (GPU and not _MVK) else "hors GPU"
+    _t1b3 = time.perf_counter_ns()
+    _t_b3_check.push((_t1b3 - _t0b3) / 1000.0)
     if _why is None:
         _ny = dy.shape[0] * dy.shape[1]
         _nuv = du.shape[0] * du.shape[1]
@@ -1848,6 +1901,7 @@ def _blend3_into(dy, sy, ay, du, su, dv, sv, auv):
                   (dy, sy, ay, dy.shape[0], dy.shape[1], dy.strides[0] // dy.itemsize,
                    du, su, auv, du.shape[0], du.shape[1], du.strides[0] // du.itemsize,
                    dv, sv, dv.strides[0] // dv.itemsize, _tot))
+        _t_b3_call.push((time.perf_counter_ns() - _t1b3) / 1000.0)
         return
     if _why != "hors GPU":
         _blend3_miss["n"] += 1
@@ -1995,10 +2049,23 @@ _outpin = {{"buf": None}}                        # buffer hôte ÉPINGLÉ persis
 
 def _out_host(arr):
     """Tableau planar prêt à écrire dans un grain, côté HÔTE. En GPU : download D2H ÉPINGLÉ
-    (.get(out=pinned) — un .get direct dans le grain, mmap non épinglé, serait ~4× plus lent,
-    banc Phase 0). En CPU : renvoyé tel quel (zéro copie). Chemin PARTAGÉ par la sortie
-    progressive (1 trame pleine) et la sortie entrelacée (2 champs) — le buffer épinglé est
-    dimensionné sur la plus grosse demande vue, donc réutilisé d'un champ à l'autre."""
+    (.get(out=pinned)). En CPU : renvoyé tel quel (zéro copie). Utilisé par la sortie ENTRELACÉE
+    (2 champs) ; le buffer épinglé est dimensionné sur la plus grosse demande vue, donc réutilisé
+    d'un champ à l'autre.
+
+    ⚠ CORRECTION D'UN COMMENTAIRE FAUX (2026-08-08). Cette docstring affirmait qu'« un .get direct
+    dans le grain, mmap non épinglé, serait ~4× plus lent, banc Phase 0 ». Re-mesuré sur le P5000
+    de production, trame 1920x1080 YUV420, 200 itérations :
+
+        D2H épinglé + memcpy → grain   0,788 ms      (ce que faisait la sortie progressive)
+        D2H direct dans le mmap        0,717 ms      soit 0,91× — plus RAPIDE, pas 4× plus lent
+        D2H direct, grain épinglé      0,563 ms
+
+    L'affirmation était donc fausse, et elle avait un coût : elle a fait classer « écrire la sortie
+    directement dans le grain » comme un cul-de-sac dans le journal de chantier. La sortie
+    progressive écrit désormais en direct (cf. `_out_dans_grain`). Le grain ÉPINGLÉ (0,563) n'est
+    pas pris : 0,225 ms sur une trame de 8,4 ne paie pas le cudaHostRegister sur chaque tampon de
+    l'anneau MXL, avec son roulement et le cas du flux recréé sous nous."""
     if not GPU:
         return arr
     _n = arr.size
@@ -2029,6 +2096,48 @@ def _out_host_plans(plans):
         _p.ravel().get(out=_outpin["buf"][_off:_off + _k])
         _off += _k
     return _outpin["buf"][:_n]
+
+
+_out_direct_miss = {{"n": 0, "why": None, "calls": 0}}
+
+
+def _out_dans_grain(plans, vue):
+    """Déverse les trois plans DIRECTEMENT dans la vue octets du grain MXL.
+
+    ★ Supprime la seconde copie. Le chemin précédent faisait D2H vers un tampon épinglé PUIS une
+    recopie plein cadre de ce tampon vers le grain — 3,1 Mo de memcpy hôte par trame, mesurés à
+    9,9 % du temps de composition (profil de régime, 0.86.0), soit autant que les downloads
+    eux-mêmes (9,4 %).
+
+    Ce n'est pas une optimisation mais une SIMPLIFICATION : un tampon épinglé de 3,1 Mo et une
+    passe mémoire disparaissent du chemin critique. Le gain mesuré est petit et honnête —
+    0,788 → 0,717 ms sur ce stage, soit 0,91× — et il contredit le commentaire qui régnait ici
+    (« ~4× plus lent », cf. `_out_host`, corrigé). Le grain ÉPINGLÉ ferait 0,563 ms, mais pas au
+    prix d'un cudaHostRegister sur l'anneau MXL.
+
+    Repli COMPTÉ (`out_direct_miss` sur :8080) sur l'ancien chemin dès qu'une précondition manque :
+    c'est le chemin de SORTIE, où une erreur ne donne pas une tuile décalée mais une image
+    corrompue. Ne concerne QUE la sortie progressive ; l'entrelacée garde `_out_host`."""
+    _out_direct_miss["calls"] += 1
+    try:
+        _dst = vue[:OUT_FRAME_SIZE].view(_NP_DT)
+        _n = sum(_p.size for _p in plans)
+        if _dst.size != _n:
+            raise ValueError("taille grain %d != plans %d" % (_dst.size, _n))
+        _off = 0
+        for _p in plans:
+            _k = _p.size
+            if GPU:
+                _p.ravel().get(out=_dst[_off:_off + _k])
+            else:
+                _dst[_off:_off + _k] = _p.ravel()
+            _off += _k
+        return
+    except Exception as _e:                                            # noqa: BLE001
+        _out_direct_miss["n"] += 1
+        _out_direct_miss["why"] = "%s: %s" % (type(_e).__name__, _e)
+    # Repli : chemin d'origine, inchangé.
+    vue[:OUT_FRAME_SIZE] = _out_host_plans(plans).view(np.uint8)
 # GPU SLICE : staging épinglé PAR LOT (entrées) + buffers épinglés de SORTIE (D2H) — bande seule
 # (hy/hu/hv, squelette k=1) ou lots ×2 double-buffer + stream D2H dédié (hb/stream, micro-batch).
 # Persistants (l'allocation pinned est coûteuse) ; capacité entrée en croissance ×2 comme _pin.
@@ -2321,13 +2430,46 @@ def render_dynamic():
         _tpl_render_dynamic(d, img, i, cfg, _tpl_comps(cfg))
     return img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
+_meter_label_tile_cache = {{}}
+_METER_LABEL_CACHE_MAX = 64      # une entrée par (état × géométrie) ; la mise en page bouge rarement
+
+
 def _meter_label_tile(status, bx0, by0, bx1, by1, mx, my, mw, mh):
+    """Étiquette SILENCE/ABSENCE — CACHÉE. Cf. `_meter_label_tile_rendu` pour le dessin.
+
+    ★ POURQUOI CE CACHE EXISTE ALORS QUE LA FONCTION DISAIT DE NE PAS L'ÉCRIRE.
+    La version d'origine portait : « Banc 2026-07-14 : mesurée à < 0,05 ms par trame et par meter
+    muet — la cacher ne rapporte RIEN de mesurable. Ne pas optimiser ce chemin. » Cette mesure
+    était juste, et elle a cessé de l'être : elle supposait quelques meters muets occasionnels.
+    Sur un mur dont plusieurs entrées sont muettes EN PERMANENCE, l'étiquette est re-rendue
+    (PIL → RGBA → YUV) à chaque trame et pour chacun.
+    Profil de RÉGIME du 2026-08-08 (12 350 trames, 61 983 échantillons, plugin 0.86.0) :
+    `_meter_label_tile → rgba_to_yuv` pèse **19,6 % du temps de composition**, réparti sur trois
+    sites — soit ~2,2 ms sur 11, ce qui recoupe `ov_meters` à 2,9 ms. C'était le poste n°1.
+    Il a fallu le bon instrument pour le voir : le profil des trames LENTES ne le montrait pas
+    (il ne fait pas déborder une trame, il coûte cher à TOUTES).
+
+    Le texte ne dépend que de l'état et de la géométrie — jamais des niveaux. On cache donc le
+    TUPLE COMPLET, et pas seulement les plans YUV comme le fait `_meter_grad_tile` : renvoyer le
+    MÊME objet fait aussi mordre le cache VRAM (`_tuile_dev` indexe sur `id(t)`), donc le
+    téléversement disparaît en plus du rendu. Clé absolue (bbox comprise) pour cette raison ; la
+    mise en page ne bouge qu'à l'édition du mur, le cache reste donc minuscule."""
+    key = (status, bx0, by0, bx1, by1, mx, my, mw, mh)
+    got = _meter_label_tile_cache.get(key)
+    if got is not None:
+        return got[0]
+    tuile = _meter_label_tile_rendu(status, bx0, by0, bx1, by1, mx, my, mw, mh)
+    if len(_meter_label_tile_cache) >= _METER_LABEL_CACHE_MAX:
+        _meter_label_tile_cache.clear()      # borne franche : une mise en page neuve repart à zéro
+    _meter_label_tile_cache[key] = (tuile,)  # tuple à 1 élément : None est une valeur CACHABLE
+    return tuile
+
+
+def _meter_label_tile_rendu(status, bx0, by0, bx1, by1, mx, my, mw, mh):
     """TUILE YUV séparée : étiquette VERTICALE « SILENCE » (signal muet) ou « ABSENCE » (flux coupé),
     petite, centrée sur la zone des barres — pour SAVOIR pourquoi il n'y a pas de son. Posée en tuile
     INDÉPENDANTE (PIL→YUV), donc rendu IDENTIQUE sur les chemins GPU et CPU, et payée uniquement hors
-    état « ok ». Renvoie un tuple tuile (même bbox que le meter) ou None.
-    (Banc 2026-07-14 : mesurée à < 0,05 ms par trame et par meter muet, même sur un mur 16 cellules
-    — la cacher ne rapporte RIEN de mesurable. Ne pas « optimiser » ce chemin.)"""
+    état « ok ». Renvoie un tuple tuile (même bbox que le meter) ou None."""
     txt = "ABSENCE" if status == "absence" else "SILENCE"
     col = (236, 72, 60) if status == "absence" else (240, 184, 44)   # rouge / ambre
     tw_, th_ = bx1 - bx0, by1 - by0
@@ -7151,6 +7293,21 @@ _watch = {{"t0": 0, "fi": 0, "buf": [], "n_lentes": 0, "n_ech": 0,
 _PILE_MAX_ECH = 64          # ring par trame : à 2 ms l'échantillon, couvre 128 ms de trame
 _piles = {{}}      # signature de pile → nombre d'ÉCHANTILLONS observés dans des trames lentes
 
+# ★ ET LE PROFIL DE **TOUTES** LES TRAMES — deux questions différentes, deux histogrammes.
+# `_piles` répond à « qu'est-ce qui fait DÉBORDER une trame ». C'était la bonne question tant
+# qu'on perdait 0,41 trame/s. À 0,02/s il ne récolte plus que quelques trames par fenêtre de
+# 5 min, et ses pourcentages deviennent ininterprétables — mesuré : deux fenêtres consécutives
+# ont donné le même appel à 5 % puis à 32 %. Optimiser là-dessus, c'est optimiser du bruit.
+# Pour GAGNER DE LA MARGE, la question est « où part le temps EN RÉGIME », et il faut donc
+# profiler toutes les trames. Même flux d'échantillons (le fil tourne déjà toutes les 2 ms), on
+# les verse simplement dans un second histogramme, sans condition.
+# Lecture : chaque échantillon vaut ~2 ms de temps de compo, donc une entrée à X % des
+# échantillons vaut X % du temps de composition. C'est un profil pondéré par le TEMPS, pas un
+# comptage d'événements — la seule forme qui permette de comparer deux postes.
+# Coût : ~5 échantillons par trame (own ≈ 11 ms), soit ~250 mises à jour de dict par seconde.
+_piles_tout = {{}}
+_prof_tout = {{"trames": 0, "echantillons": 0}}
+
 
 def _pile_sig(cadre):
     """Signature légère des 4 cadres les plus INTERNES (c'est là qu'est le temps ; au-dessus c'est
@@ -7642,6 +7799,14 @@ while True:
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
         _px_blend = 0   # pixels Y réellement recouverts par les tuiles de cette trame
         _up_ns = 0      # ns passés à TÉLÉVERSER les tuiles vers le backend (identité en CPU)
+        # SONDE (0.89.0) : bboxes des tuiles d'habillage de cette trame, pour compter en combien de
+        # COUCHES sans recouvrement elles se partagent — cf. `_compter_couches`. Mesure préalable au
+        # groupement inter-tuiles : un kernel unique sur des tuiles qui SE RECOUVRENT ferait écrire
+        # deux threads au même pixel dans un ordre indéfini, alors que le blend n'est pas commutatif
+        # (le code garantit d'ailleurs un recouvrement : l'étiquette SILENCE a la MÊME bbox que son
+        # meter et doit être blendée APRÈS). Le nombre de couches borne donc le gain atteignable :
+        # c'est lui, et non le nombre de tuiles, qui sera le nombre de lancements.
+        _bboxes_trame = []
         if not SLICE_ON:
             _n_meters.push(len(_meter_tiles or ()))
             _n_hist.push(len(_hist_tiles or ()))
@@ -7672,6 +7837,7 @@ while True:
                                                     _to_xp(_oa), _to_xp(_oa2))
                 _up_ns += time.time_ns() - _tsu
                 _px_blend += (bx1 - bx0) * (by1 - by0)
+                _bboxes_trame.append((bx0, by0, bx1, by1))
                 cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
                 # UN lancement pour les trois plans (cf. _blend3_into) ; repli compté sur les
                 # trois appels d'origine si la moindre précondition manque.
@@ -7679,6 +7845,8 @@ while True:
                              canvas_u[cy0:cy1, cx0:cx1], _ou,
                              canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
 
+        # SONDE (0.89.0) : en combien de couches sans recouvrement ces tuiles se partagent-elles ?
+        _couches_tuiles.push(_compter_couches(_bboxes_trame))
         _tuiles_dev_evict()
         _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
         _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=blend VU+horloges (bbox)
@@ -7715,14 +7883,12 @@ while True:
                     _vw_o[:OUT_FIELD_SIZE] = _out_host(_fld).view(np.uint8)
                     out_writer.commit(_gi_o)
             else:
-                # Grain de sortie MXL (zéro-copie : vue uint8 de l'array _NP_DT). Index implicite :
-                # open_grain() sans argument appelle bobimxl.Writer.next_index (grille TAI).
-                # Les trois plans sont déversés DIRECTEMENT dans le tampon épinglé, sans passer par
-                # une trame contiguë en VRAM : l'allocation et la recopie plein cadre que coûtait
-                # `xp.concatenate` disparaissent (cf. _out_host_plans).
+                # Grain de sortie MXL. Index implicite : open_grain() sans argument appelle
+                # bobimxl.Writer.next_index (grille TAI). Les trois plans sont déversés
+                # DIRECTEMENT dans le grain — plus de tampon épinglé intermédiaire ni de recopie
+                # plein cadre (cf. _out_dans_grain).
                 _gidx, _gi_o, _vw_o = out_writer.open_grain()
-                _vw_o[:OUT_FRAME_SIZE] = _out_host_plans(
-                    (canvas_y, canvas_u, canvas_v)).view(np.uint8)
+                _out_dans_grain((canvas_y, canvas_u, canvas_v), _vw_o)
                 out_writer.commit(_gi_o)
         ts_out = time.time_ns()
         # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
@@ -7766,6 +7932,11 @@ while True:
     # ★ RÉTENTION DU PROFIL : la trame vient de finir, on sait ENFIN si elle était lente. Les
     # échantillons pris tout au long du cycle ne sont versés dans l'histogramme que maintenant —
     # c'est ce qui supprime le biais de fin de trame de l'ancienne capture au franchissement.
+    # Profil de RÉGIME : toutes les trames, sans condition (cf. le bloc `_piles_tout`).
+    _prof_tout["trames"] += 1
+    for _sig in _watch["buf"]:
+        _piles_tout[_sig] = _piles_tout.get(_sig, 0) + 1
+        _prof_tout["echantillons"] += 1
     if _own_ms_dbg >= _watch["seuil_ms"]:
         _watch["n_lentes"] += 1
         for _sig in _watch["buf"]:
