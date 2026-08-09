@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.92.0",
+  "version": "0.95.1",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -213,10 +213,10 @@
       "hidden": true,
       "type": "number",
       "label": "Bandes par lot GPU (micro-batch)",
-      "help": "Nombre de bandes MXL par lot GPU (verdict banc GO-MEGA-135 : 4 ≈ méga-bandes 144 lignes à 1080p/36). 1 = bande à bande.",
+      "help": "Nombre de bandes MXL par lot GPU. ⚠ Le coût par LOT est fixe (lancements de kernels, transferts) : trop de lots et la trame explose. Banc gate du 2026-08-07 sur T4 — pleine trame 3,0 ms de compose, méga-bandes 540 lignes 5,1 ms, bandes de 36 lignes 45,6 ms. Verdict GO-MEGA-540 : à 1080p/36 l, k=15 donne 2 lots de 540 lignes. Mesuré en prod le 2026-08-09 : k=8 (288 lignes) donne déjà own=24,5 ms et 11 trames perdues/s — 540 est un SEUIL, pas un ordre de grandeur. 1 = bande à bande (rejeté par le banc).",
       "min": 1,
-      "max": 8,
-      "default": 4,
+      "max": 16,
+      "default": 15,
       "scope": "system",
       "visible_if": {
         "gpu_slice": true

@@ -1,7 +1,18 @@
 {
-  "version": "0.92.0",
+  "version": "0.95.1",
   "date": "2026-08-09",
   "changes": {
+    "Audit shm_video_ring/shm_audio_ring : purge du legacy MXL (0.95.1)": [
+      "MORT — shm_video_ring/shm_audio_ring ne dimensionnaient plus rien (sortie via bobimxl/MXL) : constantes retirées"
+    ],
+    "Mesure du délai que le mur ajoute à la chaîne, en trames (0.94.0)": [
+      "delai_etage_trames publie index de sortie moins index de l entree composee. Les index de grain MXL etant NORMATIVEMENT derives du temps (docs/Timing.md : GrainIndex = Timestamp / GrainDurationNs), cette difference EST le nombre d images ajoutees par l etage — une mesure, pas un modele.",
+      "Motivation : toute la discussion latence reposait sur une regle supposee, un creneau de grille par etage, jamais verifiee. Mesure sur la pyramide par comparaison d index externe : ~0,7 trame, avec 6 releves sur 12 a ZERO. Un etage tranche peut donc ajouter moins d une image, ce que le modele interdisait."
+    ],
+    "Plafond de gpu_batch_bands relevé à 16 pour atteindre le verdict du banc (0.93.0)": [
+      "Le schéma plafonnait gpu_batch_bands à 8, soit des lots de 288 lignes à 1080p/36 — alors que le banc gate du 2026-08-07 conclut GO-MEGA-540, qui demande k=15. Le paramètre nécessaire pour appliquer le verdict n'était donc pas atteignable, et coerce_config ramenait silencieusement toute valeur supérieure à 8.",
+      "Mesuré en production le 2026-08-09 : k=8 (288 lignes) donne own=24,5 ms et 11,4 trames perdues/s sur un budget de 20 — 540 est un SEUIL, pas un ordre de grandeur. L'aide du champ citait encore l'ancien banc GO-MEGA-135 ; elle porte désormais les trois points de mesure et la date."
+    ],
     "Correction : lancements_gpu annonçait 22 au lieu de 3 (0.92.0)": [
       "La valeur etait une FORMULE (tuiles x 3 ou x 1) sous un commentaire qui promettait « ce qui se passe, pas une formule ». Le groupement par couches de la 0.91.0 l a rendue fausse d un facteur 7 : elle annoncait 22 lancements alors qu il y en avait 3.",
       "Elle est desormais COMPTEE au fil de la trame, sur les trois sites de lancement reels (une par couche en groupe, une par tuile en repli, une par plan en repli ultime). Verification immediate : lancements_gpu doit egaler blend_couches tant que blend_lot_miss reste a zero.",

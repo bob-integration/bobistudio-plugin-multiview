@@ -97,6 +97,23 @@ _t_in_read = RollingMs(); _t_in_place = RollingMs()
 _n_meters = RollingMs(); _n_hist = RollingMs(); _n_clock = RollingMs(); _n_px_blend = RollingMs()
 _couches_tuiles = RollingMs()   # couches sans recouvrement par trame (sonde 0.89.0)
 _n_lancements = RollingMs()     # lancements de kernel de blend RÉELLEMENT émis par trame
+# ★ DÉLAI DE L'ÉTAGE, EN TRAMES — la seule mesure honnête de ce que le mur ajoute à la chaîne.
+# Les index de grain MXL sont NORMATIVEMENT dérivés du temps (docs/Timing.md : GrainIndex =
+# Timestamp / GrainDurationNs), donc l'index de sortie moins celui de l'entrée qu'on vient de
+# composer = le nombre d'images ajoutées, exactement. Pas un modèle, pas une somme de latences.
+# Motivation : toute la discussion latence de ces deux jours reposait sur une règle supposée
+# (« un créneau de grille par étage ») jamais vérifiée. Mesuré sur la PYRAMIDE par comparaison
+# d'index externe : ~0,7 trame, et 6 relevés sur 12 à ZÉRO — un étage tranché peut ajouter moins
+# d'une image, ce que le modèle interdisait.
+# ⚠ DEUX chiffres, pas un. La première version ne gardait que l'entrée la plus RÉCENTE : elle
+# répondait « 3,7 trames » pendant que des tuiles composées dans la MÊME image avaient 20 trames de
+# retard. Pour un délai de bout en bout, c'est la tuile la PLUS VIEILLE qui fait foi ; l'écart entre
+# les deux mesure l'incohérence temporelle de la mosaïque (des voisines qui ne montrent pas le même
+# instant). Mesuré le 2026-08-09 sur le mur 906 : cesse de valoir si les entrées cessent d'être
+# répliquées (RDMA) ou si toutes arrivent par le même chemin.
+_delai_trames = RollingMs()      # entrée la plus récente — ce que l'étage ajoute au mieux
+_delai_vieux = RollingMs()       # entrée la plus VIEILLE — le vrai délai de la trame produite
+_fi_in_trame = {{}}      # index de grain lu par entrée, pour la trame en cours
 _lanc = {{"n": 0}}               # accumulateur de la trame en cours (remis à zéro au début)
 # Dans `ov_blend`, deux coûts cohabitent et appellent des remèdes OPPOSÉS : le TRANSFERT des tuiles
 # vers la VRAM (5 tableaux par tuile, depuis de la mémoire hôte pageable) et les LANCEMENTS de
@@ -414,9 +431,9 @@ def _rotate_out(cy, cu, cv):
     ru = _xp.ascontiguousarray(uf[::_CH, ::_CW])  # re-sous-échantillonne à la chroma cible
     rv = _xp.ascontiguousarray(vf[::_CH, ::_CW])
     return ry, ru, rv
-HEADER_SIZE    = 64
-RING_SIZE   = CONFIG.get("shm_video_ring", 10)
-OUT_TOTAL      = HEADER_SIZE + (OUT_FRAME_SIZE * RING_SIZE)
+# (ex-shm_video_ring/RING_SIZE/HEADER_SIZE/OUT_TOTAL : dimensionnaient un ancien shm maison ;
+# la sortie du mur passe par bobimxl (MXL) — profondeur gérée par domaine, cf. réglage de
+# nœud mxl_history_ms. Retiré 2026-08-09, constante morte.)
 def _rate_nd(v):
     """Cadence → (num, den) EXACT (fractionnaire NTSC = N*1000/1001 ; accepte \"30000/1001\")."""
     try:
@@ -562,16 +579,12 @@ _BAR_TINTS = {{
 }}
 
 # ─── Peak meters (audio) ─────────────────────────────────────
-# Format shm audio cohérent avec receiver_nmos.py : header 64B + ring 100 chunks
-# de 1152 bytes (1 ms à L24/48k/8ch).
 A_SAMPLE_RATE       = 48000
 A_CHANNELS_MAX      = 8
-A_BIT_DEPTH         = 24
 A_SAMPLES_PER_CHUNK = A_SAMPLE_RATE // 1000        # 48
-A_CHUNK_SIZE        = A_SAMPLES_PER_CHUNK * A_CHANNELS_MAX * (A_BIT_DEPTH // 8)  # 1152
-A_HEADER_SIZE       = 64
-A_RING_SIZE   = CONFIG.get("shm_audio_ring", 100)
-A_TOTAL_SIZE        = A_HEADER_SIZE + A_RING_SIZE * A_CHUNK_SIZE
+# (ex-shm_audio_ring/A_RING_SIZE/A_BIT_DEPTH/A_CHUNK_SIZE/A_HEADER_SIZE/A_TOTAL_SIZE :
+# dimensionnaient un ancien shm maison audio ; lecture des niveaux passe par bobimxl (MXL).
+# Retiré 2026-08-09, constante morte.)
 
 METER_BAR_W          = 5
 METER_GAP            = 1
@@ -1378,6 +1391,11 @@ def _refresh_lat_metrics():
     # _couches_bboxes). À comparer à `ov_tiles.total` : le rapport dit ce que le groupement rend.
     metrics["blend_couches"] = {{"moy": _couches_tuiles.avg(), "max": _couches_tuiles.mx()}}
     metrics["blend_lot_miss"] = dict(_blend_lot_miss)   # replis du blend groupé — doit rester à 0
+    # Délai que CET étage ajoute à la chaîne, en TRAMES (index de sortie − index d'entrée).
+    # C'est la seule mesure directe de la latence d'un étage ; tout le reste est un modèle.
+    # « recent » = plancher de l'étage ; « vieux » = délai réellement subi par la trame produite.
+    metrics["delai_etage_trames"] = {{"recent_moy": _delai_trames.avg(), "recent_max": _delai_trames.mx(),
+                                     "vieux_moy": _delai_vieux.avg(), "vieux_max": _delai_vieux.mx()}}
     # Ventilation du coût PAR APPEL de `_blend3_into`, en µs : préconditions vs lancement.
     # C'est ce partage qui décide entre « mémoïser le contrôle » et « bâtir un kernel groupé ».
     metrics["blend3_us"] = {{"check": _t_b3_check.avg(), "check_max": _t_b3_check.mx(),
@@ -7551,6 +7569,9 @@ while True:
     # Chien de garde : cette trame commence ICI. Le ring d'échantillons est NEUF à chaque trame —
     # on profile tout le cycle et on décidera à la fin s'il valait la peine d'être retenu.
     _watch["buf"] = []; _watch["t0"] = ts_cycle_start; _watch["fi"] += 1
+    # Indispensable au calcul de délai par le MIN : sans ce vidage, l'index d'une entrée morte
+    # resterait à jamais dans la table et ferait diverger « vieux » sans que rien ne soit en cause.
+    _fi_in_trame.clear()
     # Diagnostic grain tardif (chantier tissu slice) : retard du TICK lui-même (la boucle a raté
     # sa grille — la pause est ARRIVÉE AVANT le cycle) vs frame LENTE (le cycle a coûté trop cher
     # — la pause est DANS le cycle). Journalisé plus bas (FRAME LENTE, throttlé).
@@ -7734,6 +7755,7 @@ while True:
             _stale_since.pop(i, None)   # lecture réussie → réarme le compteur de péremption
             _stale_drops.pop(i, None)   # … et l'escalade Instance dédiée (reconnexion réussie)
             fi = got[0]; src_view = got[2]
+            _fi_in_trame[i] = fi
             # TRANSIT (arrivée) = âge de la trame d'entrée (now_tai − dernière écriture producteur),
             # déjà mesuré plus haut pour le garde-fou de péremption (une seule lecture par trame).
             ts_in_per_input[src.get("path", cfg["path"])] = _age_ms if _lw else None
@@ -8013,6 +8035,15 @@ while True:
                 # DIRECTEMENT dans le grain — plus de tampon épinglé intermédiaire ni de recopie
                 # plein cadre (cf. _out_dans_grain).
                 _gidx, _gi_o, _vw_o = out_writer.open_grain()
+                # Délai de l'étage : index écrit − index d'entrée. Deux bornes (cf. en-tête) —
+                # la plus récente (plancher) et la plus vieille (délai réellement subi).
+                if _fi_in_trame:
+                    try:
+                        _vals = [float(v) for v in _fi_in_trame.values()]
+                        _delai_trames.push(float(_gidx) - max(_vals))
+                        _delai_vieux.push(float(_gidx) - min(_vals))
+                    except (TypeError, ValueError):
+                        pass
                 _out_dans_grain((canvas_y, canvas_u, canvas_v), _vw_o)
                 out_writer.commit(_gi_o)
         ts_out = time.time_ns()
