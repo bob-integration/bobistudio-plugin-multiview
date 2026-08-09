@@ -1371,8 +1371,9 @@ def _refresh_lat_metrics():
     metrics["blend3_miss"] = dict(_blend3_miss)   # replis du blend 3-plans fusionné — doit rester à 0
     metrics["out_direct_miss"] = dict(_out_direct_miss)   # replis de l'écriture directe — doit rester à 0
     # Combien de LANCEMENTS le groupement inter-tuiles pourrait au mieux atteindre (cf.
-    # _compter_couches). À comparer à `ov_tiles.total` : c'est le rapport qui dit si ça vaut la peine.
+    # _couches_bboxes). À comparer à `ov_tiles.total` : le rapport dit ce que le groupement rend.
     metrics["blend_couches"] = {{"moy": _couches_tuiles.avg(), "max": _couches_tuiles.mx()}}
+    metrics["blend_lot_miss"] = dict(_blend_lot_miss)   # replis du blend groupé — doit rester à 0
     # Ventilation du coût PAR APPEL de `_blend3_into`, en µs : préconditions vs lancement.
     # C'est ce partage qui décide entre « mémoïser le contrôle » et « bâtir un kernel groupé ».
     metrics["blend3_us"] = {{"check": _t_b3_check.avg(), "check_max": _t_b3_check.mx(),
@@ -1783,29 +1784,152 @@ _hist_bake = {{"last": 0.0, "max": 0.0}}   # coût UNITAIRE du re-bake d'une fri
 # 255) → résultat OCTET-IDENTIQUE, vérifié au banc sur T4 avant déploiement. Toute divergence se
 # verrait à l'écran ; le repli est donc COMPTÉ et exposé (`blend3_miss` sur :8080), comme pour le
 # gather de placement.
-def _compter_couches(bboxes):
-    """Nombre de COUCHES sans recouvrement nécessaires pour blender ces tuiles DANS L'ORDRE.
+# ─── Blend de TOUTES les tuiles d'habillage en un lancement PAR COUCHE ───────────────────────
+# ★ Le dernier gros poste de la composition. Le profil de régime donnait `_blend3_into` à 22,2 %
+# du temps pour 22 appels ; ventilé, c'était 8,3 µs de préconditions contre 37 µs de LANCEMENT —
+# donc du marshalling Python de CuPy (16 arguments à typer et convertir), pas du GPU. La réponse
+# n'est donc pas d'alléger l'appel mais d'en faire MOINS.
+#
+# ⚠ POURQUOI « PAR COUCHE » ET NON « UN SEUL ». Le blend n'est pas commutatif, et le code garantit
+# un recouvrement : l'étiquette SILENCE a la MÊME bbox que son meter et doit être appliquée APRÈS.
+# Un lancement unique ferait écrire deux threads au même pixel dans un ordre indéfini — un bug de
+# RENDU, pas une lenteur. On regroupe donc les tuiles deux à deux DISJOINTES (affectation gloutonne
+# qui préserve l'ordre) : mesuré sur ce mur, 22 tuiles tiennent en 3 couches.
+#
+# Table de 7 entiers 64 bits par PLAN (dst_ptr, pas de ligne, src_ptr, alpha_ptr, h, w, somme
+# préfixe) ; le kernel retrouve son entrée par dichotomie. Elle est RECONSTRUITE à chaque trame :
+# le banc dit 0,190 ms avec reconstruction contre 0,105 ms avec cache, pour 1,040 ms au chemin
+# par-tuile — le cache ne vaut pas sa logique d'invalidation.
+#
+# Banc sur le GPU de production : BIT-EXACT contre le chemin par-tuile sur 16 dispositions
+# aléatoires, en 8 bits et en 10/12 bits. Repli COMPTÉ (`blend_lot_miss`) sur `_blend3_into`
+# tuile par tuile : ici une erreur d'offset n'affiche pas une image lente, elle affiche une tuile
+# au mauvais endroit.
+_blend_lot_miss = {{"n": 0, "why": None, "frames": 0}}
+_blend_lot_k = None
+if GPU:
+    try:
+        _blend_lot_k = cp.RawKernel(r'''
+extern "C" __global__ void bobi_blend_lot(
+    const long long* par, int n, long long total)
+{{
+    long long i = (long long)blockIdx.x * (long long)blockDim.x + (long long)threadIdx.x;
+    if (i >= total) return;
+    int lo = 0, hi = n - 1, e = 0;
+    while (lo <= hi) {{
+        int mid = (lo + hi) >> 1;
+        if (par[(long long)mid * 7 + 6] <= i) {{ e = mid; lo = mid + 1; }} else {{ hi = mid - 1; }}
+    }}
+    long long j = i - par[(long long)e * 7 + 6];
+    int w = (int)par[(long long)e * 7 + 5];
+    int r = (int)(j / (long long)w);
+    int c = (int)(j - (long long)r * (long long)w);
+    TT* d                  = (TT*)par[(long long)e * 7 + 0];
+    long long ds           =      par[(long long)e * 7 + 1];
+    const TT* s            = (const TT*)par[(long long)e * 7 + 2];
+    const unsigned char* a = (const unsigned char*)par[(long long)e * 7 + 3];
+    long long doff = (long long)r * ds + (long long)c;
+    long long soff = (long long)r * (long long)w + (long long)c;
+    unsigned int al = (unsigned int)a[soff];
+    d[doff] = (TT)(((unsigned int)d[doff] * (255u - al) + (unsigned int)s[soff] * al) / 255u);
+}}
+'''.replace("TT", "unsigned short" if _DEEP else "unsigned char"), "bobi_blend_lot")
+    except Exception as _e:                                            # noqa: BLE001
+        _blend_lot_k = None
+        log(f"multiview: kernel blend_lot indisponible ({{_e}}) — blend tuile par tuile", "warning")
 
-    Le blend n'est pas commutatif : deux tuiles qui se recouvrent doivent être appliquées l'une
-    après l'autre. Un lancement GPU groupé ne peut donc contenir que des tuiles deux à deux
-    disjointes. Affectation gloutonne, ordre préservé : chaque tuile va dans la PREMIÈRE couche
-    où elle ne touche personne — donc une tuile ne peut jamais doubler une tuile antérieure qui
-    la recouvre, puisque celle-ci occupe une couche de rang inférieur ou égal.
 
-    C'est un MAJORANT du nombre de lancements atteignable par le groupement inter-tuiles, et donc
-    la mesure qui décide si ce chantier vaut d'être mené : à 21 tuiles, 2 couches valent le
-    travail, 15 ne le valent pas. Coût : O(tuiles × couches) sur des entiers, quelques µs.
-    """
-    couches = []
-    for (x0, y0, x1, y1) in bboxes:
-        for c in couches:
-            if all(x1 <= ox0 or ox1 <= x0 or y1 <= oy0 or oy1 <= y0
-                   for (ox0, oy0, ox1, oy1) in c):
-                c.append((x0, y0, x1, y1))
-                break
-        else:
-            couches.append([(x0, y0, x1, y1)])
-    return len(couches)
+def _couches_disjointes(tuiles):
+    """Répartit les tuiles en COUCHES deux à deux disjointes, en préservant l'ordre de blend.
+    Même règle que `_couches_bboxes` — voir là-bas le contre-exemple qui l'impose."""
+    _bb = [(_t[0], _t[1], _t[2], _t[3]) for _t in tuiles]
+    return [[tuiles[_i] for _i in _c] for _c in _couches_bboxes(_bb)]
+
+
+def _blend_lot(tuiles, cy, cu, cv):
+    """Blende toutes les tuiles d'habillage : un lancement par couche disjointe."""
+    if not tuiles:
+        _couches_tuiles.push(0)
+        return
+    _blend_lot_miss["frames"] += 1
+    _couches = _couches_disjointes(tuiles)
+    _couches_tuiles.push(len(_couches))
+    if _blend_lot_k is None or _MVK or not GPU:
+        _pt = "hors GPU"
+    else:
+        _pt = None
+        try:
+            _sy = cy.strides[0] // cy.itemsize
+            _su = cu.strides[0] // cu.itemsize
+            _sv = cv.strides[0] // cv.itemsize
+            _py, _pu, _pv = cy.data.ptr, cu.data.ptr, cv.data.ptr
+            for _c in _couches:
+                _par = np.empty((len(_c) * 3, 7), np.int64)
+                _k = 0
+                _pref = 0
+                for (_x0, _y0, _x1, _y1, _oy, _ou, _ov, _oa, _oa2) in _c:
+                    _h, _w = _y1 - _y0, _x1 - _x0
+                    _ch, _cw = _h // _CH, _w // _CW
+                    _uy, _ux = _y0 // _CH, _x0 // _CW
+                    for (_base, _st, _dx, _dy, _src, _al, _hh, _ww) in (
+                            (_py, _sy, _x0, _y0, _oy, _oa, _h, _w),
+                            (_pu, _su, _ux, _uy, _ou, _oa2, _ch, _cw),
+                            (_pv, _sv, _ux, _uy, _ov, _oa2, _ch, _cw)):
+                        _par[_k] = (_base + (_dy * _st + _dx) * _BPS, _st,
+                                    _src.data.ptr, _al.data.ptr, _hh, _ww, _pref)
+                        _pref += _hh * _ww
+                        _k += 1
+                _blk = 256
+                _blend_lot_k(((_pref + _blk - 1) // _blk,), (_blk,),
+                             (cp.asarray(_par), _k, _pref))
+            return
+        except Exception as _e:                                        # noqa: BLE001
+            _pt = "%s: %s" % (type(_e).__name__, _e)
+    if _pt != "hors GPU":
+        _blend_lot_miss["n"] += 1
+        _blend_lot_miss["why"] = _pt
+    # Repli : chemin par-tuile éprouvé, dans l'ordre d'origine.
+    for (_x0, _y0, _x1, _y1, _oy, _ou, _ov, _oa, _oa2) in tuiles:
+        _cy0, _cy1, _cx0, _cx1 = _y0 // _CH, _y1 // _CH, _x0 // _CW, _x1 // _CW
+        _blend3_into(cy[_y0:_y1, _x0:_x1], _oy, _oa,
+                     cu[_cy0:_cy1, _cx0:_cx1], _ou,
+                     cv[_cy0:_cy1, _cx0:_cx1], _ov, _oa2)
+
+
+def _couches_bboxes(bboxes):
+    """Affecte chaque bbox à une COUCHE, en préservant l'ordre de blend. Renvoie la liste des
+    couches, chacune contenant les INDICES des bboxes.
+
+    ★ RÈGLE : une tuile va **strictement au-dessus** de toute tuile ANTÉRIEURE qu'elle recouvre —
+    `couche(T) = 1 + max(couche(S))` sur les S antérieures qui la recouvrent, 0 s'il n'y en a pas.
+
+    ⚠ La version évidente — « la première couche où elle ne touche personne » — est FAUSSE, et le
+    banc bit-exact l'a prise en défaut sur 7 dispositions sur 10. Contre-exemple minimal :
+
+        X (0,0,10,10)   -> couche 0
+        S (5,0,20,10)   -> recouvre X               -> couche 1
+        T (12,0,20,10)  -> recouvre S, mais PAS X   -> première couche libre = 0   ✗
+
+    T serait blendé AVANT S alors qu'il doit venir après : les pixels communs sortent faux. Le
+    piège est que S peut avoir été poussée haut par des tuiles qui, elles, ne recouvrent pas T —
+    la monotonie qu'on croit avoir n'existe pas.
+
+    Propriété qui en découle et dont dépend la correction du kernel groupé : deux tuiles d'une
+    MÊME couche sont forcément disjointes (si T et U se recouvraient avec U postérieure, on aurait
+    couche(U) >= 1 + couche(T), donc pas la même couche)."""
+    niveau = []
+    for i, (x0, y0, x1, y1) in enumerate(bboxes):
+        n = 0
+        for j in range(i):
+            (ox0, oy0, ox1, oy1) = bboxes[j]
+            if not (x1 <= ox0 or ox1 <= x0 or y1 <= oy0 or oy1 <= y0):
+                if niveau[j] >= n:
+                    n = niveau[j] + 1
+        niveau.append(n)
+    couches = [[] for _ in range(max(niveau) + 1)] if niveau else []
+    for i, n in enumerate(niveau):
+        couches[n].append(i)
+    return couches
 
 
 _blend3_miss = {{"n": 0, "why": None, "calls": 0}}
@@ -7799,14 +7923,10 @@ while True:
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
         _px_blend = 0   # pixels Y réellement recouverts par les tuiles de cette trame
         _up_ns = 0      # ns passés à TÉLÉVERSER les tuiles vers le backend (identité en CPU)
-        # SONDE (0.89.0) : bboxes des tuiles d'habillage de cette trame, pour compter en combien de
-        # COUCHES sans recouvrement elles se partagent — cf. `_compter_couches`. Mesure préalable au
-        # groupement inter-tuiles : un kernel unique sur des tuiles qui SE RECOUVRENT ferait écrire
-        # deux threads au même pixel dans un ordre indéfini, alors que le blend n'est pas commutatif
-        # (le code garantit d'ailleurs un recouvrement : l'étiquette SILENCE a la MÊME bbox que son
-        # meter et doit être blendée APRÈS). Le nombre de couches borne donc le gain atteignable :
-        # c'est lui, et non le nombre de tuiles, qui sera le nombre de lancements.
+        # bboxes des tuiles d'habillage de cette trame — servent au découpage en COUCHES
+        # (cf. _couches_bboxes) et à la métrique `blend_couches`.
         _bboxes_trame = []
+        _lot_trame = []      # tuiles d'habillage de cette trame, blendées en lot après la boucle
         if not SLICE_ON:
             _n_meters.push(len(_meter_tiles or ()))
             _n_hist.push(len(_hist_tiles or ()))
@@ -7838,15 +7958,11 @@ while True:
                 _up_ns += time.time_ns() - _tsu
                 _px_blend += (bx1 - bx0) * (by1 - by0)
                 _bboxes_trame.append((bx0, by0, bx1, by1))
-                cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
-                # UN lancement pour les trois plans (cf. _blend3_into) ; repli compté sur les
-                # trois appels d'origine si la moindre précondition manque.
-                _blend3_into(canvas_y[by0:by1, bx0:bx1], _oy, _oa,
-                             canvas_u[cy0:cy1, cx0:cx1], _ou,
-                             canvas_v[cy0:cy1, cx0:cx1], _ov, _oa2)
+                # On COLLECTE au lieu de blender tout de suite : le blend part en un lancement
+                # par COUCHE, après la boucle (cf. _blend_lot).
+                _lot_trame.append((bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2))
+        _blend_lot(_lot_trame, canvas_y, canvas_u, canvas_v)
 
-        # SONDE (0.89.0) : en combien de couches sans recouvrement ces tuiles se partagent-elles ?
-        _couches_tuiles.push(_compter_couches(_bboxes_trame))
         _tuiles_dev_evict()
         _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
         _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=blend VU+horloges (bbox)

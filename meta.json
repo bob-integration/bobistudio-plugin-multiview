@@ -1,7 +1,14 @@
 {
-  "version": "0.90.0",
-  "date": "2026-08-08",
+  "version": "0.91.0",
+  "date": "2026-08-09",
   "changes": {
+    "Blend groupé : un lancement par COUCHE au lieu d un par tuile (0.91.0)": [
+      "Dernier gros poste de la composition. Le profil donnait _blend3_into a 22,2 % du temps pour 22 appels ; ventile, 8,3 us de preconditions contre 37 us de LANCEMENT — du marshalling Python de CuPy (16 arguments), pas du GPU. La reponse est donc de faire MOINS d appels.",
+      "Banc sur le GPU de production, 22 tuiles : 22 lancements 1,040 ms, un lancement 0,190 ms table reconstruite a chaque trame, 0,105 ms table cachee. La reconstruction ne coutant que 0,085 ms, on rebatit chaque trame — le cache ne vaut pas sa logique d invalidation.",
+      "Le groupement se fait par COUCHES et non en un seul lancement : le blend n est pas commutatif et le code garantit un recouvrement (l etiquette SILENCE a la meme bbox que son meter et doit etre appliquee APRES). Deux threads ecrivant le meme pixel dans un ordre indefini seraient un bug de RENDU.",
+      "La regle d affectation evidente — la premiere couche libre — est FAUSSE, et le banc bit-exact l a prise en defaut sur 7 dispositions sur 10. Contre-exemple : X(0,0,10,10) couche 0, S(5,0,20,10) recouvre X donc couche 1, T(12,0,20,10) recouvre S mais pas X donc premiere couche libre = 0 — T serait blende AVANT S. La regle correcte est couche(T) = 1 + max(couche(S)) sur les S anterieures recouvertes.",
+      "Valide BIT-EXACT contre le chemin par-tuile sur 10 dispositions AVEC recouvrements, en 8 et 10/12 bits, sur le GPU de production ; plus 4000 dispositions aleatoires verifiant l ordre et la disjonction intra-couche. Repli compte (blend_lot_miss) sur le chemin par-tuile."
+    ],
     "Ventilation du coût par appel du blend (0.90.0)": [
       "Le profil donne _blend3_into à 22,2 % du temps de composition pour 22 appels, soit ~79 µs par appel — très au-dessus des 5-10 µs d'un lancement CUDA, qui est de surcroît asynchrone. Ces 79 µs sont donc du Python.",
       "blend3_us ventile désormais préconditions (_blend3_ok) et lancement du kernel. Ce partage décide du remède : mémoïser la vérification, qui est quelques lignes sans risque de rendu, ou bâtir un kernel groupé par couches, dont la table de paramètres est elle-même du travail Python par tuile et pourrait annuler le gain."
