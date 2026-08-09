@@ -1,7 +1,12 @@
 {
-  "version": "0.91.0",
+  "version": "0.92.0",
   "date": "2026-08-09",
   "changes": {
+    "Correction : lancements_gpu annonçait 22 au lieu de 3 (0.92.0)": [
+      "La valeur etait une FORMULE (tuiles x 3 ou x 1) sous un commentaire qui promettait « ce qui se passe, pas une formule ». Le groupement par couches de la 0.91.0 l a rendue fausse d un facteur 7 : elle annoncait 22 lancements alors qu il y en avait 3.",
+      "Elle est desormais COMPTEE au fil de la trame, sur les trois sites de lancement reels (une par couche en groupe, une par tuile en repli, une par plan en repli ultime). Verification immediate : lancements_gpu doit egaler blend_couches tant que blend_lot_miss reste a zero.",
+      "Une metrique fausse est pire que pas de metrique — et c est precisement ce chiffre qui avait servi a demontrer que le mur etait borne par le LANCEMENT et non par le calcul."
+    ],
     "Blend groupé : un lancement par COUCHE au lieu d un par tuile (0.91.0)": [
       "Dernier gros poste de la composition. Le profil donnait _blend3_into a 22,2 % du temps pour 22 appels ; ventile, 8,3 us de preconditions contre 37 us de LANCEMENT — du marshalling Python de CuPy (16 arguments), pas du GPU. La reponse est donc de faire MOINS d appels.",
       "Banc sur le GPU de production, 22 tuiles : 22 lancements 1,040 ms, un lancement 0,190 ms table reconstruite a chaque trame, 0,105 ms table cachee. La reconstruction ne coutant que 0,085 ms, on rebatit chaque trame — le cache ne vaut pas sa logique d invalidation.",

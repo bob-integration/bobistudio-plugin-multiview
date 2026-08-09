@@ -96,6 +96,8 @@ _t_in_read = RollingMs(); _t_in_place = RollingMs()
 # de pixels ou parce qu'il y a beaucoup d'appels — deux problèmes aux remèdes opposés.
 _n_meters = RollingMs(); _n_hist = RollingMs(); _n_clock = RollingMs(); _n_px_blend = RollingMs()
 _couches_tuiles = RollingMs()   # couches sans recouvrement par trame (sonde 0.89.0)
+_n_lancements = RollingMs()     # lancements de kernel de blend RÉELLEMENT émis par trame
+_lanc = {{"n": 0}}               # accumulateur de la trame en cours (remis à zéro au début)
 # Dans `ov_blend`, deux coûts cohabitent et appellent des remèdes OPPOSÉS : le TRANSFERT des tuiles
 # vers la VRAM (5 tableaux par tuile, depuis de la mémoire hôte pageable) et les LANCEMENTS de
 # kernel du blend lui-même (3 par tuile). Si c'est le transfert qui domine, le remède est de garder
@@ -1331,12 +1333,14 @@ def _refresh_lat_metrics():
     _blend_avg = _a(_t_ov_blend); _upload_avg = _a(_t_ov_upload)
     metrics["ov_tiles"] = {{"meters": _a(_n_meters), "hist": _a(_n_hist),
                            "clock_anc": _a(_n_clock), "total": round(_nt, 1),
-                           # Lancements RÉELS : 1 par tuile depuis la fusion des 3 plans (0.85.0),
-                           # 3 par tuile quand le repli est actif. On publie ce qui se passe, pas
-                           # une formule — c'est ce chiffre qui a montré que le mur était borné par
-                           # le LANCEMENT et non par le calcul.
-                           "lancements_gpu": (round(_nt * (3 if _blend3_miss["n"] else 1), 1)
-                                              if GPU else 0),
+                           # ★ Lancements RÉELLEMENT émis, COMPTÉS au fil de la trame (0.92.0).
+                           # Cette valeur était une FORMULE (`tuiles × 3 ou × 1`) sous un commentaire
+                           # qui promettait « ce qui se passe, pas une formule ». Le groupement par
+                           # couches (0.91.0) l'a rendue fausse d'un facteur 7 : elle annonçait 22
+                           # lancements alors qu'il y en avait 3. Une métrique fausse est pire que
+                           # pas de métrique — c'est ce chiffre qui avait servi à démontrer que le
+                           # mur était borné par le LANCEMENT, il ne peut pas être déduit.
+                           "lancements_gpu": _a(_n_lancements) if GPU else 0,
                            "kpixels": (round(_a(_n_px_blend) / 1000.0, 1)
                                        if _a(_n_px_blend) is not None else None),
                            "us_par_tuile": (round(_blend_avg * 1000.0 / _nt, 1)
@@ -1882,6 +1886,7 @@ def _blend_lot(tuiles, cy, cu, cv):
                 _blk = 256
                 _blend_lot_k(((_pref + _blk - 1) // _blk,), (_blk,),
                              (cp.asarray(_par), _k, _pref))
+                _lanc["n"] += 1        # un lancement par COUCHE
             return
         except Exception as _e:                                        # noqa: BLE001
             _pt = "%s: %s" % (type(_e).__name__, _e)
@@ -2025,6 +2030,7 @@ def _blend3_into(dy, sy, ay, du, su, dv, sv, auv):
                   (dy, sy, ay, dy.shape[0], dy.shape[1], dy.strides[0] // dy.itemsize,
                    du, su, auv, du.shape[0], du.shape[1], du.strides[0] // du.itemsize,
                    dv, sv, dv.strides[0] // dv.itemsize, _tot))
+        _lanc["n"] += 1        # repli par-tuile : 1 lancement (3 plans fusionnés)
         _t_b3_call.push((time.perf_counter_ns() - _t1b3) / 1000.0)
         return
     if _why != "hors GPU":
@@ -2046,6 +2052,7 @@ def _blend_into(dv, s, aa):
         # élément-à-élément (chaque sortie ne dépend que de l'entrée de MÊME index), le passer en
         # sortie de lui-même est sûr, y compris sur une vue non contiguë.
         _blend_k(dv, s, aa, dv)
+        _lanc["n"] += 1        # repli ultime : 1 lancement PAR PLAN
         return
     # Un repli numpy ICI coûte 20× le kernel C (banc : 4,6 ms vs 0,19 ms sur une tuile de frise
     # 1920×250, 3 plans) → il doit rester à ZÉRO. Compté et exposé (`mvk_miss` sur :8080).
@@ -7927,6 +7934,7 @@ while True:
         # (cf. _couches_bboxes) et à la métrique `blend_couches`.
         _bboxes_trame = []
         _lot_trame = []      # tuiles d'habillage de cette trame, blendées en lot après la boucle
+        _lanc["n"] = 0       # lancements de blend de CETTE trame (compté, pas déduit)
         if not SLICE_ON:
             _n_meters.push(len(_meter_tiles or ()))
             _n_hist.push(len(_hist_tiles or ()))
@@ -7962,6 +7970,7 @@ while True:
                 # par COUCHE, après la boucle (cf. _blend_lot).
                 _lot_trame.append((bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2))
         _blend_lot(_lot_trame, canvas_y, canvas_u, canvas_v)
+        _n_lancements.push(_lanc["n"])
 
         _tuiles_dev_evict()
         _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
