@@ -1,7 +1,12 @@
 {
-  "version": "0.108.0",
-  "date": "2026-08-10",
+  "version": "0.109.0",
+  "date": "2026-08-11",
   "changes": {
+    "Le mode tranche sort du placard : réglages EXPOSÉS (0.109.0)": [
+      "`slice_mode` et `gpu_slice` étaient marqués `hidden: true` — non pas seulement désactivés par défaut, mais INVISIBLES dans toute interface. La capacité n'était atteignable que par l'API. Introduite comme capacité de banc (TISSU_SLICE.md) puis jamais promue, alors qu'elle est désormais mesurée gagnante.",
+      "Aide réécrite sur ce qui a été MESURÉ en production le 2026-08-11, pas sur une intention : gpu_slice tient le 1920x1080p50 à 50,0 fps sur Quadro P5000, zéro trame perdue, coût propre 13 ms pour 20 de budget — et la marge tombe de 11 à 6 ms, ce que l'aide dit franchement.",
+      "L'aide de `slice_mode` porte la règle qui a coûté une nuit : le mode tranche n'a d'effet QUE si toute la chaîne tranche. Un seul étage monolithique, en amont ou en aval, annule le bénéfice — avec le contrôle qui tranche en une seconde (`mxl-info` → `Commit batch size` > 1)."
+    ],
     "Le délai d'étage est enfin mesuré en mode TRANCHE — et il ne bouge pas (0.108.0)": [
       "`delai_etage_trames` sortait à None dès qu'on tranchait : le chemin tranche ouvre son propre grain et ne poussait pas la mesure. La SEULE mesure honnête de ce que le mur ajoute à la chaîne disparaissait donc précisément dans le mode censé la réduire. Publiée maintenant, même calcul qu'en pleine trame (index écrit − index d'entrée, deux bornes).",
       "★ MESURÉ : 3,0 trames en pleine trame comme en tranche, à 50p, sur le même mur. TRANCHER LA SORTIE NE RÉDUIT PAS LE DÉLAI DE L'ÉTAGE — et c'est logique : le mur compose toujours sur la même grille. Le gain du mode tranche est chez le CONSOMMATEUR, qui peut démarrer sur la 1re bande (les 16,5 ms de `getgrain` du TX 2110), pas dans l'étage lui-même.",
