@@ -511,6 +511,11 @@ try:
     GPU_BATCH_BANDS = max(1, int(CONFIG.get("gpu_batch_bands", 4) or 1))
 except Exception:
     pass
+# D2H du lot DIRECTEMENT dans le grain (défaut) plutôt que vers un tampon épinglé suivi d'une
+# recopie plein cadre — cf. `_out_dans_grain`, où la même simplification a été mesurée gagnante
+# sur le chemin pleine trame. Réglable pour pouvoir comparer A/B au banc ; l'ancien chemin
+# (épinglé + recouvrement D2H async) reste accessible avec false.
+SLICE_D2H_DIRECT = _as_bool(CONFIG.get("slice_d2h_direct", True))
 if SLICE_MODE and not SLICE_ON:
     log(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} sans gpu_slice "
         f"portrait={{_PORTRAIT}} h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame", "warning")
@@ -7961,7 +7966,23 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
         if _lot_bande:
             _blend_lot(_lot_bande, cy, cu, cv)
         # publication du lot : copie canvas→grain + commit PROGRESSIF (réveille l'aval)
-        if GPU_SLICE and grp > 1:
+        if GPU_SLICE and grp > 1 and SLICE_D2H_DIRECT:
+            # ★ DÉVERSEMENT DIRECT DANS LE GRAIN, porté du chemin pleine trame (2026-08-10).
+            # Ce chemin-ci faisait D2H vers tampon épinglé PUIS recopie épinglé→grain — la seconde
+            # copie que `_out_dans_grain` a supprimée côté pleine trame, où elle pesait 3,1 Mo de
+            # memcpy hôte par trame. Le commentaire d'origine disait le `.get` direct « proscrit
+            # (pageable) » : cette affirmation a été MESURÉE FAUSSE et corrigée sur le chemin
+            # rapide (0,788 → 0,717 ms, soit 0,91× EN FAVEUR du direct). Le chemin tranche obéissait
+            # encore à la règle abandonnée — même schéma que le blend groupé, jamais porté.
+            # On perd le recouvrement D2H/compose du lot suivant (mesuré à 0,44 ms à 135 lignes) et
+            # on gagne une passe mémoire plein cadre : à 1-2 lots le solde est largement positif.
+            _ka = B0 // SLICE_LINES
+            cy[B0:b1].ravel().get(out=ov_y[B0:b1].ravel())
+            cu[B0//_CH:b1//_CH].ravel().get(out=ov_u[B0//_CH:b1//_CH].ravel())
+            cv[B0//_CH:b1//_CH].ravel().get(out=ov_v[B0//_CH:b1//_CH].ravel())
+            for _k2 in range(_ka, k + 1):
+                out_writer.commit(gi_o, valid_slices=None if _k2 == nb - 1 else _k2 + 1)
+        elif GPU_SLICE and grp > 1:
             # Ancre (c) GREFFÉE (M2 « recouvert » du banc gate, ~0,44 ms gagnés à 135 l) : le D2H
             # du lot j part ASYNC sur le stream dédié après les kernels du lot (event) ; il est
             # attendu/publié/commité PENDANT le compose du lot j+1 (_flush_d2h ci-dessous au tour
