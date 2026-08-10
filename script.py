@@ -1349,11 +1349,36 @@ tally_dirty = threading.Event()
 _cells_dirty = set()
 _cells_lock = threading.Lock()
 
+_TPL_TALLY_CONDS = ("tally_red", "tally_green", "tally_any", "tally_off")
+_cell_tally_cond = {{}}      # i → la fenêtre a-t-elle un composant dont la VISIBILITÉ suit le tally ?
+
+def _cellule_suit_tally(i):
+    """Vrai si un composant de cette fenêtre APPARAÎT ou DISPARAÎT selon le tally (`when`).
+    Ceux-là ne sont pas traitables par masque : ce n'est pas une couleur qui change, c'est une
+    PRÉSENCE — il faut donc encore re-baker la cellule. Mémoïsé : la composition des modèles ne
+    bouge qu'au changement de géométrie, qui vide ce cache."""
+    hit = _cell_tally_cond.get(i)
+    if hit is None:
+        hit = False
+        try:
+            if i < len(FLUX_CONFIG):
+                hit = any(isinstance(c, dict) and (c.get("when") or "always") in _TPL_TALLY_CONDS
+                          for c in (_tpl_comps(FLUX_CONFIG[i]) or ()))
+        except Exception:
+            hit = True          # doute → on re-bake, jamais d'habillage figé en silence
+        _cell_tally_cond[i] = hit
+    return hit
+
+
 def _marquer_cellule(i):
     """Marque UNE cellule à re-baker. Ne remplace pas `tally_dirty` : c'est lui qui réveille le
     boulanger ; cet ensemble dit seulement CE QU'IL FAUT refaire."""
-    if _tally_k is not None and GPU:
+    if _tally_k is not None and GPU and not _cellule_suit_tally(i):
         return          # tally peint sur carte : AUCUN re-bake, c'est tout l'objet du mécanisme
+        # ⚠ SAUF si un composant de cette fenêtre est AFFICHÉ ou MASQUÉ selon le tally : là, ce
+        # n'est pas une couleur qui change mais une présence, et le masque n'y peut rien. Sans ce
+        # garde-fou, un modèle utilisant `when: tally_red` restait figé — régression introduite le
+        # 2026-08-10 en retirant le tally du bake, et rattrapée avant qu'elle n'atteigne un mur.
     with _cells_lock:
         _cells_dirty.add(int(i))
     tally_dirty.set()
@@ -1750,6 +1775,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 updates = data.get("updates") or []
                 changed = False
+                _texte_change = False            # un LIBELLÉ qui change exige un vrai re-bake
+                _cells_touchees = set()          # fenêtres réellement modifiées par ce paquet
                 for upd in updates:
                     idx   = int(upd["flux_idx"])
                     slot  = str(upd["slot"]).upper()
@@ -1764,12 +1791,13 @@ class Handler(BaseHTTPRequestHandler):
                     # Horace, 28-36 fps au lieu de 50, `overlays` 13,7 ms dont ~7 de re-bake).
                     if tally_state.get(f"{{idx}}_{{slot}}") != color:
                         tally_state[f"{{idx}}_{{slot}}"] = color
-                        changed = True
+                        changed = True; _cells_touchees.add(idx)
                     # Texte label optionnel (label_col depuis l'orchestrateur)
                     text = upd.get("text")
                     if text is not None and slot == "L" and tsl_text.get(idx) != str(text):
                         tsl_text[idx] = str(text)
-                        changed = True
+                        changed = True; _cells_touchees.add(idx)
+                        _texte_change = True
                 # Overlays texte central : id → texte + état actif (résolu côté orchestrateur)
                 ov_changed = False
                 for ov in (data.get("overlays") or []):
@@ -1782,7 +1810,14 @@ class Handler(BaseHTTPRequestHandler):
                         overlay_central[oid] = _ovv
                         ov_changed = True
                 if changed:
-                    tally_dirty.set()
+                    # ★ Sur carte, un changement de COULEUR de tally ne salit RIEN — c'est tout
+                    # l'objet du mécanisme. Un changement de LIBELLÉ, lui, reste un vrai re-bake :
+                    # sa forme, ce sont les glyphes, et elle n'est pas énumérable.
+                    if _tally_k is not None and GPU and not _texte_change:
+                        for _ci in _cells_touchees:
+                            _marquer_cellule(_ci)
+                    else:
+                        tally_dirty.set()
                 if ov_changed:
                     overlay_dirty.set()
                 self._send_json({{"status": "ok", "updates": len(updates)}})
@@ -4771,7 +4806,11 @@ def _apply_tsl(index, control, text):
             tsl_text[i] = text; changed = True
         if changed:
             _marquer_cellule(i)                    # idem : la boucle sait QUELLE fenêtre change
-    if changed:
+    # ★ PAS de `tally_dirty.set()` global ici : `_marquer_cellule` a déjà fait le nécessaire, et
+    # quand le tally est peint sur carte il ne DOIT rien salir du tout. Le laisser provoquait un
+    # re-bake complet du chrome (45 ms) à chaque bascule — le flash signalé par le testeur le
+    # 2026-08-10, alors même que le tally n'était plus baké.
+    if changed and (_tally_k is None or not GPU):
         tally_dirty.set()
 
 def _handle_tsl_client(conn):
@@ -5881,7 +5920,7 @@ def _construire_masques_tally():
 # par trame, en quelques dizaines d'octets. Un lancement UNIQUE, quel que soit le nombre de
 # fenêtres — la leçon des VU du 2026-08-10 : le coût est dans le nombre de lancements, pas dans le
 # travail. Descripteurs empilés + recherche binaire, comme bobi_blend_lot.
-_tally_dev = {{"masques": None, "sig": None}}     # masques RÉSIDENTS carte (téléversés une fois)
+_tally_dev = {{"masques": None, "sig": None, "hote": None}}     # masques RÉSIDENTS carte (téléversés une fois)
 _tally_k = None
 _tally_miss = {{"n": 0, "why": None}}
 _tally_n_pub = [None]      # nb de zones peintes à la dernière trame (exposé sur :8080)
@@ -5966,15 +6005,29 @@ def _appliquer_tally(cy, cu, cv):
     if _tally_k is None or not GPU:
         return None
     try:
-        if _tally_masques is None:
-            _construire_masques_tally()
-        if not _tally_masques:
+        # ★ SNAPSHOT LOCAL. `_tally_masques` est remis à None par le fil BOULANGER au changement
+        # de géométrie ; sans copie locale, la composition pouvait itérer sur None entre le test et
+        # la boucle (TypeError compté le 2026-08-10 sur le mur de banc).
+        masques = _tally_masques
+        if masques is None:
+            masques = _construire_masques_tally()
+        if not masques:
             return 0
-        if _tally_dev["masques"] is None or _tally_dev["sig"] is not id(_tally_masques):
-            _tally_dev["masques"] = [cp.asarray(m) for (_x, _y, m, _r, _i, _c) in _tally_masques]
-            _tally_dev["sig"] = id(_tally_masques)
+        # ★ CACHE VRAM — DEUX BOGUES, tous deux VISIBLES À L'ÉCRAN (clignotement signalé par
+        # l'utilisateur le 2026-08-10) :
+        # 1. la signature était comparée avec `is` sur des `id()`. Sur des entiers de cette taille
+        #    la comparaison est fausse presque à chaque appel → masques RE-TÉLÉVERSÉS chaque trame ;
+        # 2. et réaffecter la liste LIBÉRAIT les tableaux cupy précédents alors que le noyau, lancé
+        #    de façon ASYNCHRONE, lit encore leurs pointeurs bruts (`.data.ptr`) : il lisait de la
+        #    VRAM déjà rendue au pool → corruption intermittente.
+        # On compare donc avec `==`, et on garde une référence forte à la liste hôte comme aux
+        # tableaux carte tant qu'ils peuvent être en vol.
+        if _tally_dev["masques"] is None or _tally_dev["sig"] != id(masques):
+            _tally_dev["masques"] = [cp.asarray(m) for (_x, _y, m, _r, _i, _c) in masques]
+            _tally_dev["hote"] = masques
+            _tally_dev["sig"] = id(masques)
         par = []; ptr = []; cum = 0
-        for k, (x0, y0, mk, role, i, comp) in enumerate(_tally_masques):
+        for k, (x0, y0, mk, role, i, comp) in enumerate(masques):
             slot = comp.get("slot") or "dominant"
             st = (tally_state.get("%d_L" % i, "off") if slot == "L" else
                   tally_state.get("%d_R" % i, "off") if slot == "R" else
@@ -6500,6 +6553,7 @@ def _chrome_bake_pass():
         _global_dirty = True
         _tally_masques = None        # géométrie changée → couvertures à refaire
         _tally_dev["masques"] = None
+        _cell_tally_cond.clear()     # …et la composition des modèles a pu changer
         _bake_ctr["geom"] += 1; _chrome_dirty = True
     if tally_dirty.is_set():
         tally_dirty.clear()
