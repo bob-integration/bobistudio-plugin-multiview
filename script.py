@@ -7615,6 +7615,20 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
     # FLOW : la sortie est écrite À L'INDEX D'EPOCH ciblé (alignement du tissu) ; sinon index
     # du Writer (tai genlock / compteur input-locked) comme avant.
     _gidx, gi_o, vw_o = out_writer.open_grain(index=fi_out)
+    # ★ DÉLAI DE L'ÉTAGE, aussi en mode TRANCHE (2026-08-10). Ce chemin ouvre son propre grain et
+    # ne poussait pas la mesure : `delai_etage_trames` sortait à None dès qu'on tranchait — donc
+    # la SEULE mesure honnête de ce que le mur ajoute à la chaîne disparaissait précisément dans
+    # le mode censé la réduire. Même calcul qu'en pleine trame : index écrit − index d'entrée
+    # (les index de grain MXL sont normativement dérivés du temps, la soustraction EST le nombre
+    # d'images ajoutées). Deux bornes : l'entrée la plus récente (plancher) et la plus vieille
+    # (délai réellement subi par la trame produite).
+    if _fi_in_trame:
+        try:
+            _vals_sl = [float(_v) for _v in _fi_in_trame.values()]
+            _delai_trames.push(float(_gidx) - max(_vals_sl))
+            _delai_vieux.push(float(_gidx) - min(_vals_sl))
+        except (TypeError, ValueError):
+            pass
     ysz = OUT_WIDTH * OUT_HEIGHT * _BPS
     csz = (OUT_WIDTH // _CW) * (OUT_HEIGHT // _CH) * _BPS
     ov_y = vw_o[:ysz].view(_NP_DT).reshape(OUT_HEIGHT, OUT_WIDTH)

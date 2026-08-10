@@ -1,7 +1,13 @@
 {
-  "version": "0.107.0",
+  "version": "0.108.0",
   "date": "2026-08-10",
   "changes": {
+    "Le délai d'étage est enfin mesuré en mode TRANCHE — et il ne bouge pas (0.108.0)": [
+      "`delai_etage_trames` sortait à None dès qu'on tranchait : le chemin tranche ouvre son propre grain et ne poussait pas la mesure. La SEULE mesure honnête de ce que le mur ajoute à la chaîne disparaissait donc précisément dans le mode censé la réduire. Publiée maintenant, même calcul qu'en pleine trame (index écrit − index d'entrée, deux bornes).",
+      "★ MESURÉ : 3,0 trames en pleine trame comme en tranche, à 50p, sur le même mur. TRANCHER LA SORTIE NE RÉDUIT PAS LE DÉLAI DE L'ÉTAGE — et c'est logique : le mur compose toujours sur la même grille. Le gain du mode tranche est chez le CONSOMMATEUR, qui peut démarrer sur la 1re bande (les 16,5 ms de `getgrain` du TX 2110), pas dans l'étage lui-même.",
+      "⚠ Conséquence pour la cible « 2 images tout compris » : le chiffrer exige un consommateur qui lise la sortie tranchée — donc le TX de production lisant un mur 906 tranché. Le banc ne peut pas le montrer seul.",
+      "⚠ Et une question ouverte, mesurable au banc : POURQUOI 3,0 trames de délai d'étage pour un mur dont le travail propre tient en 8,5 ms ? C'est là que se trouvent les images à gagner."
+    ],
     "★ LA TRANCHE GPU TIENT LE 50p : l'attente de moisson devient un REPLI (0.107.0)": [
       "★ RÉSULTAT : mur tranché sur GPU (Quadro P5000) à 1920x1080p50 — 50,0 fps tenus sur plus de 3 minutes, ZÉRO trame perdue, own 13,4 ms pour 20 de budget, zéro attente et zéro repli de bande. Le même mur s'effondrait à 30 fps avec 20 trames perdues/s avant ce correctif.",
       "★ LA CAUSE, ENFIN : `get_slice(index_de_grille, timeout 3 ms)` était payé PAR ENTRÉE ET PAR TRAME dès que le mur visait un index que ses sources n'avaient pas encore produit. Un mur momentanément en retard vise systématiquement dans le futur de ses sources : il payait ~4 ms × ses entrées (13,3 ms mesurés sur 4 tuiles), ce qui ENTRETENAIT le retard qui les causait. Verrouillage auto-entretenu à 30 fps, que le coût BRUT du travail n'expliquait pas — à 25p, où la marge existe, la même moisson coûtait 0,7 ms.",
