@@ -516,6 +516,11 @@ except Exception:
 # sur le chemin pleine trame. Réglable pour pouvoir comparer A/B au banc ; l'ancien chemin
 # (épinglé + recouvrement D2H async) reste accessible avec false.
 SLICE_D2H_DIRECT = _as_bool(CONFIG.get("slice_d2h_direct", True))
+# Attente de moisson : nombre d'échecs CONSÉCUTIFS sur l'index de grille ANTICIPÉ au-delà duquel
+# on cesse d'attendre CETTE entrée (interrogation non bloquante, repli sur sa tête). Remis à zéro
+# au premier succès. Cf. le bloc commenté dans la boucle de moisson.
+_ATTENTE_KO_MAX = 3
+_attente_ko = {{}}     # i → échecs consécutifs sur l'index anticipé (0 = entrée à l'heure)
 if SLICE_MODE and not SLICE_ON:
     log(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} sans gpu_slice "
         f"portrait={{_PORTRAIT}} h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame", "warning")
@@ -8396,7 +8401,28 @@ while True:
                     # Cesse de valoir si la boucle de composition devient elle-même par bandes.
                     _tgt = (_fi_out if (_hi == bobimxl.MXL_UNDEFINED_INDEX or abs(_hi - _fi_out) <= 2)
                             else _hi)
-                    got = rd.get_slice(_tgt, _TOUTES, timeout_ns=3_000_000)
+                    # ★ L'ATTENTE DOIT ÊTRE UN REPLI, PAS UN IMPÔT PAR TRAME (2026-08-10).
+                    # Quand on vise l'index de GRILLE (_fi_out) alors que la source ne l'a pas
+                    # encore produit, ce `get_slice` brûle ses 3 ms — par ENTRÉE et par TRAME. Un
+                    # mur momentanément en retard vise systématiquement dans le futur de ses
+                    # sources : il paie alors ~4 ms × ses entrées (mesuré 13,3 ms sur 4 tuiles),
+                    # ce qui ENTRETIENT le retard qui les cause. Boucle auto-entretenue : le mur
+                    # se verrouillait à 30 fps sans que le coût BRUT du travail l'explique
+                    # (à 25p, où la marge existe, la même moisson coûte 0,7 ms).
+                    # Parade : après quelques échecs CONSÉCUTIFS sur l'index anticipé, on cesse
+                    # d'attendre CETTE entrée-là et on interroge sans blocage — on se rabat alors
+                    # sur sa tête, qui est le grain le plus FRAIS qu'elle ait. Aucune perte de
+                    # fraîcheur : on renonce seulement à attendre un grain qui n'existe pas
+                    # encore. Le plein régime d'attente revient dès que la source retombe à
+                    # l'heure (un seul succès suffit) — l'alignement genlock normal, où le grain
+                    # visé est déjà là, ne paie jamais d'attente et n'est donc pas concerné.
+                    _anticipe = (_tgt != _hi)
+                    if _anticipe and _attente_ko.get(i, 0) >= _ATTENTE_KO_MAX:
+                        got = rd.get_slice_nonblocking(_tgt, _TOUTES)
+                    else:
+                        got = rd.get_slice(_tgt, _TOUTES, timeout_ns=3_000_000)
+                    if _anticipe:
+                        _attente_ko[i] = 0 if got is not None else _attente_ko.get(i, 0) + 1
                     if got is None and _tgt != _hi and _hi != bobimxl.MXL_UNDEFINED_INDEX:
                         got = rd.get_slice(_hi, _TOUTES, timeout_ns=1_000_000)  # retard → grain courant
                 elif _hi != bobimxl.MXL_UNDEFINED_INDEX:

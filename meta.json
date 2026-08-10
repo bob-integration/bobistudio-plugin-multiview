@@ -1,7 +1,15 @@
 {
-  "version": "0.106.0",
+  "version": "0.107.0",
   "date": "2026-08-10",
   "changes": {
+    "★ LA TRANCHE GPU TIENT LE 50p : l'attente de moisson devient un REPLI (0.107.0)": [
+      "★ RÉSULTAT : mur tranché sur GPU (Quadro P5000) à 1920x1080p50 — 50,0 fps tenus sur plus de 3 minutes, ZÉRO trame perdue, own 13,4 ms pour 20 de budget, zéro attente et zéro repli de bande. Le même mur s'effondrait à 30 fps avec 20 trames perdues/s avant ce correctif.",
+      "★ LA CAUSE, ENFIN : `get_slice(index_de_grille, timeout 3 ms)` était payé PAR ENTRÉE ET PAR TRAME dès que le mur visait un index que ses sources n'avaient pas encore produit. Un mur momentanément en retard vise systématiquement dans le futur de ses sources : il payait ~4 ms × ses entrées (13,3 ms mesurés sur 4 tuiles), ce qui ENTRETENAIT le retard qui les causait. Verrouillage auto-entretenu à 30 fps, que le coût BRUT du travail n'expliquait pas — à 25p, où la marge existe, la même moisson coûtait 0,7 ms.",
+      "L'attente est désormais un REPLI : après 3 échecs CONSÉCUTIFS sur l'index anticipé, cette entrée-là passe en interrogation NON BLOQUANTE (`get_slice_nonblocking`) et se rabat sur sa tête — le grain le plus frais qu'elle ait. Aucune perte de fraîcheur : on renonce seulement à attendre un grain qui n'existe pas encore. Le plein régime revient au premier succès. L'alignement genlock normal, où le grain visé est déjà là, ne paie aucune attente et n'est pas concerné.",
+      "Moisson mesurée : 13,3 → 0,7 ms. Elle est désormais MOINS chère que la pleine trame (0,7 contre 2,5) — en tranche les plans source sont des vues ZÉRO-COPIE, là où la pleine trame copie chaque tuile.",
+      "⚠ PORTÉE BIEN PLUS LARGE QUE LA TRANCHE : tout mur momentanément en retard se punissait lui-même de ~4 ms par entrée et par trame, donc peinait à revenir. Le correctif vaut pour le chemin pleine trame aussi.",
+      "⚠ RESTE : `delai_etage_trames` n'est PAS publié en mode tranche (le chemin tranche ouvre son propre grain et ne pousse pas la mesure) — or c'est LA mesure du délai ajouté par le mur. Sans elle on ne peut pas chiffrer le gain de latence du mode tranche. À corriger avant toute conclusion sur la chaîne."
+    ],
     "Le mode tranche TIENT — son coût réel est `_compose_bands` (10,4 ms), pas ce qu'on croyait (0.106.0)": [
       "★ LE MODE TRANCHE FONCTIONNE : au banc (mur jetable 944 sur P5000, détruit), sortie tranchée à 25p → 25,0 fps, ZÉRO trame perdue, own 15,0 ms. Ce n'est donc ni la carte ni le principe qui bloquent.",
       "★ LES 13,3 ms DE `inputs` ÉTAIENT DE L'ATTENTE, PAS DU TRAVAIL. À 25p la moisson tombe à 0,7 ms — et elle est MOINS chère que la pleine trame (0,7 contre 3,2), ce que le code disait déjà : en mode tranche les plans source sont des vues ZÉRO-COPIE, là où la pleine trame fait un `bytes(src_view)` par tuile. À 50p, le mur en retard vise un index de grille que ses sources n'ont pas atteint : chaque entrée brûle ses timeouts `get_slice` (3 ms + 1 ms de repli), ~13 ms qui ENTRETIENNENT le retard. Boucle auto-entretenue : ce n'est pas le coût brut qui fait tomber le mur à 30 fps, c'est ce verrouillage.",
