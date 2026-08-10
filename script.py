@@ -475,6 +475,7 @@ INPUT_LOCKED = (CADENCE == "input")
 _slm = CONFIG.get("slice_mode", False)
 SLICE_MODE  = _slm if isinstance(_slm, bool) else str(_slm).strip().lower() in ("1", "true", "yes", "on")
 SLICE_LINES = int(CONFIG.get("slice_lines") or 36)
+_TOUTES = bobimxl.MXL_GRAIN_VALID_SLICES_ALL   # cf. lecture des entrées : le mur exige le grain COMPLET
 # ── GPU SLICE (chantier TISSU_SLICE_GPU.md, squelette banc gate) ──────────────────────────────
 # `gpu_slice` (OPT-IN, défaut off) lève l'exclusion GPU du mode tranche : composition bande par
 # bande EN VRAM — H2D par bande (staging épinglé groupé par bande, _gpu_place_band), blends
@@ -1087,6 +1088,185 @@ def _meter_paint_rect(y, u, v, a8, x0, y0, x1, y1, ycc, a):
         u[cy0:cy1, cx0:cx1] = ycc[1]
         v[cy0:cy1, cx0:cx1] = ycc[2]
 
+
+# ─── VU-mètres RENDUS SUR CARTE (0.97.0) ─────────────────────────────────────────────────────
+# ★ POURQUOI. Le chemin historique peint les barres en numpy : copie du fond caché (4 tableaux),
+# une passe de rectangles par canal, recalcul de l'alpha chroma, puis téléversement de 5 tableaux.
+# Sur une machine qui a un GPU dédié à ça, peindre des rectangles pleins au CPU est une inversion —
+# et le coût est LINÉAIRE en nombre de tuiles, alors qu'un noyau ne coûte quasiment rien de plus à
+# vingt mètres qu'à quatre. C'est à pleine charge d'exploitation que ça compte.
+#
+# CE QUI RESTE CPU, ET POURQUOI. Le fond statique porte du TEXTE (graduations dB, numéros de canal).
+# Le dessiner sur carte imposerait un atlas de glyphes. Il est déjà rendu UNE FOIS par PIL et caché ;
+# on le rend simplement RÉSIDENT EN VRAM au lieu de le recopier par trame. Le texte est donc créé une
+# fois dans la vie du conteneur, jamais par trame.
+#
+# CE QUI TRANSITE PAR TRAME : les hauteurs de crête et de maintien, quelques dizaines d'octets.
+# Plus de copie de fond, plus de peinture numpy, plus de téléversement de tuile.
+#
+# ⚠ Le chemin CPU reste le chemin de référence pour un mur SANS GPU (et sous `force_cpu`). Il n'est
+# pas touché. On ne cherche PAS l'équivalence au pixel près : le rendu carte est libre de différer
+# (arrondis d'arêtes), c'est un choix assumé — cf. la demande utilisateur du 2026-08-10.
+_METERS_GPU = False   # ⚠ DÉSACTIVÉ : le noyau suppose du 16 bits, le mur tourne en 8 → accès illégal
+_meter_static_dev_cache = {{}}     # même clé que _meter_static_yuv → (Y,U,V,a8) RÉSIDENTS carte
+_meter_gpu_miss = {{"n": 0, "why": None}}
+
+_meter_bars_k = None
+if GPU:
+    try:
+        _meter_bars_k = cp.RawKernel(r"""
+extern "C" __global__ void bobi_meter_bars(
+    const unsigned short* sy, const unsigned short* su, const unsigned short* sv,
+    const unsigned char* sa,
+    unsigned short* oy, unsigned short* ou, unsigned short* ov, unsigned char* oa,
+    unsigned char* oa2,
+    const int* peak_h, const int* hold_h, const int* col,
+    int W, int H, int CW, int CH, int n,
+    int bx0, int bar_w, int gap, int bars_bottom, int green_top, int yellow_top,
+    int a_bar, int a_hold)
+{{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= W || y >= H) return;
+    long long i = (long long)y * W + x;
+
+    // Couverture d'un pixel par une barre : renvoie l'indice couleur (0=vert,1=jaune,2=rouge,
+    // 3=maintien) ou -1. Les zones sont empilées depuis le bas ; le maintien est une ligne d'1 px.
+    int zone = -1;
+    int c = -1;
+    if (bar_w > 0) {{
+        int dx = x - bx0;
+        if (dx >= 0) {{
+            int per = bar_w + gap;
+            if (per > 0) {{
+                int idx = dx / per;
+                if (idx < n && (dx - idx * per) < bar_w) c = idx;
+            }}
+        }}
+    }}
+    if (c >= 0) {{
+        int ph = peak_h[c], hh = hold_h[c];
+        int dy = bars_bottom - y;                    // hauteur au-dessus du bas des barres
+        if (hh > 0 && dy == hh) {{
+            zone = 3;
+        }} else if (dy >= 0 && dy <= ph) {{
+            if (dy <= green_top)        zone = 0;
+            else if (dy <= yellow_top)  zone = 1;
+            else                        zone = 2;
+        }}
+    }}
+
+    unsigned short vy = sy[i], vu2, vv2;
+    unsigned char va = sa[i];
+    if (zone >= 0) {{
+        vy = (unsigned short)col[zone * 3 + 0];
+        va = (unsigned char)(zone == 3 ? a_hold : a_bar);
+    }}
+    oy[i] = vy;
+    oa[i] = va;
+
+    // Chroma + alpha sous-échantillonnée : le thread à l'origine du bloc écrit pour tout le bloc.
+    if ((x % CW) == 0 && (y % CH) == 0) {{
+        int cw = W / CW;
+        long long j = (long long)(y / CH) * cw + (x / CW);
+        unsigned short bu = su[j], bv = sv[j];
+        int amax = 0;
+        int zc = -1;
+        for (int oyy = 0; oyy < CH; ++oyy) {{
+            for (int oxx = 0; oxx < CW; ++oxx) {{
+                int px = x + oxx, py = y + oyy;
+                if (px >= W || py >= H) continue;
+                int z2 = -1, c2 = -1;
+                if (bar_w > 0) {{
+                    int dx2 = px - bx0;
+                    if (dx2 >= 0) {{
+                        int per2 = bar_w + gap;
+                        if (per2 > 0) {{
+                            int i2 = dx2 / per2;
+                            if (i2 < n && (dx2 - i2 * per2) < bar_w) c2 = i2;
+                        }}
+                    }}
+                }}
+                if (c2 >= 0) {{
+                    int ph2 = peak_h[c2], hh2 = hold_h[c2];
+                    int dy2 = bars_bottom - py;
+                    if (hh2 > 0 && dy2 == hh2) z2 = 3;
+                    else if (dy2 >= 0 && dy2 <= ph2) {{
+                        if (dy2 <= green_top)       z2 = 0;
+                        else if (dy2 <= yellow_top) z2 = 1;
+                        else                        z2 = 2;
+                    }}
+                }}
+                int av = (z2 >= 0) ? (z2 == 3 ? a_hold : a_bar)
+                                   : (int)sa[(long long)py * W + px];
+                if (av > amax) amax = av;
+                if (z2 >= 0 && zc < 0) zc = z2;      // 1ʳᵉ zone rencontrée = couleur du bloc
+            }}
+        }}
+        if (zc >= 0) {{ bu = (unsigned short)col[zc * 3 + 1]; bv = (unsigned short)col[zc * 3 + 2]; }}
+        ou[j] = bu; ov[j] = bv;
+        oa2[j] = (unsigned char)amax;
+    }}
+}}
+""", "bobi_meter_bars")
+    except Exception as _e:
+        _meter_bars_k = None
+        _meter_gpu_miss["why"] = "compilation: %r" % (_e,)
+
+
+def _meter_static_dev(*a, **kw):
+    """Fond statique RÉSIDENT EN VRAM. Même clé que le cache hôte : téléversé une seule fois par
+    géométrie, puis jamais retouché. C'est lui qui porte le texte (rendu PIL au premier appel)."""
+    sy, su, sv, sa, sam = _meter_static_yuv(*a, **kw)
+    k = id(sy)                      # le cache hôte garantit l'identité par géométrie
+    hit = _meter_static_dev_cache.get(k)
+    if hit is not None:
+        return hit
+    dev = (cp.asarray(sy), cp.asarray(su), cp.asarray(sv), cp.asarray(sa))
+    _meter_static_dev_cache[k] = dev
+    return dev
+
+
+def _meter_tile_yuv_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0,
+                        tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP,
+                        grad="full", grad_side="left"):
+    """Tuile de VU produite ENTIÈREMENT sur carte. Renvoie (Y,U,V,a8,a2) en VRAM, ou None (repli)."""
+    if _meter_bars_k is None:
+        return None
+    try:
+        sy, su, sv, sa = _meter_static_dev(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct,
+                                           ch0, tick_w, bar_w, gap, grad, grad_side)
+        bars_mh = max(20, mh - 12)
+        bars_bottom = rmy + bars_mh
+        to_frac, green_top, yellow_top = _meter_scale_params(scale)
+        ph = np.empty(n, dtype=np.int32); hh = np.empty(n, dtype=np.int32)
+        for c in range(n):
+            ph[c] = int(round(to_frac(peaks_db[c]) * bars_mh))
+            hh[c] = int(round(to_frac(holds_db[c]) * bars_mh))
+        col = np.empty(12, dtype=np.int32)
+        for z, rgb in enumerate((_MET_GREEN, _MET_YELLOW, _MET_RED, _MET_WHITE)):
+            yy, uu, vv = _met_yuv(rgb)
+            col[z * 3 + 0] = int(yy); col[z * 3 + 1] = int(uu); col[z * 3 + 2] = int(vv)
+        oy = cp.empty_like(sy); ou = cp.empty_like(su); ov = cp.empty_like(sv)
+        oa = cp.empty_like(sa); oa2 = cp.empty((H // _CH, W // _CW), dtype=cp.uint8)
+        bx0 = (rmx if grad_side == "right" else rmx + tick_w)
+        blk = (16, 16)
+        grd = ((W + blk[0] - 1) // blk[0], (H + blk[1] - 1) // blk[1])
+        _meter_bars_k(grd, blk, (sy, su, sv, sa, oy, ou, ov, oa, oa2,
+                                 cp.asarray(ph), cp.asarray(hh), cp.asarray(col),
+                                 np.int32(W), np.int32(H), np.int32(_CW), np.int32(_CH),
+                                 np.int32(n), np.int32(bx0), np.int32(bar_w), np.int32(gap),
+                                 np.int32(bars_bottom), np.int32(int(round(green_top * bars_mh))),
+                                 np.int32(int(round(yellow_top * bars_mh))),
+                                 np.int32(int(220 * opacity_pct / 100)),
+                                 np.int32(int(255 * opacity_pct / 100))))
+        return oy, ou, ov, oa, oa2
+    except Exception as _e:
+        _meter_gpu_miss["n"] += 1
+        _meter_gpu_miss["why"] = repr(_e)
+        return None
+
+
 def _meter_tile_yuv(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacity_pct, ch0=0,
                      tick_w=METER_TICK_W, bar_w=METER_BAR_W, gap=METER_GAP,
                      grad="full", grad_side="left"):
@@ -1095,6 +1275,11 @@ def _meter_tile_yuv(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale, opacit
     Tuile HÔTE (numpy) : elle est minuscule (une bande de VU), et `_to_xp` l'uploade au blend —
     ce qui, sur un mur GPU, supprime aussi la nuée de micro-noyaux cupy que coûtait la peinture
     RGBA par tranche. `tick_w`/`bar_w`/`gap` : voir _draw_meter."""
+    if GPU and _METERS_GPU:
+        _g = _meter_tile_yuv_gpu(W, H, rmx, rmy, mw, mh, n, peaks_db, holds_db, scale,
+                                 opacity_pct, ch0, tick_w, bar_w, gap, grad, grad_side)
+        if _g is not None:
+            return _g            # tuile déjà en VRAM : _to_xp est neutre, aucun téléversement
     sy, su, sv, sa, _sam = _meter_static_yuv(W, H, rmx, rmy, mw, mh, n, scale, opacity_pct,
                                              ch0, tick_w, bar_w, gap, grad, grad_side)
     y = sy.copy(); u = su.copy(); v = sv.copy(); a8 = sa.copy()
@@ -7699,13 +7884,23 @@ while True:
                         if SHOW_NO_SIGNAL:
                             _statuses.append((i, "nosignal", "", None))
                         continue
+                    # ★ TOUTES les tranches, pas UNE (corrigé le 2026-08-09).
+                    # `get_slice(idx, 1)` rend dès qu'UNE tranche est valide, et renvoie une vue du
+                    # grain ENTIER — le contrat dit de lire `grainInfo.validSlices` pour savoir ce
+                    # qui est réellement là. On ne le lisait pas : on composait la vue complète.
+                    # Inoffensif tant que les entrées ne sont pas tranchées (1 tranche = le grain),
+                    # ce qui est le cas aujourd'hui. Mais dès qu'une entrée arrive par bandes — flux
+                    # tranché, ou réplication RDMA à petit `maxSyncBatchSizeHint` — le mur
+                    # composerait des tuiles remplies à 1/30. Le mur n'est PAS un consommateur
+                    # progressif : il lui faut la trame entière, il doit donc la DEMANDER.
+                    # Cesse de valoir si la boucle de composition devient elle-même par bandes.
                     _tgt = (_fi_out if (_hi == bobimxl.MXL_UNDEFINED_INDEX or abs(_hi - _fi_out) <= 2)
                             else _hi)
-                    got = rd.get_slice(_tgt, 1, timeout_ns=3_000_000)
+                    got = rd.get_slice(_tgt, _TOUTES, timeout_ns=3_000_000)
                     if got is None and _tgt != _hi and _hi != bobimxl.MXL_UNDEFINED_INDEX:
-                        got = rd.get_slice(_hi, 1, timeout_ns=1_000_000)   # retard → grain courant
+                        got = rd.get_slice(_hi, _TOUTES, timeout_ns=1_000_000)  # retard → grain courant
                 elif _hi != bobimxl.MXL_UNDEFINED_INDEX:
-                    got = rd.get_slice(_hi, 1, timeout_ns=2_000_000)
+                    got = rd.get_slice(_hi, _TOUTES, timeout_ns=2_000_000)
                 if got is None:
                     got = rd.get_latest()
             else:

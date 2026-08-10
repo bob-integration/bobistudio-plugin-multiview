@@ -1,7 +1,17 @@
 {
-  "version": "0.95.1",
+  "version": "0.97.0",
   "date": "2026-08-09",
   "changes": {
+    "VU-mètres rendus sur carte (0.97.0)": [
+      "Le chemin historique peint les barres en numpy : copie du fond caché (4 tableaux), une passe de rectangles par canal, recalcul de l'alpha chroma, puis téléversement de 5 tableaux — sur une machine dotée d'un GPU, et pour un coût LINÉAIRE en nombre de mètres. Un noyau `bobi_meter_bars` dessine désormais barres, zones de couleur et ligne de maintien directement en VRAM, par-dessus un fond statique RÉSIDENT sur la carte.",
+      "Le fond garde son rendu PIL : il porte le TEXTE (graduations dB, numéros de canal), dont le dessin sur carte imposerait un atlas de glyphes. Il est rendu UNE FOIS et téléversé UNE FOIS par géométrie — plus recopié par trame. Par trame il ne transite que les hauteurs de crête et de maintien, quelques dizaines d octets.",
+      "Le chemin CPU est INCHANGÉ et reste la référence des murs sans GPU (et sous `force_cpu`). L'équivalence au pixel près n'est PAS recherchée (demande utilisateur du 2026-08-10) : le rendu carte peut différer sur les arrondis d'arêtes. Repli COMPTÉ (`_meter_gpu_miss`) si le noyau ne compile pas ou lève — le mur retombe alors sur le chemin numpy sans rien dire de faux.",
+      "Noyau vérifié sur le P5000 de production avant déploiement, hors chaîne : zones vert/jaune/rouge aux bonnes hauteurs, ligne de maintien, alpha 40 fond / 220 barre / 255 maintien, alpha chroma à la bonne forme, aucun pixel touché hors du mètre."
+    ],
+    "Le mur demandait UNE tranche et composait la trame entière (0.96.0)": [
+      "★ `get_slice(idx, 1)` rend dès qu'UNE tranche est valide et renvoie une vue du grain ENTIER ; le contrat impose de lire `grainInfo.validSlices` pour savoir ce qui est réellement présent. On ne le lisait pas. Inoffensif tant que les entrées ne sont pas tranchées (1 tranche = le grain complet), ce qui est le cas aujourd'hui — mais dès qu'une entrée arrive par bandes (flux tranché, ou réplication RDMA à petit `maxSyncBatchSizeHint`), le mur composerait des tuiles remplies à 1/30. Le mur n'est pas un consommateur progressif : il exige désormais le grain complet (`MXL_GRAIN_VALID_SLICES_ALL`).",
+      "⚠ C'est un PRÉREQUIS à toute activation des petits lots RDMA : sans ce correctif, le gain de latence se serait payé en images déchirées."
+    ],
     "Audit shm_video_ring/shm_audio_ring : purge du legacy MXL (0.95.1)": [
       "MORT — shm_video_ring/shm_audio_ring ne dimensionnaient plus rien (sortie via bobimxl/MXL) : constantes retirées"
     ],
