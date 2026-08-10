@@ -1,7 +1,15 @@
 {
-  "version": "0.104.3",
+  "version": "0.105.0",
   "date": "2026-08-10",
   "changes": {
+    "Le chemin TRANCHE n'avait jamais reçu le blend groupé : ~40 lancements au lieu de 2,1 (0.105.0)": [
+      "★ COMPTÉ, pas supposé. Sur le mur 906 (P5000), le chemin PLEINE TRAME émet 2,1 lancements de blend pour 10,3 tuiles d'habillage — c'est `_blend_lot`, un lancement par couche disjointe, l'optimisation qui avait fait passer le mur de 22 à 3 lancements. Le chemin TRANCHE, lui, blendait tuile par tuile : 3 lancements PAR TUILE ET PAR LOT, soit ~40 par trame. `_blend_lot` n'était appelé qu'à UN endroit du fichier, dans le chemin pleine trame.",
+      "★ CONSÉQUENCE MESURÉE : `gpu_slice` activé sur le 906 le 2026-08-10 a fait tomber le mur à 30-33 fps, own 25,6→27,3 ms (budget 20), 17-20 trames perdues/s — rollback immédiat. À ~0,19 ms le lancement, les ~38 lancements excédentaires expliquent l'essentiel des +18 ms. Le coût ne venait PAS de la taille des bandes : le seuil « méga-bandes 540 » était le mauvais cadre de pensée.",
+      "★ LA LEÇON : le chemin tranche n'est pas « le chemin pleine trame en plus fin », c'est une version ANTÉRIEURE du moteur de composition. Tout gain obtenu sur le chemin principal doit y être porté explicitement, sinon le mode tranche régresse en silence — et on en accuse le matériel.",
+      "Les tuiles sont désormais DÉCOUPÉES aux lignes du lot puis groupées par `_couches_disjointes` (ordre de blend préservé : VU sous horloges ; deux tuiles d'une même couche sont forcément disjointes, c'est ce qui rend le kernel groupé correct). Chemin CPU et lots sans ligne chroma : chemin par-tuile historique, inchangé.",
+      "Le compteur `lancements_gpu` était poussé AVANT `_compose_bands` : il publiait 0 lancement en mode tranche, donc il ne pouvait pas révéler le défaut qu'il existe pour révéler. Poussé après, il compte maintenant les lancements RÉELS de tous les lots.",
+      "`_tuile_vram` : une tuile DÉJÀ en VRAM levait `TypeError: Implicit conversion to a NumPy array is not allowed` sur `np.ascontiguousarray` — 168 225 fois sur le 906, à chaque trame, comptées par `tuile_pin_miss` et jamais lues. Le raccourci épinglé ne servait donc JAMAIS, et l'exception masquait d'éventuels vrais échecs derrière le même compteur. La tuile déjà en VRAM est maintenant rendue telle quelle."
+    ],
     "Le tally sur carte : trois défauts trouvés à l'usage, dont deux VISIBLES À L'ÉCRAN (0.104.1-0.104.3)": [
       "★ TOUS REMONTÉS PAR LE TEST, aucun par la mesure. Le banc du 2026-08-09 prouvait le gain de cadence — zéro re-bake, 49,3 à 50,0 fps — et ne pouvait RIEN dire de l'aspect : il ne regardait pas l'image. Les trois défauts ci-dessous vivaient sous une métrique parfaitement verte.",
       "1. VISIBILITÉ FIGÉE. Un composant dont la présence suit le tally (`when: tally_red`, `tally_green`, `tally_any`, `tally_off`) n'apparaissait ni ne disparaissait plus. Le masque peint une COULEUR ; là, c'est une PRÉSENCE qui change, et aucune couleur ne peut la simuler. `_marquer_cellule` re-bake donc encore ces fenêtres-là, décidé par `_cellule_suit_tally(i)` (mémoïsé, vidé au changement de géométrie). En cas de doute de lecture du modèle : on re-bake — jamais d'habillage figé en silence.",

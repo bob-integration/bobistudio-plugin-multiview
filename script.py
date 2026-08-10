@@ -2387,6 +2387,15 @@ def _tuile_vram(t):
     try:
         bx0, by0, bx1, by1, y, u, v, a, a2 = t
         arrs = (y, u, v, a, a2)
+        # ★ TUILE DÉJÀ EN VRAM : il n'y a rien à téléverser, et tenter de la copier levait
+        # `TypeError: Implicit conversion to a NumPy array is not allowed` sur
+        # `np.ascontiguousarray` — 168 225 fois sur le mur 906, à chaque trame, comptées par
+        # `tuile_pin_miss` et jamais lues. Le repli était sans doute gratuit (la tuile étant déjà
+        # sur la carte), mais le raccourci épinglé ne servait JAMAIS et l'exception masquait
+        # d'éventuels vrais échecs derrière le même compteur. On répond ici ce qui est vrai :
+        # la tuile est déjà là, on la rend telle quelle.
+        if GPU and all(isinstance(_x, cp.ndarray) for _x in arrs):
+            return t
         tailles = [x.nbytes for x in arrs]
         # Offsets alignés sur 8 octets : une vue uint16 sur un offset impair serait invalide.
         offs, o = [], 0
@@ -7911,6 +7920,21 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                     _bl_pre(cu[ca0:cb0, cx0:cx1], _piC[lc0:lc1], _saU[lc0:lc1])
                     _bl_pre(cv[ca0:cb0, cx0:cx1], _piC[lc0:lc1], _saV[lc0:lc1])
         # 2) VU-mètres puis 3) horloges (z-ordre conservé), bornés aux lignes du lot
+        #
+        # ★ BLEND GROUPÉ PAR COUCHES, porté ici depuis le chemin pleine trame (2026-08-10).
+        # COMPTÉ AVANT sur le mur 906 : la pleine trame émettait 2,1 lancements pour 10,3 tuiles
+        # d'habillage (`_blend_lot`, un lancement par couche disjointe) tandis que CE chemin-ci
+        # blendait tuile par tuile — 3 lancements PAR TUILE et PAR LOT, soit ~40 par trame. À
+        # ~0,19 ms le lancement, c'est l'essentiel des +18 ms qui rendaient `gpu_slice`
+        # inutilisable sur P5000 : le coût ne venait pas de la taille des bandes mais du NOMBRE
+        # DE LANCEMENTS. Le chemin tranche n'était pas « la pleine trame en plus fin », c'était
+        # une version ANTÉRIEURE du moteur de composition — chaque gain du chemin principal doit
+        # y être porté explicitement, sinon le mode tranche régresse en silence.
+        #
+        # Les tuiles sont DÉCOUPÉES aux lignes du lot puis groupées : `_couches_disjointes`
+        # préserve l'ordre de blend (VU sous horloges), et deux tuiles d'une même couche sont
+        # forcément disjointes — c'est ce qui rend le kernel groupé correct.
+        _lot_bande = []
         for _tiles in (meter_tiles, pf_tiles):
             if not _tiles:
                 continue
@@ -7919,13 +7943,23 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                 if a >= b:
                     continue
                 l0 = a - by0; l1 = b - by0
-                _bl(cy[a:b, bx0:bx1], _oy[l0:l1], _oa[l0:l1])
                 ca0, cb0 = a // _CH, b // _CH
                 lc0 = ca0 - by0 // _CH; lc1 = lc0 + (cb0 - ca0)
                 cx0, cx1 = bx0 // _CW, bx1 // _CW
+                if GPU_SLICE and cb0 > ca0:
+                    # Tuile RESTREINTE au lot, en coordonnées canvas : `_blend_lot` attend des
+                    # plans chroma de (h//_CH, w//_CW), ce que donnent exactement ces découpes
+                    # (B0 et b1 sont des multiples de SLICE_LINES, donc de _CH).
+                    _lot_bande.append((bx0, a, bx1, b, _oy[l0:l1], _ou[lc0:lc1],
+                                       _ovv[lc0:lc1], _oa[l0:l1], _oa2[lc0:lc1]))
+                    continue
+                # CPU, ou lot sans ligne chroma : chemin par-tuile historique, inchangé.
+                _bl(cy[a:b, bx0:bx1], _oy[l0:l1], _oa[l0:l1])
                 if cb0 > ca0:
                     _bl(cu[ca0:cb0, cx0:cx1], _ou[lc0:lc1], _oa2[lc0:lc1])
                     _bl(cv[ca0:cb0, cx0:cx1], _ovv[lc0:lc1], _oa2[lc0:lc1])
+        if _lot_bande:
+            _blend_lot(_lot_bande, cy, cu, cv)
         # publication du lot : copie canvas→grain + commit PROGRESSIF (réveille l'aval)
         if GPU_SLICE and grp > 1:
             # Ancre (c) GREFFÉE (M2 « recouvert » du banc gate, ~0,44 ms gagnés à 135 l) : le D2H
@@ -8638,7 +8672,12 @@ while True:
                 # par COUCHE, après la boucle (cf. _blend_lot).
                 _lot_trame.append((bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2))
         _blend_lot(_lot_trame, canvas_y, canvas_u, canvas_v)
-        _n_lancements.push(_lanc["n"])
+        if not SLICE_ON:
+            # En MODE TRANCHE les blends n'ont pas encore eu lieu : ils partent lot par lot dans
+            # `_compose_bands`, plus bas. Pousser le compteur ICI publierait 0 lancement pour une
+            # trame qui en émet des dizaines — le compteur est justement l'outil qui a permis de
+            # trouver le défaut, il ne doit pas mentir sur le chemin qu'il sert à juger.
+            _n_lancements.push(_lanc["n"])
 
         _tuiles_dev_evict()
         _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
@@ -8655,6 +8694,7 @@ while True:
                                         _chrome_pre, _meter_tiles,
                                         ((_pf_tiles or []) + (_hist_tiles or [])) or None,
                                         fi_out=_fi_out) or 0
+            _n_lancements.push(_lanc["n"])   # lancements RÉELS du chemin tranche (tous lots)
         else:
             if _PORTRAIT:                        # compose en portrait → tourne 90° vers la trame paysage
                 canvas_y, canvas_u, canvas_v = _rotate_out(canvas_y, canvas_u, canvas_v)
