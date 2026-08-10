@@ -1107,18 +1107,19 @@ def _meter_paint_rect(y, u, v, a8, x0, y0, x1, y1, ycc, a):
 # ⚠ Le chemin CPU reste le chemin de référence pour un mur SANS GPU (et sous `force_cpu`). Il n'est
 # pas touché. On ne cherche PAS l'équivalence au pixel près : le rendu carte est libre de différer
 # (arrondis d'arêtes), c'est un choix assumé — cf. la demande utilisateur du 2026-08-10.
-_METERS_GPU = False   # ⚠ DÉSACTIVÉ : le noyau suppose du 16 bits, le mur tourne en 8 → accès illégal
+_METERS_GPU = True    # A/B en cours
 _meter_static_dev_cache = {{}}     # même clé que _meter_static_yuv → (Y,U,V,a8) RÉSIDENTS carte
 _meter_gpu_miss = {{"n": 0, "why": None}}
 
 _meter_bars_k = None
 if GPU:
     try:
-        _meter_bars_k = cp.RawKernel(r"""
+        _meter_bars_src = r"""
+#define PIX __PIX__
 extern "C" __global__ void bobi_meter_bars(
-    const unsigned short* sy, const unsigned short* su, const unsigned short* sv,
+    const PIX* sy, const PIX* su, const PIX* sv,
     const unsigned char* sa,
-    unsigned short* oy, unsigned short* ou, unsigned short* ov, unsigned char* oa,
+    PIX* oy, PIX* ou, PIX* ov, unsigned char* oa,
     unsigned char* oa2,
     const int* peak_h, const int* hold_h, const int* col,
     int W, int H, int CW, int CH, int n,
@@ -1156,10 +1157,10 @@ extern "C" __global__ void bobi_meter_bars(
         }}
     }}
 
-    unsigned short vy = sy[i], vu2, vv2;
+    PIX vy = sy[i];
     unsigned char va = sa[i];
     if (zone >= 0) {{
-        vy = (unsigned short)col[zone * 3 + 0];
+        vy = (PIX)col[zone * 3 + 0];
         va = (unsigned char)(zone == 3 ? a_hold : a_bar);
     }}
     oy[i] = vy;
@@ -1169,7 +1170,7 @@ extern "C" __global__ void bobi_meter_bars(
     if ((x % CW) == 0 && (y % CH) == 0) {{
         int cw = W / CW;
         long long j = (long long)(y / CH) * cw + (x / CW);
-        unsigned short bu = su[j], bv = sv[j];
+        PIX bu = su[j], bv = sv[j];
         int amax = 0;
         int zc = -1;
         for (int oyy = 0; oyy < CH; ++oyy) {{
@@ -1203,12 +1204,21 @@ extern "C" __global__ void bobi_meter_bars(
                 if (z2 >= 0 && zc < 0) zc = z2;      // 1ʳᵉ zone rencontrée = couleur du bloc
             }}
         }}
-        if (zc >= 0) {{ bu = (unsigned short)col[zc * 3 + 1]; bv = (unsigned short)col[zc * 3 + 2]; }}
+        if (zc >= 0) {{ bu = (PIX)col[zc * 3 + 1]; bv = (PIX)col[zc * 3 + 2]; }}
         ou[j] = bu; ov[j] = bv;
         oa2[j] = (unsigned char)amax;
     }}
 }}
-""", "bobi_meter_bars")
+"""
+        # ★ LE TYPE DES PLANS SUIT LA PROFONDEUR DU MUR. La 1re version declarait `unsigned short`
+        # en dur : sur un mur 8 bits (le cas de la production), le noyau lisait et ecrivait DEUX
+        # octets la ou il y en a un — CUDA_ERROR_ILLEGAL_ADDRESS des la premiere trame, mur au noir
+        # (2026-08-10). Le harnais de validation ne pouvait pas l'attraper : il etait ecrit en uint16
+        # des deux cotes, donc il verifiait la geometrie du dessin sur un type qui n'etait pas celui
+        # de la production. Le type vient donc de _NP_DT, comme tout le reste du plugin.
+        _meter_bars_k = cp.RawKernel(
+            _meter_bars_src.replace("__PIX__", "unsigned short" if _DEEP else "unsigned char"),
+            "bobi_meter_bars")
     except Exception as _e:
         _meter_bars_k = None
         _meter_gpu_miss["why"] = "compilation: %r" % (_e,)
@@ -1218,12 +1228,15 @@ def _meter_static_dev(*a, **kw):
     """Fond statique RÉSIDENT EN VRAM. Même clé que le cache hôte : téléversé une seule fois par
     géométrie, puis jamais retouché. C'est lui qui porte le texte (rendu PIL au premier appel)."""
     sy, su, sv, sa, sam = _meter_static_yuv(*a, **kw)
-    k = id(sy)                      # le cache hôte garantit l'identité par géométrie
-    hit = _meter_static_dev_cache.get(k)
-    if hit is not None:
-        return hit
+    # ⚠ La clé est `id(sy)`, MAIS un id Python est REUTILISABLE apres collecte : sans garde, un
+    # nouveau fond pourrait tomber sur l'entree d'un ancien et on servirait le mauvais texte. On
+    # garde donc une reference forte au tuple hote et on VERIFIE l'identite avant de servir —
+    # meme motif que `_ov_dev` plus haut dans ce fichier.
+    hit = _meter_static_dev_cache.get(id(sy))
+    if hit is not None and hit[0] is sy:
+        return hit[1]
     dev = (cp.asarray(sy), cp.asarray(su), cp.asarray(sv), cp.asarray(sa))
-    _meter_static_dev_cache[k] = dev
+    _meter_static_dev_cache[id(sy)] = (sy, dev)
     return dev
 
 
@@ -1326,6 +1339,30 @@ tsl_text_by_index = {{}}
 # l'orchestrateur (résolu depuis une ligne du tableau /labels, pas un index TSL local).
 overlay_central = {{}}
 tally_dirty = threading.Event()
+# ★ CELLULES sales — l'information existait déjà à l'endroit où le tally change (`i` côté TSL,
+# `idx` côté HTTP) et était JETÉE : on levait un drapeau global, donc un tally sur UNE fenêtre
+# re-fabriquait l'habillage des vingt. Mesuré le 2026-08-10 sur le mur de banc 940 : un re-bake
+# coûte 45 ms (render_dynamic 12,5 + alpha_composite 14,2 + rgba_to_yuv 18,2 — les deux derniers
+# PLEIN CADRE, indépendants du nombre de cellules touchées), et 5 bascules/s font tomber le mur de
+# 50 à 41 fps, 12 bascules/s à 33 fps. `_cells_dirty` vide = cause globale (géométrie, fond) →
+# re-bake complet, comportement historique.
+_cells_dirty = set()
+_cells_lock = threading.Lock()
+
+def _marquer_cellule(i):
+    """Marque UNE cellule à re-baker. Ne remplace pas `tally_dirty` : c'est lui qui réveille le
+    boulanger ; cet ensemble dit seulement CE QU'IL FAUT refaire."""
+    if _tally_k is not None and GPU:
+        return          # tally peint sur carte : AUCUN re-bake, c'est tout l'objet du mécanisme
+    with _cells_lock:
+        _cells_dirty.add(int(i))
+    tally_dirty.set()
+
+def _prendre_cellules():
+    """Vide et renvoie l'ensemble des cellules sales. Vide → re-bake complet."""
+    with _cells_lock:
+        c = set(_cells_dirty); _cells_dirty.clear()
+    return c
 tally_dirty.set()
 # Accumulateur par slot TSL : (tsl_index, 'rh'|'tt'|'lh') → [valeur, last_ts, smoothed_interval_or_None]
 # Protocole delta : seuls les slots actifs sont envoyés en keepalive.
@@ -1620,6 +1657,15 @@ def _refresh_lat_metrics():
     # le dit explicitement (sur une version antérieure, ce même chiffre était un pic DANS la trame).
     # Le coût réellement vu par la trame est `compose_breakdown_ms.ov_hist` — il doit être ~0,05 ms.
     metrics["hist_bake_ms"] = dict(_hist_bake, **{{"async": True}})
+    # Voie prise par le bake du chrome : incrémental (rectangles sales) ou complet, avec le coût
+    # MOYEN de chacune et les motifs de repli. Deux chemins de coûts incomparables ne doivent
+    # jamais partager une moyenne.
+    _bv = _bake_voie
+    metrics["tally_gpu"] = {{"zones": _tally_n_pub[0], "miss": dict(_tally_miss)}}
+    metrics["bake_voie"] = {{
+        "incr_n": _bv["incr_n"], "incr_ms": round(_bv["incr_ms"] / _bv["incr_n"], 2) if _bv["incr_n"] else None,
+        "full_n": _bv["full_n"], "full_ms": round(_bv["full_ms"] / _bv["full_n"], 2) if _bv["full_n"] else None,
+        "rejets": dict(_bv["rejets"])}}
     # `chrome_bake_ms` = coût UNITAIRE d'une passe de boulange de l'habillage (fond + chrome).
     # ★ 0.42.0 : payé par le THREAD BOULANGER → il ne coûte PLUS DE TRAME (`async: true`). Ce que la
     # trame paie est `compose_breakdown_ms.ov_bake` (ramassage + upload) — il doit rester ~0,1 ms.
@@ -1694,7 +1740,7 @@ class Handler(BaseHTTPRequestHandler):
                         tally_state[f"{{idx}}_R"] = _r
                         _ch = True
                 if _ch:
-                    tally_dirty.set()
+                    _marquer_cellule(idx)          # cellule CONNUE ici : on ne jette plus l'info
                 self._send_json({{"status": "ok"}})
             except Exception as e:
                 self.send_response(400); self.end_headers()
@@ -2752,17 +2798,57 @@ def _render_pill(d, cx, cy, r, fill, outline):
     """Pastille ronde centrée (cx, cy) de rayon r."""
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill, outline=outline, width=2)
 
-def render_dynamic():
-    """Re-rendu à chaque changement Tally/TSL ou de géométrie : composants BAKÉS des modèles
-    de PiP (umd / tally / text / format / bordure video). Toute cellule a un modèle (explicite,
-    défaut du mur, ou « Classique » généré — cf. _tpl_comps) : c'est l'UNIQUE moteur d'habillage."""
-    img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+_dyn_img = None      # couche dynamique PERSISTANTE (cf. render_dynamic)
+_ch_img  = None      # chrome CONSOLIDÉ persistant (RGBA) — rapiécé par rectangle (cf. bake)
+# ⛔ ESSAYÉ, ÉCARTÉ (2026-08-10) — rectangles par COMPOSANT au lieu de la cellule entière.
+# L'idée : une cellule fait 401 kpx quand ses composants d'habillage n'en couvrent que 33 à 104
+# (mesuré sur le mur de banc 940), donc on refaisait 4 à 12 fois la surface nécessaire. Bordure
+# vidéo décomposée en quatre bandes pour ne pas ramener la cellule entière.
+# Résultat : AUCUN GAIN — 22,3 ms contre 20,3 ms pour la cellule entière, donc légèrement PIRE.
+# Ce ne sont pas les pixels qui coûtent, ce sont les APPELS : douze rgba_to_yuv + douze
+# compositions + douze rapiéçages valent plus qu'un seul sur quatre fois la surface. Même loi que
+# les VU sur carte le même jour — le coût est dans la granularité des appels, pas dans le travail.
+# Cesse de valoir si la conversion devient assez bon marché pour que la surface redevienne le
+# terme dominant.
+_bake_voie = {{"incr_n": 0, "incr_ms": 0.0, "full_n": 0, "full_ms": 0.0, "rejets": {{}}}}
+
+def _rejet(motif):
+    """Pourquoi l'incrémental n'a pas été pris. Un repli MUET est un repli qu'on ne corrige
+    jamais — cf. l'anti-patron de l'échec silencieux."""
+    _bake_voie["rejets"][motif] = _bake_voie["rejets"].get(motif, 0) + 1
+
+def render_dynamic(cells=None):
+    """Composants BAKÉS des modèles de PiP (umd / tally / text / format / bordure video).
+    Toute cellule a un modèle (explicite, défaut du mur, ou « Classique » généré — cf. _tpl_comps) :
+    c'est l'UNIQUE moteur d'habillage.
+
+    ★ INCRÉMENTAL (2026-08-10). `cells` = indices des fenêtres à refaire ; None = tout, comme avant.
+    L'image est PERSISTANTE : on n'efface et ne redessine que les rectangles des cellules sales.
+    Motif : un tally sur UNE fenêtre re-dessinait les vingt. Mesuré sur le mur de banc 940, ce
+    dessin coûte 12,5 ms plein cadre, sur un re-bake total de 45 ms — et 5 bascules/s faisaient
+    tomber le mur de 50 à 41 fps.
+
+    ⚠ HYPOTHÈSE : les composants d'une fenêtre tiennent dans SA cellule (c'est ce que garantit
+    `_comp_rect`, qui les positionne dans le rectangle de la cellule). Un composant qui déborderait
+    laisserait des pixels périmés hors de la zone effacée. Cesse de valoir si un habillage se met à
+    dessiner hors cellule."""
+    global _dyn_img
+    complet = (cells is None or _dyn_img is None
+               or _dyn_img.size != (OUT_WIDTH, OUT_HEIGHT))
+    if complet:
+        _dyn_img = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+    d = ImageDraw.Draw(_dyn_img)
     for i, cfg in enumerate(FLUX_CONFIG):
         if cfg.get("hidden"):
             continue
-        _tpl_render_dynamic(d, img, i, cfg, _tpl_comps(cfg))
-    return img   # RGBA — consolidation : converti une seule fois après alpha_composite
+        if not complet and i not in cells:
+            continue
+        if not complet:
+            r = _video_rect(cfg)                       # rectangle de la CELLULE (clampé, pair)
+            _dyn_img.paste((0, 0, 0, 0),
+                           (r["x"], r["y"], r["x"] + r["w"], r["y"] + r["h"]))
+        _tpl_render_dynamic(d, _dyn_img, i, cfg, _tpl_comps(cfg))
+    return _dyn_img   # RGBA — consolidation : converti une seule fois après alpha_composite
 
 _meter_label_tile_cache = {{}}
 _METER_LABEL_CACHE_MAX = 64      # une entrée par (état × géométrie) ; la mise en page bouge rarement
@@ -4683,6 +4769,8 @@ def _apply_tsl(index, control, text):
             for c in (_tpl_comps(cfg) or ()))
         if wants_tsl_text and tsl_text.get(i) != text:
             tsl_text[i] = text; changed = True
+        if changed:
+            _marquer_cellule(i)                    # idem : la boucle sait QUELLE fenêtre change
     if changed:
         tally_dirty.set()
 
@@ -5682,6 +5770,237 @@ def _tpl_draw_tally(d, i, comp, rect):
         r = max(2, min(rw, rh) // 2 - 1)
         _render_pill(d, rx + rw // 2, ry + rh // 2, r, fill, outline)
 
+# ─── TALLY : la FORME est bakée une fois, la COULEUR arrive par trame ─────────────────────────
+# ★ IDÉE (utilisateur, 2026-08-10) : réserver les zones de tally EN TRANSPARENCE dans le chrome, et
+# laisser la carte remplir la couleur en un seul lancement. Le tally sort alors complètement du
+# bake : plus de render_dynamic, plus d'alpha_composite, plus de rgba_to_yuv quand une source passe
+# à l'antenne — les trois postes qui faisaient tomber le mur de 50 à 33 fps à 12 bascules/s.
+#
+# Ce qui est baké UNE FOIS (au changement de géométrie, pas de tally) : la COUVERTURE de chaque
+# forme, en alpha seul. Ce qui arrive par trame : la couleur ET l'opacité — car l'opacité dépend de
+# l'état (pastille éteinte 180, rouge 240) ; le noyau multipliera couverture × opacité.
+#
+# Une LAMPE demande DEUX masques (remplissage, contour) : deux couleurs distinctes sur une même
+# silhouette. Une BARRE ou un CADRE n'en demandent qu'un.
+_tally_masques = None        # [(x0, y0, mask_uint8, role, i, comp)] ; None = à reconstruire
+
+def _masque_tally(i, comp, rect):
+    """Couvertures d'un composant tally, indépendantes de l'état. Renvoie [(x0,y0,mask,role)] —
+    `role` = 'fill' | 'outline' | 'plain', ce que le paramètre par trame viendra colorer."""
+    rx, ry, rw, rh = rect
+    if rw <= 0 or rh <= 0:
+        return []
+    shape = comp.get("shape") or "lamp"
+    OPAQUE = (255, 255, 255, 255)
+    def _neuf():
+        im = Image.new("RGBA", (rw, rh), (0, 0, 0, 0))
+        return im, ImageDraw.Draw(im)
+    out = []
+    if shape == "border":
+        try:
+            t = max(2, int(comp.get("thickness") or 4))
+        except (TypeError, ValueError):
+            t = 4
+        im, d2 = _neuf()
+        _render_border_colored(d2, 0, 0, rw, rh, OPAQUE, min(t, rw // 2, rh // 2))
+        out.append((rx, ry, np.array(im)[..., 3], "plain"))
+    elif shape == "bar":
+        im, d2 = _neuf()
+        d2.rectangle([0, 0, rw - 1, rh - 1], fill=OPAQUE)
+        out.append((rx, ry, np.array(im)[..., 3], "plain"))
+    else:                                   # lampe : silhouette pleine, puis contour seul
+        r = max(2, min(rw, rh) // 2 - 1)
+        im, d2 = _neuf()
+        _render_pill(d2, rw // 2, rh // 2, r, OPAQUE, (0, 0, 0, 0))
+        out.append((rx, ry, np.array(im)[..., 3], "fill"))
+        im2, d3 = _neuf()
+        _render_pill(d3, rw // 2, rh // 2, r, (0, 0, 0, 0), OPAQUE)
+        out.append((rx, ry, np.array(im2)[..., 3], "outline"))
+    return out
+
+def _masques_teintes(i, cfg):
+    """Couvertures des éléments TEINTÉS par le tally hors du composant `tally` : la bordure vidéo
+    en mode `tally`, et le fond d'UMD en `tally_bg`. Même principe — la forme ne dépend pas de
+    l'état, seule la couleur en dépend. La couleur du TEXTE (`tally_text`) n'est pas traitée ici :
+    sa forme, ce sont les glyphes, qui dépendent du LIBELLÉ (non énumérable) — elle reste bakée."""
+    out = []
+    OPAQUE = (255, 255, 255, 255)
+    try:
+        vr = _video_rect(cfg)
+        for comp in (_tpl_comps(cfg) or ()):
+            if not isinstance(comp, dict) or not _comp_visible(i, cfg, comp):
+                continue
+            k = comp.get("type")
+            if k == "video" and (comp.get("border") or "none") == "tally":
+                try:
+                    bw = max(1, int(comp.get("border_w") or 3))
+                except (TypeError, ValueError):
+                    bw = 3
+                vx, vy, vw, vh = vr["vx"], vr["vy"], vr["vw"], vr["vh"]
+                if vw <= 0 or vh <= 0:
+                    continue
+                im = Image.new("RGBA", (vw, vh), (0, 0, 0, 0))
+                _render_border_colored(ImageDraw.Draw(im), 0, 0, vw, vh, OPAQUE,
+                                       min(bw, vw // 2, vh // 2))
+                out.append((vx, vy, np.array(im)[..., 3], "border_tally", i, comp))
+            elif k == "umd" and _as_bool(comp.get("tally_bg"), False):
+                rx, ry, rw, rh = _comp_rect(cfg, comp)
+                if rw <= 0 or rh <= 0:
+                    continue
+                out.append((rx, ry, np.full((rh, rw), 255, dtype=np.uint8), "bar_tally", i, comp))
+    except Exception:
+        return []
+    return out
+
+
+def _construire_masques_tally():
+    """Reconstruit toutes les couvertures. Appelé au changement de GÉOMÉTRIE uniquement — jamais
+    sur un tally, c'est tout l'objet du mécanisme."""
+    global _tally_masques
+    ms = []
+    for i, cfg in enumerate(FLUX_CONFIG):
+        if cfg.get("hidden"):
+            continue
+        for comp in (_tpl_comps(cfg) or ()):
+            if not isinstance(comp, dict) or comp.get("type") != "tally":
+                continue
+            try:
+                if not _comp_visible(i, cfg, comp):
+                    continue
+                for (x0, y0, m, role) in _masque_tally(i, comp, _comp_rect(cfg, comp)):
+                    ms.append((x0, y0, m, role, i, comp))
+            except Exception:
+                continue          # un composant malformé ne doit jamais coûter une trame
+        ms += _masques_teintes(i, cfg)      # bordure vidéo + fond d'UMD teintés
+    _tally_masques = ms
+    return ms
+
+
+# ─── Application du TALLY sur carte : un seul lancement pour tout le mur ──────────────────────
+# La FORME est bakée une fois (cf. _construire_masques_tally) ; la COULEUR et l'OPACITÉ arrivent
+# par trame, en quelques dizaines d'octets. Un lancement UNIQUE, quel que soit le nombre de
+# fenêtres — la leçon des VU du 2026-08-10 : le coût est dans le nombre de lancements, pas dans le
+# travail. Descripteurs empilés + recherche binaire, comme bobi_blend_lot.
+_tally_dev = {{"masques": None, "sig": None}}     # masques RÉSIDENTS carte (téléversés une fois)
+_tally_k = None
+_tally_miss = {{"n": 0, "why": None}}
+_tally_n_pub = [None]      # nb de zones peintes à la dernière trame (exposé sur :8080)
+if GPU:
+    try:
+        _tally_src = r"""
+#define PIX __PIX__
+extern "C" __global__ void bobi_tally_lot(
+    PIX* cy, PIX* cu, PIX* cv,
+    const long long* par, const long long* ptr, int nz, long long total,
+    int W, int H, int CW, int CH)
+{{
+    long long i = (long long)blockIdx.x * (long long)blockDim.x + (long long)threadIdx.x;
+    if (i >= total) return;
+    int lo = 0, hi = nz - 1, m = 0;
+    while (lo <= hi) {{
+        int mid = (lo + hi) >> 1;
+        if (par[(long long)mid * 8 + 7] <= i) {{ m = mid + 1; lo = mid + 1; }} else {{ hi = mid - 1; }}
+    }}
+    long long base = (m > 0) ? par[(long long)(m - 1) * 8 + 7] : 0;
+    const long long* p = par + (long long)m * 8;
+    int x0 = (int)p[0], y0 = (int)p[1], w = (int)p[2], h = (int)p[3];
+    int ty = (int)p[4], tu = (int)p[5], tv = (int)p[6];
+    long long loc = i - base;
+    int ly = (int)(loc / w), lx = (int)(loc % w);
+    if (ly >= h) return;
+    int x = x0 + lx, y = y0 + ly;
+    if (x < 0 || y < 0 || x >= W || y >= H) return;
+    const unsigned char* mk = (const unsigned char*)ptr[(long long)m * 2 + 0];
+    int op = (int)ptr[(long long)m * 2 + 1];              // opacité de l'ÉTAT (0-255)
+    int a = ((int)mk[(long long)ly * w + lx] * op) / 255; // couverture x opacité
+    if (a <= 0) return;
+    long long j = (long long)y * W + x;
+    cy[j] = (PIX)(((int)cy[j] * (255 - a) + ty * a) / 255);
+    // chroma : le thread à l'origine du bloc écrit, avec le MAX de couverture du bloc (même
+    // convention que l'alpha sous-echantillonnee du reste du plugin).
+    if ((x % CW) == 0 && (y % CH) == 0) {{
+        int amax = 0;
+        for (int dy = 0; dy < CH; ++dy) for (int dx = 0; dx < CW; ++dx) {{
+            int lx2 = lx + dx, ly2 = ly + dy;
+            if (lx2 >= w || ly2 >= h) continue;
+            int a2 = ((int)mk[(long long)ly2 * w + lx2] * op) / 255;
+            if (a2 > amax) amax = a2;
+        }}
+        if (amax > 0) {{
+            int cw = W / CW;
+            long long k = (long long)(y / CH) * cw + (x / CW);
+            cu[k] = (PIX)(((int)cu[k] * (255 - amax) + tu * amax) / 255);
+            cv[k] = (PIX)(((int)cv[k] * (255 - amax) + tv * amax) / 255);
+        }}
+    }}
+}}
+"""
+        _tally_k = cp.RawKernel(
+            _tally_src.replace("__PIX__", "unsigned short" if _DEEP else "unsigned char"),
+            "bobi_tally_lot")
+    except Exception as _e:
+        _tally_k = None
+        _tally_miss["why"] = "compilation: %r" % (_e,)
+
+
+def _tally_couleur(role, st):
+    """(Y, U, V, opacite) d'un role pour un etat. Memes tables que _tpl_draw_tally : la couleur
+    ne change pas, seul le chemin qui l'applique."""
+    if role == "border_tally":
+        rgba = _TALLY_BORDER_RGBA.get(st) or _FRAME_NEUTRAL
+    elif role == "bar_tally":
+        rgba = _BAR_TINTS.get(st, _BAR_TINTS["off"])
+    elif role == "fill":
+        rgba = _PILL_COLORS.get(st, _PILL_COLORS["off"])[0]
+    elif role == "outline":
+        rgba = _PILL_COLORS.get(st, _PILL_COLORS["off"])[1]
+    else:
+        rgba = _TALLY_BORDER_RGBA.get(st) or _FRAME_NEUTRAL
+    y, u, v = _met_yuv((rgba[0], rgba[1], rgba[2]))
+    return int(y), int(u), int(v), int(rgba[3] if len(rgba) > 3 else 255)
+
+
+def _appliquer_tally(cy, cu, cv):
+    """Peint tous les tally du mur en UN lancement. Renvoie le nombre de zones, ou None (repli)."""
+    global _tally_masques
+    if _tally_k is None or not GPU:
+        return None
+    try:
+        if _tally_masques is None:
+            _construire_masques_tally()
+        if not _tally_masques:
+            return 0
+        if _tally_dev["masques"] is None or _tally_dev["sig"] is not id(_tally_masques):
+            _tally_dev["masques"] = [cp.asarray(m) for (_x, _y, m, _r, _i, _c) in _tally_masques]
+            _tally_dev["sig"] = id(_tally_masques)
+        par = []; ptr = []; cum = 0
+        for k, (x0, y0, mk, role, i, comp) in enumerate(_tally_masques):
+            slot = comp.get("slot") or "dominant"
+            st = (tally_state.get("%d_L" % i, "off") if slot == "L" else
+                  tally_state.get("%d_R" % i, "off") if slot == "R" else
+                  _window_tally_dominant(i))
+            ty, tu, tv, op = _tally_couleur(role, st)
+            if op <= 0:
+                continue
+            h, w = mk.shape
+            cum += w * h
+            par += [x0, y0, w, h, ty, tu, tv, cum]
+            ptr += [int(_tally_dev["masques"][k].data.ptr), op]
+        if not par:
+            return 0
+        nz = len(par) // 8
+        dpar = cp.asarray(np.array(par, dtype=np.int64))
+        dptr = cp.asarray(np.array(ptr, dtype=np.int64))
+        blk = 256
+        _tally_k(((cum + blk - 1) // blk,), (blk,),
+                 (cy, cu, cv, dpar, dptr, np.int32(nz), np.int64(cum),
+                  np.int32(OUT_WIDTH), np.int32(OUT_HEIGHT), np.int32(_CW), np.int32(_CH)))
+        return nz
+    except Exception as _e:
+        _tally_miss["n"] += 1
+        _tally_miss["why"] = repr(_e)
+        return None
+
 def _tpl_draw_video_border(d, img, i, cfg, comp):
     """CADRE du composant vidéo — l'habillage de cadre historique (ex-frame_style global de
     mur) migré dans le MODÈLE (0.33.0). Dessiné sur le rectangle IMAGE réel (_video_rect :
@@ -5710,7 +6029,8 @@ def _tpl_draw_video_border(d, img, i, cfg, comp):
         col = _hex_rgb(comp.get("border_color"), (255, 255, 255)) + (255,)
         _render_border_colored(d, vx, vy, vw, vh, col, bw)
     elif mode == "tally":
-        _render_border_colored(d, vx, vy, vw, vh, tally_col or _FRAME_NEUTRAL, bw)
+        if _tally_k is None or not GPU:     # sur carte : forme bakée en masque, couleur par trame
+            _render_border_colored(d, vx, vy, vw, vh, tally_col or _FRAME_NEUTRAL, bw)
     elif mode == "classic":
         _render_border_colored(d, vx, vy, vw, vh, _FRAME_NEUTRAL, max(2, bw))
     elif mode == "stylized":
@@ -5779,7 +6099,13 @@ def _tpl_render_dynamic(d, img, i, cfg, comps):
                 continue
             rect = _comp_rect(cfg, comp)
             if k == "tally":
-                _tpl_draw_tally(d, i, comp, rect)
+                # ★ Le tally n'est PLUS baké quand la carte sait le peindre : sa zone reste
+                # TRANSPARENTE dans le chrome, et `_appliquer_tally` y pose couleur et opacité par
+                # trame à travers un masque résident (idée utilisateur, 2026-08-10). C'est ce qui
+                # retire complètement le tally des causes de re-bake — render_dynamic,
+                # alpha_composite et rgba_to_yuv comprises. Sans carte, on garde le dessin baké.
+                if _tally_k is None or not GPU:
+                    _tpl_draw_tally(d, i, comp, rect)
                 continue
             if k == "umd":
                 txt = _tpl_text_value(i, cfg, comp)
@@ -5787,8 +6113,9 @@ def _tpl_render_dynamic(d, img, i, cfg, comps):
                 col_over = None
                 dom = _window_tally_dominant(i)
                 if _as_bool(comp.get("tally_bg"), False):
-                    d.rectangle([rect[0], rect[1], rect[0] + rect[2] - 1, rect[1] + rect[3] - 1],
-                                fill=_BAR_TINTS.get(dom, _BAR_TINTS["off"]))
+                    if _tally_k is None or not GPU:
+                        d.rectangle([rect[0], rect[1], rect[0] + rect[2] - 1, rect[1] + rect[3] - 1],
+                                    fill=_BAR_TINTS.get(dom, _BAR_TINTS["off"]))
                     ov["bg_color"] = ""
                 if _as_bool(comp.get("tally_text"), False) and dom != "off":
                     col_over = _TPL_TALLY_TEXT_HEX.get(dom)
@@ -6144,8 +6471,11 @@ def _chrome_bake_pass():
     """UNE passe du boulanger : re-bake des couches CACHÉES sales, puis publication des opérandes
     HÔTE prêts à blender. ★ APPELÉE PAR LE THREAD BOULANGER SEULEMENT ★ (sauf l'amorce au boot)."""
     global overlay_fg_rgba, dyn_rgba, _info_layer, _info_sig, _chrome_pub, _bg_pub, _chrome_dirty
+    global _tally_masques
     _t0 = time.time_ns()
     _did = False
+    _global_dirty = False      # une cause GLOBALE (fond, géométrie, statuts) interdit l'incrémental
+    _cells = set()
 
     # (a) FOND (layer=background) + overlays statiques : couche cachée. Le canvas de base est
     # PRÉ-BLENDÉ ici, hôte, hors trame — la boucle par-trame n'en fait plus qu'une copie.
@@ -6161,26 +6491,84 @@ def _chrome_bake_pass():
                         blend(np.full((OUT_HEIGHT // _CH, OUT_WIDTH // _CW), _NEUTRAL, dtype=_NP_DT), _obv, _oba2)),)
         else:
             _bg_pub = (None,)
-        _chrome_dirty = True; _did = True
+        _chrome_dirty = True; _did = True; _global_dirty = True
 
     # (b) géométrie / tally / statuts → couches du chrome.
     if geom_dirty.is_set():
         geom_dirty.clear(); tally_dirty.set(); _info_sig = None
+        _prendre_cellules()          # cause GLOBALE : on vide, donc re-bake complet ci-dessous
+        _global_dirty = True
+        _tally_masques = None        # géométrie changée → couvertures à refaire
+        _tally_dev["masques"] = None
         _bake_ctr["geom"] += 1; _chrome_dirty = True
     if tally_dirty.is_set():
         tally_dirty.clear()
-        dyn_rgba = render_dynamic()                      # composants bakés des modèles (géométrie incluse)
+        _cells = _prendre_cellules()
+        dyn_rgba = render_dynamic(_cells or None)        # incrémental si on sait QUI a changé
         overlay_fg_rgba = render_overlays_fg_static()    # texte tally-réactif (couleur on/off)
         _bake_ctr["tally"] += 1; _chrome_dirty = True
     _sig = _statuses_pub
     if _sig != _info_sig:
         _info_layer = render_info(list(_sig)) if _sig else None
         _info_sig = _sig
-        _bake_ctr["info"] += 1; _chrome_dirty = True
+        _bake_ctr["info"] += 1; _chrome_dirty = True; _global_dirty = True
 
     # (c) chrome consolidé (z-ordre info < dynamique < statique) → opérandes de blend HÔTE.
     if _chrome_dirty:
         _bake_ctr["chrome"] += 1
+        global _ch_img
+        # ★ CONSOLIDATION INCRÉMENTALE (2026-08-10). Mesuré sur le mur de banc 940 : un re-bake
+        # coûte 45 ms, dont 14,2 d'alpha_composite et 18,2 de rgba_to_yuv — les DEUX plein cadre,
+        # donc indépendants du nombre de fenêtres réellement touchées. Un tally sur une fenêtre
+        # payait la conversion des vingt. Quand la SEULE cause est un tally (`_cells` non vide,
+        # aucune cause globale) et qu'un opérande est déjà publié, on ne refait que les rectangles
+        # de ces fenêtres et on RAPIÈCE l'opérande en place.
+        # Trois garde-fous, parce qu'un rectangle faux laisse des pixels périmés à l'antenne :
+        #   • toute cause globale (fond, géométrie, statuts) force le chemin complet ;
+        #   • un rectangle qui sortirait de la bbox publiée force le chemin complet ;
+        #   • l'opérande est PRÉ-MULTIPLIÉ : le rapiéçage refait exactement la même arithmétique.
+        _incr = True
+        if not _cells:            _incr = False; _rejet("aucune cellule identifiee")
+        elif _global_dirty:       _incr = False; _rejet("cause globale")
+        elif _ch_img is None:     _incr = False; _rejet("pas de chrome persistant")
+        elif not (_chrome_pub and _chrome_pub[0] is not None):
+                                  _incr = False; _rejet("aucun operande publie")
+        if _incr:
+            _bx0, _by0, _bx1, _by1, _ia, _yp, _ia2, _up, _vp = _chrome_pub[0]
+            _rects = []
+            for _i in _cells:
+                if _i >= len(FLUX_CONFIG) or FLUX_CONFIG[_i].get("hidden"):
+                    continue
+                _r = _video_rect(FLUX_CONFIG[_i])
+                _x0, _y0 = _r["x"], _r["y"]
+                _x1, _y1 = _x0 + _r["w"], _y0 + _r["h"]
+                if _x0 < _bx0 or _y0 < _by0 or _x1 > _bx1 or _y1 > _by1:
+                    _incr = False; _rejet("rect hors bbox"); break
+                _rects.append((_x0, _y0, _x1, _y1))
+            if _incr and _rects:
+                for (_x0, _y0, _x1, _y1) in _rects:
+                    _ch_img.paste((0, 0, 0, 0), (_x0, _y0, _x1, _y1))
+                    for _lyr in (_info_layer, dyn_rgba, overlay_fg_rgba):
+                        if _lyr is not None:
+                            _ch_img.alpha_composite(_lyr.crop((_x0, _y0, _x1, _y1)), (_x0, _y0))
+                    _py, _pu, _pv, _pa, _pa2 = rgba_to_yuv(_ch_img.crop((_x0, _y0, _x1, _y1)))
+                    _dy, _dx = _y0 - _by0, _x0 - _bx0
+                    _h, _w = _y1 - _y0, _x1 - _x0
+                    _ia[_dy:_dy + _h, _dx:_dx + _w] = 255 - _pa.astype(_ACC)
+                    _yp[_dy:_dy + _h, _dx:_dx + _w] = _py.astype(_ACC) * _pa
+                    _cy0, _cx0 = _dy // _CH, _dx // _CW
+                    _chh, _cww = _h // _CH, _w // _CW
+                    _ia2[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = 255 - _pa2.astype(_ACC)
+                    _up[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = _pu.astype(_ACC) * _pa2
+                    _vp[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = _pv.astype(_ACC) * _pa2
+                _chrome_dirty = False; _did = True
+                _ms = (time.time_ns() - _t0) / 1e6
+                _bake_voie["incr_n"] += 1; _bake_voie["incr_ms"] += _ms
+                _chrome_bake["last"] = round(_ms, 2)
+                if _ms > _chrome_bake["max"]:
+                    _chrome_bake["max"] = round(_ms, 2)
+                _chrome_bake_ctr[0] += 1
+                return _did
         _ch = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
         for _lyr in (_info_layer, dyn_rgba, overlay_fg_rgba):   # z-ordre conservé
             if _lyr is not None:
@@ -6213,6 +6601,9 @@ def _chrome_bake_pass():
             _chrome_pub = ((bx0, by0, bx1, by1,
                             255 - _ca.astype(_ACC),  _cy.astype(_ACC) * _ca,
                             255 - _ca2.astype(_ACC), _cu.astype(_ACC) * _ca2, _cv.astype(_ACC) * _ca2),)
+        _ch_img = _ch          # conservé pour le rapiéçage incrémental du prochain tally
+        _bake_voie["full_n"] += 1
+        _bake_voie["full_ms"] += (time.time_ns() - _t0) / 1e6
         _chrome_dirty = False; _did = True
 
     if _did:
@@ -8142,6 +8533,12 @@ while True:
             cy0, cy1, cx0, cx1 = by0 // _CH, by1 // _CH, bx0 // _CW, bx1 // _CW
             _blend_pre_into(canvas_u[cy0:cy1, cx0:cx1], _piC, _saU)
             _blend_pre_into(canvas_v[cy0:cy1, cx0:cx1], _piC, _saV)
+        # ★ TALLY sur carte, juste APRÈS le chrome : même z-ordre qu'avant (le tally faisait
+        # partie de la couche dynamique du chrome), mais sans aucun re-bake. Un seul lancement
+        # pour tout le mur ; le repli est COMPTÉ (`tally_gpu_miss` sur :8080) — un tally muet
+        # serait invisible autrement, et un tally muet, c'est une source à l'antenne sans témoin.
+        _tally_n = _appliquer_tally(canvas_y, canvas_u, canvas_v) if not SLICE_ON else None
+        _tally_n_pub[0] = _tally_n
         _ts_ov2 = time.time_ns()   # fin du blend chrome
         # 2) VU-mètres puis 3) horloges : blend de chaque TUILE sur sa propre bbox (z-ordre conservé :
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
