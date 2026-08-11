@@ -114,6 +114,10 @@ _n_lancements = RollingMs()     # lancements de kernel de blend RÉELLEMENT émi
 _delai_trames = RollingMs()      # entrée la plus récente — ce que l'étage ajoute au mieux
 _delai_vieux = RollingMs()       # entrée la plus VIEILLE — le vrai délai de la trame produite
 _fi_in_trame = {{}}      # index de grain lu par entrée, pour la trame en cours
+_fi_par_tuile_latest = {{}}  # SNAPSHOT publié de `_fi_in_trame` (exposé sur :8080, cf. fi_par_tuile).
+                             # `_fi_in_trame` est VIDÉ au début de chaque cycle : le lecteur HTTP
+                             # tomberait une fois sur deux sur un dict à moitié rempli. On publie
+                             # donc une COPIE, échangée d'un bloc — même contrat que _proxy_usage_latest.
 _lanc = {{"n": 0}}               # accumulateur de la trame en cours (remis à zéro au début)
 # Dans `ov_blend`, deux coûts cohabitent et appellent des remèdes OPPOSÉS : le TRANSFERT des tuiles
 # vers la VRAM (5 tableaux par tuile, depuis de la mémoire hôte pageable) et les LANCEMENTS de
@@ -1571,6 +1575,13 @@ def _refresh_lat_metrics():
     metrics["own_latency_ms"] = own_lat.avg()
     metrics["proxy_needs"] = _compute_proxy_needs()
     metrics["proxy_usage"] = dict(_proxy_usage_latest)   # idx → {{src,read,cost,kind}}
+    # INDEX DE GRAIN RETENU PAR TUILE, pour la trame composée la plus récente. Diagnostic de
+    # latence (2026-08-11) : `delai_etage_trames` n'expose que le MIN et le MAX sur l'ensemble des
+    # tuiles, ce qui masque QUELLE tuile est en retard — et ne dit rien quand l'index est frais
+    # alors que les pixels dessinés sont vieux. Avec l'index PAR tuile, on confronte l'index
+    # annoncé au contenu réellement affiché (timecode incrusté) : index vieux ⇒ le défaut est dans
+    # la SÉLECTION du grain ; index frais + image vieille ⇒ il est entre la lecture et le DESSIN.
+    metrics["fi_par_tuile"] = dict(_fi_par_tuile_latest)
     # shm proxy réellement lus (orphan-detect) : boucle de mix (fenêtres) ∪ échantillonneur des
     # frises VIDÉO (une frise dont la source n'alimente AUCUNE fenêtre lit quand même un proxy —
     # sans ça l'orchestrateur le croirait ORPHELIN et le supprimerait sous nos pieds).
@@ -8574,6 +8585,7 @@ while True:
     # Publication du monitoring proxy de cette frame (swap de référence = atomique pour le lecteur).
     _proxy_usage_latest = _pu
     _proxy_read_latest = sorted(set(_pread))
+    _fi_par_tuile_latest = dict(_fi_in_trame)
     metrics["interlace_woven_tiles"] = _woven
 
     _t_after_inputs = time.time_ns()   # profiling : fin des entrées vidéo (lecture+resize+blend tuiles)
