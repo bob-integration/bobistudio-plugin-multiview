@@ -84,6 +84,56 @@ comme les fenêtres. Toute modification s'applique **à chaud**.
 | Afficher « NO SIGNAL » | Bandeau quand une fenêtre n'a pas de source ou pas de grain |
 | Détection image figée (s) | Délai avant d'afficher l'alerte figé sur une fenêtre, 0 = désactivé |
 
+## Latence : un mur coûte une image entière, ou rien
+
+Un étage de la chaîne ne coûte pas son temps de calcul — il coûte **une image entière dès qu'il
+fait rater le train**, et rien du tout sinon. C'est un escalier, pas une pente.
+
+**Le mécanisme.** L'émetteur 2110 vient chercher le contenu à un instant fixe du créneau : environ
+**16,4 ms** après son début, sur un moteur à 50 images/s (mesuré le 2026-08-12). Tout ce qui est
+publié avant part à l'image suivante ; tout ce qui arrive après attend une image de plus. La
+chaîne dispose donc d'un **budget d'environ 16 ms par image**, que chaque étage consomme.
+
+**La règle par mur**, à partir de deux chiffres publiés par le conteneur sur `:8080` :
+
+> arrivée de l'entrée (`inputs_latency_ms`) + temps propre (`own_latency_ms`) < ~16 ms
+
+Sous le seuil, le mur est *gratuit* pour la latence de sortie. Au-dessus, il coûte une image
+pleine — et un mur très chargé peut le franchir deux fois.
+
+**Deux configurations mesurées, pour situer :**
+
+| mur | temps propre | arrivée entrée | cumul | coût |
+|---|---|---|---|---|
+| 1 tuile, CPU, sans habillage | 2,3 ms | 14,3 ms | 16,6 ms | 1 image |
+| 4 tuiles, GPU, libellés + horloge + bandeau | 11,2 ms | 9,5 ms | 20,7 ms | **2 images** |
+
+Le second travaille cinq fois plus longtemps et coûte une image de plus. C'est ce qui rend la
+question « combien coûte un multiview ? » sans réponse générale : **cela dépend de la
+configuration**, et seul le cumul ci-dessus le dit.
+
+**Ce qui NE coûte rien**, mesuré sur la même chaîne : les proxies de la pyramide, la réplication
+RDMA entre nœuds, et un étage de traitement simple (un correcteur de couleur : 2 ms, et deux en
+cascade restent additifs). Tous restent sous le budget.
+
+**Où gagner, si un mur dépasse.** Le temps propre est le seul poste sur lequel agir — l'arrivée
+des entrées dépend des étages amont. Les leviers habituels : moins de tuiles, moins d'habillage
+(chaque VU-mètre, horloge et libellé s'ajoute), le filtre de réduction en décimation plutôt qu'en
+moyenne de bloc, et le mode tranche. Le détail par poste est dans `compose_breakdown_ms` sur
+`:8080`.
+
+⚠ **Deux pièges de lecture.**
+
+- Le seuil de 16 ms est celui de **notre émetteur 2110**. Un aval différent — un mur en cascade,
+  un enregistreur, un encodeur — a le sien, qui reste à mesurer.
+- `own_latency_ms` est une **moyenne**. Un mur qui franchit le seuil par intermittence alterne
+  entre deux valeurs de latence sans que la moyenne le montre ; `delai_etage_trames` (bornes
+  `recent` et `vieux`) et le compteur de trames lentes le trahissent mieux.
+
+⚠ **La cadence (`flow` / `genlock`) ne change pas la latence** : mesuré, les deux donnent le même
+délai de bout en bout. `flow` aligne les index entre étages, ce dont a besoin un mur **shardé**
+pour que son assembleur retrouve tous ses morceaux au même index — pas la latence.
+
 ## Câblage — au-delà de la vidéo
 
 Une fenêtre peut aussi recevoir, câblés séparément et optionnels : un flux **audio** (pour ses
