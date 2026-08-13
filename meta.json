@@ -1,7 +1,15 @@
 {
-  "version": "0.110.0",
+  "version": "0.110.1",
   "date": "2026-08-13",
   "changes": {
+    "Les mesures d'habillage MENTAIENT en mode tranche (0.110.1)": [
+      "Audit de parité des deux chemins de composition, après la découverte du tally. L'IMAGE est correcte partout ailleurs : habillage, VU, frises, horloges, ANC, blend groupé et délai d'étage sont bien portés en tranche. Les écarts restants étaient des MESURES — dont quatre qui ne se contentaient pas de manquer, elles affirmaient zéro.",
+      "★ `ov_tiles.kpixels`, `ov_tiles.upload_ms`, `compose_breakdown_ms.ov_convert` et `ov_blend` étaient poussés SANS GARDE par l'appelant, alors qu'ils n'y sont calculés que dans la boucle sautée en tranche. Un mur tranché publiait donc `0.0` — pas `null`. Un compteur à 0 est pire qu'un compteur absent : `null` se voit, `0.0` se lit comme une mesure, et le chantier latence se pilote précisément sur `compose_breakdown_ms`. Le coût réel de l'habillage tombait dans `output`, où personne ne le cherchait.",
+      "`_compose_bands` accumule et publie maintenant ses propres valeurs, à la MÊME sémantique que la pleine trame (`ov_convert` = chrome + tally, `ov_blend` = VU/frises/horloges) ; l'appelant ne pousse plus les siennes en tranche. Un seul site de poussée par compteur et par chemin.",
+      "`ov_tiles.meters/hist/clock_anc` sortaient à `null` sur tout mur tranché : les comptes de tuiles étaient gardés par `if not SLICE_ON` sans raison — le NOMBRE de tuiles ne dépend pas de la façon de les blender. Poussés désormais dans les deux cas.",
+      "`blend_couches.moy` était tiré vers le bas par un `_blend_lot()` appelé À VIDE à chaque trame sur le chemin pleine trame, qui poussait un `0` parasite à côté des vraies valeurs venues des lots. Appel supprimé en tranche. Conséquence assumée : sur un mur tranché en CPU la métrique sort `null`, ce qui est exact — il n'y a pas de blend groupé sur ce chemin.",
+      "⚠ RESTE À FAIRE, non traité ici : le cache VRAM de tuiles (`_tuile_dev` pour les frises/horloges, `_tuile_vram` pour le transfert épinglé unique des VU) n'est PAS utilisé en tranche — `_to_xp` re-téléverse tout à chaque trame, et `tuile_pin_miss` ne peut donc jamais se déclencher. C'est une perte de performance réelle mais NON MESURÉE : aucun mur ne portait d'habillage au moment de l'audit."
+    ],
     "★ LE TALLY ÉTAIT TOTALEMENT ABSENT DES MURS GPU EN MODE TRANCHE (0.110.0)": [
       "★ DÉFAUT : sur un mur GPU avec `slice_mode`, AUCUN tally ne s'affichait — ni pastille, ni pavé, ni cadre, ni bordure vidéo en mode tally, ni fond d'UMD teinté. Une tenaille entre deux changements du 2026-08-10 : la forme n'est plus bakée quand la carte sait la peindre (sa zone reste TRANSPARENTE), et le chemin tranche sautait la peinture (`_appliquer_tally(...) if not SLICE_ON else None`). Rien de baké + rien de peint = rien à l'écran. `_compose_bands` ne mentionnait le tally nulle part.",
       "CORRIGÉ : le tally est peint BANDE PAR BANDE dans `_compose_bands`, juste après le chrome — même z-ordre qu'en pleine trame. Le noyau accepte deux bornes de lignes `[YLO, YHI)` et n'écrit que dans le lot courant. Une zone à cheval sur deux lots est peinte en deux passes ; le bloc chroma est écrit une seule fois, par le lot qui contient sa ligne d'origine, et sa valeur ne dépend que du masque.",

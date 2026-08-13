@@ -7711,13 +7711,25 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
             _blend_k(dv, s, aa, dv)
         else:
             _blend_into(dv, s, aa)
+    # ★ MESURES DE L'HABILLAGE, à la même sémantique que la pleine trame (2026-08-13). Elles
+    # étaient POUSSÉES SANS GARDE par l'appelant alors qu'elles n'y sont calculées que dans la
+    # boucle sautée en tranche : un mur tranché publiait `kpixels: 0`, `upload_ms: 0`,
+    # `ov_convert: 0`, `ov_blend: 0` — pas « inconnu », ZÉRO. Un compteur à 0 est pire qu'un
+    # compteur absent : `null` se voit, `0.0` se lit comme une mesure, et le chantier latence se
+    # pilote sur `compose_breakdown_ms`.
+    _sl_px = 0          # pixels Y couverts par les tuiles d'habillage (tous lots)
+    _sl_up_ns = 0       # téléversement des opérandes vers la carte
+    _sl_conv_ns = 0     # chrome + tally  (= ov_convert en pleine trame)
+    _sl_blend_ns = 0    # VU + frises + horloges (= ov_blend)
     if GPU_SLICE:
         # Opérandes VU/horloges → VRAM UNE fois par trame (le chrome pré-calculé y réside déjà,
         # cf. _to_xp au bake) : les blends par bande restent alors 100 % en VRAM.
+        _ts_up = time.time_ns()
         if meter_tiles:
             meter_tiles = [t[:4] + tuple(_to_xp(p) for p in t[4:]) for t in meter_tiles]
         if pf_tiles:
             pf_tiles = [t[:4] + tuple(_to_xp(p) for p in t[4:]) for t in pf_tiles]
+        _sl_up_ns += time.time_ns() - _ts_up
     _deadl = time.monotonic() + FRAME_INTERVAL * 1.5   # garde-fou GLOBAL (borne dure de la trame)
     _sl_dbg = [len(batch), -1, 0, 0, 0]   # [tuiles, valid0, attentes, replis, dormantes]
     # état mutable par tuile : plans (rebindés au repli grain complet), tranches valides, colonnes.
@@ -7951,6 +7963,7 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
             _gpu_place_band(cy, cu, cv, _bstage)
             _bstage = []
         # habillage intersectant le lot : 1) chrome statique pré-calculé (bbox)
+        _ts_hab = time.time_ns()
         if chrome_pre is not None:
             bx0, by0, bx1, by1, _piY, _saY, _piC, _saU, _saV = chrome_pre
             a = max(by0, B0); b = min(by1, b1)
@@ -7975,6 +7988,8 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
         # (`_tally_miss`) — un tally muet, c'est une source à l'antenne sans témoin.
         if _tally_k is not None and GPU:
             _tally_n_pub[0] = _appliquer_tally(cy, cu, cv, ylo=B0, yhi=b1)
+        _ts_tal = time.time_ns()
+        _sl_conv_ns += _ts_tal - _ts_hab      # chrome + tally, comme ov_convert en pleine trame
         # 2) VU-mètres puis 3) horloges (z-ordre conservé), bornés aux lignes du lot
         #
         # ★ BLEND GROUPÉ PAR COUCHES, porté ici depuis le chemin pleine trame (2026-08-10).
@@ -7998,6 +8013,9 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                 a = max(by0, B0); b = min(by1, b1)
                 if a >= b:
                     continue
+                # Tuile DÉCOUPÉE au lot : la somme sur tous les lots redonne l'aire de la tuile
+                # entière, donc `kpixels` reste comparable entre les deux chemins.
+                _sl_px += (bx1 - bx0) * (b - a)
                 l0 = a - by0; l1 = b - by0
                 ca0, cb0 = a // _CH, b // _CH
                 lc0 = ca0 - by0 // _CH; lc1 = lc0 + (cb0 - ca0)
@@ -8016,6 +8034,7 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                     _bl(cv[ca0:cb0, cx0:cx1], _ovv[lc0:lc1], _oa2[lc0:lc1])
         if _lot_bande:
             _blend_lot(_lot_bande, cy, cu, cv)
+        _sl_blend_ns += time.time_ns() - _ts_tal
         # publication du lot : copie canvas→grain + commit PROGRESSIF (réveille l'aval)
         if GPU_SLICE and grp > 1 and SLICE_D2H_DIRECT:
             # ★ DÉVERSEMENT DIRECT DANS LE GRAIN, porté du chemin pleine trame (2026-08-10).
@@ -8078,6 +8097,13 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
             out_writer.commit(gi_o, valid_slices=None if k == nb - 1 else k + 1)
     if GPU_SLICE and grp > 1:
         _flush_d2h()                           # dernier lot (commit final validSlices=None dedans)
+    # ★ Publication des mesures d'habillage DE CE CHEMIN (cf. accumulateurs en tête). L'appelant
+    # ne pousse plus les siennes en tranche : sans ça, deux valeurs se disputeraient la même
+    # moyenne glissante et la sienne — calculée sur une boucle sautée — vaudrait toujours 0.
+    _n_px_blend.push(_sl_px)
+    _t_ov_upload.push(_sl_up_ns / 1e6)
+    _t_ov_convert.push(_sl_conv_ns / 1e6)
+    _t_ov_blend.push(_sl_blend_ns / 1e6)
     return wait_ns
 
 def _peek_inputs():
@@ -8734,10 +8760,12 @@ while True:
         _bboxes_trame = []
         _lot_trame = []      # tuiles d'habillage de cette trame, blendées en lot après la boucle
         _lanc["n"] = 0       # lancements de blend de CETTE trame (compté, pas déduit)
-        if not SLICE_ON:
-            _n_meters.push(len(_meter_tiles or ()))
-            _n_hist.push(len(_hist_tiles or ()))
-            _n_clock.push(len(_pf_tiles or ()))
+        # Comptes de tuiles : connus des DEUX chemins (le nombre ne dépend pas de la façon de
+        # blender). Ils étaient gardés par `if not SLICE_ON` sans raison — `ov_tiles.meters/hist/
+        # clock_anc` sortaient à null sur tout mur tranché.
+        _n_meters.push(len(_meter_tiles or ()))
+        _n_hist.push(len(_hist_tiles or ()))
+        _n_clock.push(len(_pf_tiles or ()))
         # `_cache` dit si la CATÉGORIE est stable entre deux trames : les frises et les horloges le
         # sont (re-dessinées au changement de valeur), les VU-mètres non (le niveau bouge à chaque
         # trame). Z-ordre inchangé : meters sous les horloges fg.
@@ -8768,8 +8796,11 @@ while True:
                 # On COLLECTE au lieu de blender tout de suite : le blend part en un lancement
                 # par COUCHE, après la boucle (cf. _blend_lot).
                 _lot_trame.append((bx0, by0, bx1, by1, _oy, _ou, _ov, _oa, _oa2))
-        _blend_lot(_lot_trame, canvas_y, canvas_u, canvas_v)
+        # En tranche `_lot_trame` est TOUJOURS vide (la boucle ci-dessus est sautée) : appeler
+        # `_blend_lot` à vide poussait un `0` parasite par trame dans `blend_couches`, qui tirait
+        # la moyenne vers le bas alors que les vraies valeurs viennent des lots.
         if not SLICE_ON:
+            _blend_lot(_lot_trame, canvas_y, canvas_u, canvas_v)
             # En MODE TRANCHE les blends n'ont pas encore eu lieu : ils partent lot par lot dans
             # `_compose_bands`, plus bas. Pousser le compteur ICI publierait 0 lancement pour une
             # trame qui en émet des dizaines — le compteur est justement l'outil qui a permis de
@@ -8777,11 +8808,15 @@ while True:
             _n_lancements.push(_lanc["n"])
 
         _tuiles_dev_evict()
-        _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
         _t_after_overlays = time.time_ns()   # profiling : ov_convert=blend chrome, ov_blend=blend VU+horloges (bbox)
+        # `ov_render` (dessin PIL des tuiles) a lieu sur les DEUX chemins → poussé sans garde.
+        # Les trois autres décrivent un blend qui, en tranche, n'a pas encore eu lieu : ils y
+        # valaient 0 alors que `_compose_bands` publie maintenant les VRAIES valeurs.
         _t_ov_render.push((_ts_ov1 - _ts_ov0) / 1e6)
-        _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
-        _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
+        if not SLICE_ON:
+            _n_px_blend.push(_px_blend); _t_ov_upload.push(_up_ns / 1e6)
+            _t_ov_convert.push((_ts_ov2 - _ts_ov1) / 1e6)
+            _t_ov_blend.push((_t_after_overlays - _ts_ov2) / 1e6)
         if SLICE_ON:
             # MODE TRANCHE : placement des tuiles + habillage + écriture sortie BANDE PAR BANDE,
             # avec commit MXL progressif (l'aval démarre sur la 1ʳᵉ bande). CPU/paysage (gaté).
