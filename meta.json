@@ -1,7 +1,14 @@
 {
-  "version": "0.109.0",
-  "date": "2026-08-11",
+  "version": "0.110.0",
+  "date": "2026-08-13",
   "changes": {
+    "★ LE TALLY ÉTAIT TOTALEMENT ABSENT DES MURS GPU EN MODE TRANCHE (0.110.0)": [
+      "★ DÉFAUT : sur un mur GPU avec `slice_mode`, AUCUN tally ne s'affichait — ni pastille, ni pavé, ni cadre, ni bordure vidéo en mode tally, ni fond d'UMD teinté. Une tenaille entre deux changements du 2026-08-10 : la forme n'est plus bakée quand la carte sait la peindre (sa zone reste TRANSPARENTE), et le chemin tranche sautait la peinture (`_appliquer_tally(...) if not SLICE_ON else None`). Rien de baké + rien de peint = rien à l'écran. `_compose_bands` ne mentionnait le tally nulle part.",
+      "CORRIGÉ : le tally est peint BANDE PAR BANDE dans `_compose_bands`, juste après le chrome — même z-ordre qu'en pleine trame. Le noyau accepte deux bornes de lignes `[YLO, YHI)` et n'écrit que dans le lot courant. Une zone à cheval sur deux lots est peinte en deux passes ; le bloc chroma est écrit une seule fois, par le lot qui contient sa ligne d'origine, et sa valeur ne dépend que du masque.",
+      "★ ET SURTOUT, LE SILENCE EST LEVÉ : la branche tranche posait `_tally_n_pub[0] = None` — pas peint, pas compté. Le mur publiait `zones: None, miss: 0`, soit « tout va bien », et c'est un TESTEUR qui a servi de détecteur le 2026-08-11. Le repli GPU était pourtant compté depuis toujours, avec ce commentaire : « un tally muet, c'est une source à l'antenne sans témoin ». Le garde-fou existait UNE LIGNE au-dessus du trou.",
+      "⚠ LEÇON, la troisième du même genre : le chemin tranche n'hérite JAMAIS des nouveautés du chemin monolithique (blend groupé, délai d'étage, et maintenant le tally). Toute capacité ajoutée en pleine trame doit être cherchée explicitement dans `_compose_bands` — un `grep` sur son nom suffit. Un `if not SLICE_ON` qui neutralise une sortie VISIBLE doit compter son saut, jamais poser `None` en silence.",
+      "Un mur CPU n'a jamais été touché : sans noyau tally, la forme reste bakée et l'habillage est bien blendé par bande."
+    ],
     "Le mode tranche sort du placard : réglages EXPOSÉS (0.109.0)": [
       "`slice_mode` et `gpu_slice` étaient marqués `hidden: true` — non pas seulement désactivés par défaut, mais INVISIBLES dans toute interface. La capacité n'était atteignable que par l'API. Introduite comme capacité de banc (TISSU_SLICE.md) puis jamais promue, alors qu'elle est désormais mesurée gagnante.",
       "Aide réécrite sur ce qui a été MESURÉ en production le 2026-08-11, pas sur une intention : gpu_slice tient le 1920x1080p50 à 50,0 fps sur Quadro P5000, zéro trame perdue, coût propre 13 ms pour 20 de budget — et la marge tombe de 11 à 6 ms, ce que l'aide dit franchement.",

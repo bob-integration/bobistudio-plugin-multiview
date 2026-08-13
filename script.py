@@ -5961,7 +5961,7 @@ if GPU:
 extern "C" __global__ void bobi_tally_lot(
     PIX* cy, PIX* cu, PIX* cv,
     const long long* par, const long long* ptr, int nz, long long total,
-    int W, int H, int CW, int CH)
+    int W, int H, int CW, int CH, int YLO, int YHI)
 {{
     long long i = (long long)blockIdx.x * (long long)blockDim.x + (long long)threadIdx.x;
     if (i >= total) return;
@@ -5979,6 +5979,11 @@ extern "C" __global__ void bobi_tally_lot(
     if (ly >= h) return;
     int x = x0 + lx, y = y0 + ly;
     if (x < 0 || y < 0 || x >= W || y >= H) return;
+    // MODE TRANCHE : on ne peint QUE les lignes du lot en cours. Le bloc chroma est écrit par le
+    // thread d'ORIGINE (y % CH == 0), donc chaque bloc est écrit exactement une fois, par le lot
+    // qui contient sa ligne d'origine — et sa valeur ne dépend que du masque, jamais du contenu
+    // déjà publié. Une zone à cheval sur deux lots est donc peinte correctement en deux passes.
+    if (y < YLO || y >= YHI) return;
     const unsigned char* mk = (const unsigned char*)ptr[(long long)m * 2 + 0];
     int op = (int)ptr[(long long)m * 2 + 1];              // opacité de l'ÉTAT (0-255)
     int a = ((int)mk[(long long)ly * w + lx] * op) / 255; // couverture x opacité
@@ -6029,8 +6034,11 @@ def _tally_couleur(role, st):
     return int(y), int(u), int(v), int(rgba[3] if len(rgba) > 3 else 255)
 
 
-def _appliquer_tally(cy, cu, cv):
-    """Peint tous les tally du mur en UN lancement. Renvoie le nombre de zones, ou None (repli)."""
+def _appliquer_tally(cy, cu, cv, ylo=0, yhi=None):
+    """Peint tous les tally du mur en UN lancement. Renvoie le nombre de zones, ou None (repli).
+
+    `ylo`/`yhi` bornent la peinture aux lignes [ylo, yhi) — c'est le MODE TRANCHE, qui appelle
+    une fois par lot de bandes (cf. _compose_bands). Par défaut : toute la trame."""
     global _tally_masques
     if _tally_k is None or not GPU:
         return None
@@ -6077,7 +6085,8 @@ def _appliquer_tally(cy, cu, cv):
         blk = 256
         _tally_k(((cum + blk - 1) // blk,), (blk,),
                  (cy, cu, cv, dpar, dptr, np.int32(nz), np.int64(cum),
-                  np.int32(OUT_WIDTH), np.int32(OUT_HEIGHT), np.int32(_CW), np.int32(_CH)))
+                  np.int32(OUT_WIDTH), np.int32(OUT_HEIGHT), np.int32(_CW), np.int32(_CH),
+                  np.int32(ylo), np.int32(OUT_HEIGHT if yhi is None else yhi)))
         return nz
     except Exception as _e:
         _tally_miss["n"] += 1
@@ -7954,6 +7963,18 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                 if cb0 > ca0:
                     _bl_pre(cu[ca0:cb0, cx0:cx1], _piC[lc0:lc1], _saU[lc0:lc1])
                     _bl_pre(cv[ca0:cb0, cx0:cx1], _piC[lc0:lc1], _saV[lc0:lc1])
+        # 1bis) TALLY sur carte, juste APRÈS le chrome — même z-ordre qu'en pleine trame.
+        #
+        # ★ IL MANQUAIT ICI, et le mur n'en disait rien : quand la carte sait peindre le tally, sa
+        # forme n'est plus bakée dans le chrome (sa zone reste TRANSPARENTE) ; ce chemin-ci sautait
+        # la peinture. Rien de baké + rien de peint = AUCUN tally à l'écran sur un mur GPU en mode
+        # tranche, sur les trois formes, la bordure vidéo en mode tally et le fond d'UMD teinté.
+        # Signalé par un testeur le 2026-08-11 ; le mur publiait `zones: None, miss: 0`, soit
+        # « tout va bien ». C'est exactement ce que le commentaire ci-dessous annonçait : un gain du
+        # chemin principal non porté ici régresse EN SILENCE. Le repli, lui, est compté
+        # (`_tally_miss`) — un tally muet, c'est une source à l'antenne sans témoin.
+        if _tally_k is not None and GPU:
+            _tally_n_pub[0] = _appliquer_tally(cy, cu, cv, ylo=B0, yhi=b1)
         # 2) VU-mètres puis 3) horloges (z-ordre conservé), bornés aux lignes du lot
         #
         # ★ BLEND GROUPÉ PAR COUCHES, porté ici depuis le chemin pleine trame (2026-08-10).
@@ -8698,8 +8719,11 @@ while True:
         # partie de la couche dynamique du chrome), mais sans aucun re-bake. Un seul lancement
         # pour tout le mur ; le repli est COMPTÉ (`tally_gpu_miss` sur :8080) — un tally muet
         # serait invisible autrement, et un tally muet, c'est une source à l'antenne sans témoin.
-        _tally_n = _appliquer_tally(canvas_y, canvas_u, canvas_v) if not SLICE_ON else None
-        _tally_n_pub[0] = _tally_n
+        # MODE TRANCHE : peint bande par bande dans `_compose_bands` (1bis), qui publie lui-même le
+        # compte. Ne PAS écraser `_tally_n_pub` ici — l'écraser avec None était le geste qui rendait
+        # l'absence de tally indiscernable d'un mur sans tally.
+        if not SLICE_ON:
+            _tally_n_pub[0] = _appliquer_tally(canvas_y, canvas_u, canvas_v)
         _ts_ov2 = time.time_ns()   # fin du blend chrome
         # 2) VU-mètres puis 3) horloges : blend de chaque TUILE sur sa propre bbox (z-ordre conservé :
         # meters sous les horloges fg). Chaque tuile ne couvre que son petit rectangle local.
