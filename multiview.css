@@ -516,6 +516,37 @@ input[type="number"].mw-num { -moz-appearance: textfield; appearance: textfield;
     to   { opacity: 1; transform: none; }
 }
 
+/* ─── Édition à plusieurs ────────────────────────────────────
+   Bandeau « qui a la main » + état LECTURE SEULE de l'éditeur. Le composer poste tout l'état du
+   mur à chaque geste : sans ce garde-fou visuel, deux personnes s'écrasent l'une l'autre sans
+   jamais savoir pourquoi leur travail disparaît. */
+.mw-verrou {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+    padding: 8px var(--space-3);
+    border-radius: var(--radius-small);
+    background: var(--status-warning-bg);
+    color: var(--status-warning-fg);
+    border: 1px solid var(--status-warning-fg);
+    font-size: 0.9em;
+}
+.mw-verrou[hidden] { display: none; }
+.mw-verrou span { flex: 1 1 auto; }
+/* Lecture seule : on ÉTEINT les gestes (pointer-events) et on le montre (opacité), sans masquer
+   quoi que ce soit — regarder un mur qu'on n'édite pas doit rester possible et lisible. */
+.mw-editor.lecture-seule .mw-toolbar,
+.mw-editor.lecture-seule .mw-insert,
+.mw-editor.lecture-seule .mw-entry-panel,
+.mw-editor.lecture-seule .mw-canvas-wrap,
+.mw-editor.lecture-seule .mw-entry-panel + .mw-entry-panel,
+.mw-editor.lecture-seule ~ .mw-settings {
+    opacity: 0.55;
+    pointer-events: none;
+}
+.mw-editor.lecture-seule .mw-verrou { opacity: 1; pointer-events: auto; }
+
 /* ─── Responsive ────────────────────────────────────────────── */
 @media (max-width: 1100px) {
     .mw-compose { grid-template-columns: 1fr; }

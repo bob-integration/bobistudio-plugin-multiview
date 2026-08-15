@@ -9,6 +9,12 @@
         <header class="mw-editor-head">
             <h2 id="mw-editor-title-h"><span id="ed_hostname">—</span> <span class="meta">#<span id="ed_vmid">—</span></span></h2>
         </header>
+        <!-- Édition à plusieurs : qui a la main sur ce mur. Masqué tant qu'on l'a soi-même. -->
+        <div class="mw-verrou" id="mw_verrou" role="status" aria-live="polite" hidden>
+            <span id="mw_verrou_txt"></span>
+            <button type="button" class="btn btn-sm" id="mw_verrou_btn" onclick="mwPrendreLaMain()"
+                    data-i18n="plugin.multiview.lock_take">Prendre la main</button>
+        </div>
         <div class="mw-insert" role="group" aria-label="Ajouter un élément" data-i18n-aria="plugin.multiview.add_aria">
             <span class="lbl" data-i18n="plugin.multiview.add_label">Ajouter :</span>
             <button type="button" class="btn" onclick="ajouterEntree()" data-i18n="plugin.multiview.add_pip" data-i18n-title="plugin.multiview.add_pip_title" title="Réaffiche la première entrée masquée de la banque (sa source câblée est conservée) ; affectez-lui une source dans le panneau ci-dessous ou via la page Câbles.">+ PiP</button>
@@ -45,7 +51,7 @@
             </div>
             <div class="tool-group">
                 <span class="tool-group-label" aria-hidden="true" data-i18n="plugin.multiview.group_size">Taille</span>
-                <div class="tool-row" role="group" aria-label="Égaliser les tailles" data-i18n-aria="plugin.multiview.group_size_aria">
+                <div class="tool-row" id="mw_row_size" role="group" aria-label="Égaliser les tailles" data-i18n-aria="plugin.multiview.group_size_aria">
                     <button type="button" class="tool-btn" data-min="2" onclick="matchSize('w')" aria-label="Même largeur que la référence" title="Même largeur que la référence" data-i18n-aria="plugin.multiview.size_w" data-i18n-title="plugin.multiview.size_w">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="10" height="4.5" rx="1"/><rect x="3" y="9.5" width="10" height="4.5" rx="1" fill-opacity="0.55"/></svg>
                     </button>
@@ -59,7 +65,7 @@
             </div>
             <div class="tool-group">
                 <span class="tool-group-label" aria-hidden="true" data-i18n="plugin.multiview.group_distribute">Distribuer</span>
-                <div class="tool-row" role="group" aria-label="Distribuer" data-i18n-aria="plugin.multiview.group_distribute">
+                <div class="tool-row" id="mw_row_distribute" role="group" aria-label="Distribuer" data-i18n-aria="plugin.multiview.group_distribute">
                     <button type="button" class="tool-btn" data-min="3" onclick="distribuer('h')" aria-label="Distribuer horizontalement" title="Distribuer horizontalement (3 fenêtres minimum)" data-i18n-aria="plugin.multiview.distribute_h" data-i18n-title="plugin.multiview.distribute_h_title">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="1.6" height="14" rx="0.8"/><rect x="13.4" y="1" width="1.6" height="14" rx="0.8"/><rect x="6" y="4" width="4" height="8" rx="1"/></svg>
                     </button>
@@ -99,8 +105,8 @@
             </div>
             <div class="tool-group">
                 <span class="tool-group-label" aria-hidden="true" data-i18n="plugin.multiview.group_settings">Réglages</span>
-                <div class="tool-row" role="group" aria-label="Copier / coller les réglages de fenêtre" data-i18n-aria="plugin.multiview.group_settings_aria">
-                    <button type="button" class="tool-btn" data-min="1" onclick="copierReglagesFenetre()" aria-label="Copier les réglages de la fenêtre" title="Copier les réglages de la fenêtre (hors position et source)" data-i18n-aria="plugin.multiview.copy_settings_aria" data-i18n-title="plugin.multiview.copy_settings_title">
+                <div class="tool-row" id="mw_row_settings" role="group" aria-label="Copier / coller les réglages de fenêtre" data-i18n-aria="plugin.multiview.group_settings_aria">
+                    <button type="button" class="tool-btn" id="ed_copy_btn" onclick="copierReglagesFenetre()" aria-label="Copier les réglages de la fenêtre" title="Copier les réglages de la fenêtre (hors position et source)" data-i18n-aria="plugin.multiview.copy_settings_aria" data-i18n-title="plugin.multiview.copy_settings_title">
                         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="5.5" y="1.5" width="9" height="9" rx="1.5" fill-opacity="0.45"/><rect x="1.5" y="5.5" width="9" height="9" rx="1.5"/></svg>
                     </button>
                     <button type="button" class="tool-btn" id="ed_paste_btn" onclick="collerReglagesFenetre()" disabled aria-label="Coller les réglages dans la sélection" title="Coller les réglages dans les fenêtres sélectionnées" data-i18n-aria="plugin.multiview.paste_settings_aria" data-i18n-title="plugin.multiview.paste_settings_title">
@@ -129,7 +135,7 @@
                 <div class="field field-grow"><label for="ed_path" data-i18n="plugin.multiview.source">Source</label><select id="ed_path" onchange="onEntryChange()"></select></div>
                 <div class="field field-grow" id="ed_audio_path_row"><label for="ed_audio_path" title="Source des VU-mètres (composants `meters` du modèle de PiP, y compris le repli Classique). Par défaut suit AUTOMATIQUEMENT le flux audio associé à la source vidéo ci-dessus ; peut être forcée sur un autre flux audio, ou explicitement coupée (cellule audio seule sans vidéo → aucun meter)." data-i18n="plugin.multiview.audio_source" data-i18n-title="plugin.multiview.audio_source_title">Source audio (VU-mètres)</label><select id="ed_audio_path" onchange="onEntryChange()"></select></div>
                 <label class="field field-inline" id="ed_show_label_row" for="ed_show_label"><input type="checkbox" class="ios-toggle" id="ed_show_label" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.show_label">Afficher le nom</span></label>
-                <label class="field field-inline" id="ed_label_proportional_row" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite." data-i18n-title="plugin.multiview.label_proportional_title"><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.label_proportional">Taille proportionnelle</span></label>
+                <label class="field field-inline" id="ed_label_proportional_row" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite." data-i18n-title="plugin.multiview.label_proportional_title"><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.label_proportional">Taille du texte proportionnelle</span></label>
                 <div class="field field-narrow" id="ed_tsl_index_row"><label for="ed_tsl_index" data-i18n="plugin.multiview.tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
                 <div class="field field-narrow"><label for="ed_label_col" data-i18n="plugin.multiview.label_col">Colonne label</label><select id="ed_label_col" onchange="onEntryChange()"></select></div>
                 <div class="field field-narrow"><label for="ed_tally_level" data-i18n="plugin.multiview.tally_level">Niveau de Tally</label><select id="ed_tally_level" onchange="onEntryChange()"></select></div>

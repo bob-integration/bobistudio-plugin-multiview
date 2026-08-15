@@ -3413,7 +3413,10 @@ def render_anc_tiles(now):
         if (by1 - by0) % _CH: by1 = min(OUT_HEIGHT, by1 + (_CH - (by1 - by0) % _CH))
         if bx1 <= bx0 or by1 <= by0:
             continue
-        a_bg = max(0, min(100, int(flags.get("anc_opacity") or 60))) * 255 // 100
+        # `or 60` transformait une opacité de 0 (fond ANC transparent, valeur légitime — cf. le
+        # `max(0, …)`) en 60 : le réglage était inapplicable côté moteur, comme il l'était côté
+        # composer. `_overlay_get` ne substitue le défaut que si la clé est absente/None.
+        a_bg = max(0, min(100, int(_overlay_get(flags, "anc_opacity", 60)))) * 255 // 100
         # Un checksum invalide = métadonnée corrompue → texte en rouge (signal d'alarme).
         bad = "CRC!" in txt
         _coul = (255, 90, 90, 255) if bad else (235, 235, 235, 255)

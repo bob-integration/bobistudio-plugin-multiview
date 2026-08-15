@@ -19,6 +19,12 @@ window.MXLPlugins.multiview = {
         if (vmid != null && typeof chargerMw === 'function') chargerMw(vmid);
         if (typeof rafraichirListeLayouts === 'function') rafraichirListeLayouts();
         window.addEventListener('resize', this._onResize);
+        // Fermeture de l'onglet / navigation : même raison qu'unmount, mais le navigateur ne
+        // passe pas toujours par le démontage du shell.
+        if (!this._onLeave) {
+            this._onLeave = () => { if (typeof mwVerrouRendre === 'function') mwVerrouRendre(); };
+            window.addEventListener('pagehide', this._onLeave);
+        }
     },
 
     _onResize() {
@@ -42,5 +48,8 @@ window.MXLPlugins.multiview = {
 
     unmount() {
         window.removeEventListener('resize', this._onResize);
+        // Rendre la main en quittant la page : sans ça, le mur resterait « édité par… » jusqu'à
+        // l'expiration du verrou (90 s), et le suivant croirait tomber sur quelqu'un.
+        if (typeof mwVerrouRendre === 'function') mwVerrouRendre();
     }
 };

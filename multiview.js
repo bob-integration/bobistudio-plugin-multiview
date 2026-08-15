@@ -52,6 +52,241 @@ let selectedHist     = -1;        // index dans la liste du kind courant, ou -1
 let selectedHistKind = 'video';   // 'video' | 'audio' — liste visée par selectedHist
 let dragHist         = false;
 const HIST_LIST = {video: 'video_history_blocks', audio: 'audio_history_blocks'};
+
+// ─── SÉLECTION INTER-FAMILLES (0.111.0) ──────────────────────────────────────
+// Historique : chaque famille d'objets avait SA variable de sélection — `selectedIdxs` (fenêtres,
+// multiple), `selectedOverlay`, `selectedBlock`, `selectedHist`+`selectedHistKind` (une seule à la
+// fois, et sélectionner l'une effaçait les autres). Conséquence : impossible d'aligner un texte
+// SUR une fenêtre, ni de distribuer trois horloges — alors que c'est le geste naturel d'un mur.
+//
+// `mwSel` devient la SOURCE DE VÉRITÉ : une liste ordonnée de références {k, i}, la RÉFÉRENCE
+// (primary) en DERNIER — même convention que la multi-sélection de fenêtres, et que l'aide
+// affichée sous le canvas. Les quatre variables historiques sont recalculées à chaque changement
+// par `_selSync()` : elles ne désignent plus que le PRIMAIRE. Tout le code existant (panneaux,
+// poignée de redimensionnement, drag, dessin, hot-apply) continue donc de fonctionner sans être
+// réécrit — il lit simplement « l'objet courant » là où il le lisait déjà.
+//   k : 'win' (fenêtre vidéo) | 'ov' (overlay) | 'blk' (bloc VU) | 'vh' / 'ah' (frises)
+// Ce sont les MÊMES clés que `_snapRects` : un aimant et une sélection parlent enfin la même langue.
+let mwSel = [];
+
+const _SEL_LIST = {
+    win: () => (editorParams && editorParams.flux_config) || [],
+    ov:  () => (editorParams && editorParams.overlays) || [],
+    blk: () => (editorParams && editorParams.meter_blocks) || [],
+    vh:  () => (editorParams && editorParams.video_history_blocks) || [],
+    ah:  () => (editorParams && editorParams.audio_history_blocks) || [],
+};
+// Objet visé par une référence, ou null si elle est périmée (liste raccourcie entre-temps).
+function _refObj(r) { return r ? (_SEL_LIST[r.k] ? _SEL_LIST[r.k]()[r.i] : null) || null : null; }
+function _refKey(r) { return r.k + ':' + r.i; }
+function _selPrimary()  { return mwSel.length ? mwSel[mwSel.length - 1] : null; }
+function _selHas(k, i)  { return mwSel.some(r => r.k === k && r.i === i); }
+function _selCount()    { return mwSel.length; }
+// Références encore valides (un objet supprimé sort de la sélection tout seul).
+function _selRefs()     { return mwSel.filter(r => _refObj(r)); }
+
+// Les quatre variables historiques = VUE du primaire (et, pour les fenêtres, de tous les membres :
+// leur multi-sélection existait déjà et le reste du code s'en sert).
+function _selSync() {
+    mwSel = _selRefs();
+    selectedIdxs = mwSel.filter(r => r.k === 'win').map(r => r.i);
+    const p = _selPrimary();
+    selectedOverlay = (p && p.k === 'ov')  ? p.i : -1;
+    selectedBlock   = (p && p.k === 'blk') ? p.i : -1;
+    if (p && (p.k === 'vh' || p.k === 'ah')) {
+        selectedHist = p.i;
+        selectedHistKind = (p.k === 'vh') ? 'video' : 'audio';
+    } else {
+        selectedHist = -1;
+    }
+}
+// Clic simple = sélection unique ; Maj+clic = bascule dans la sélection, l'objet cliqué devenant
+// la nouvelle référence (il passe en dernier) — exactement la règle déjà appliquée aux fenêtres.
+function _selSet(k, i, additive) {
+    if (!additive) { mwSel = [{k, i}]; _selSync(); return; }
+    const at = mwSel.findIndex(r => r.k === k && r.i === i);
+    if (at >= 0) mwSel.splice(at, 1);   // Maj+clic sur un objet déjà pris = le RETIRER
+    else mwSel.push({k, i});
+    _selSync();
+}
+// Idem, mais un objet DÉJÀ sélectionné qu'on saisit sans Maj ne réduit pas la sélection : on le
+// promeut en référence et on garde le groupe (sinon impossible de déplacer un groupe à la souris).
+function _selGrab(k, i, additive) {
+    if (!additive && _selHas(k, i)) {
+        mwSel = mwSel.filter(r => !(r.k === k && r.i === i));
+        mwSel.push({k, i});
+        _selSync();
+        return;
+    }
+    _selSet(k, i, additive);
+}
+function _selClear() { mwSel = []; _selSync(); }
+// Une famille a perdu un élément d'indice `i` (suppression) : les refs au-delà se décalent.
+function _selDrop(k, i) {
+    mwSel = mwSel.filter(r => !(r.k === k && r.i === i))
+                 .map(r => (r.k === k && r.i > i) ? {k, i: r.i - 1} : r);
+    _selSync();
+}
+// ─── Déplacement de GROUPE, toutes familles ──────────────────────────────────
+// `dragGroupOrig` mémorise l'origine de CHAQUE membre au début du geste : [{r, x, y}]. Le delta
+// est calculé sur l'objet réellement tiré (aimant compris), borné pour qu'aucun membre ne sorte
+// du cadre, puis appliqué à tous depuis leur origine — jamais en cumulant, sinon le groupe dérive.
+function _beginGroupDrag() {
+    dragGroupOrig = _selRefs().map(r => {
+        const o = _refObj(r);
+        return {r, x: o.x, y: o.y};
+    });
+}
+function _applyGroupMove(nx, ny) {
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    let ddx = nx - dragOrigRect.x, ddy = ny - dragOrigRect.y;
+    let loX = -Infinity, hiX = Infinity, loY = -Infinity, hiY = Infinity;
+    dragGroupOrig.forEach(g => {
+        const o = _refObj(g.r);
+        if (!o) return;
+        loX = Math.max(loX, -g.x); hiX = Math.min(hiX, ow - o.w - g.x);
+        loY = Math.max(loY, -g.y); hiY = Math.min(hiY, oh - o.h - g.y);
+    });
+    // Groupe plus large (ou plus haut) que le cadre : aucune position ne satisfait tout le monde
+    // → on fige l'axe concerné plutôt que d'appliquer une borne inversée.
+    if (loX > hiX) loX = hiX = 0;
+    if (loY > hiY) loY = hiY = 0;
+    ddx = Math.max(loX, Math.min(hiX, ddx));
+    ddy = Math.max(loY, Math.min(hiY, ddy));
+    dragGroupOrig.forEach(g => {
+        const o = _refObj(g.r);
+        if (!o) return;
+        o.x = Math.round(g.x + ddx);
+        o.y = Math.round(g.y + ddy);
+    });
+}
+// Le geste a-t-il RÉELLEMENT modifié la géométrie ? Un simple clic de SÉLECTION emprunte le même
+// chemin qu'un déplacement (mousedown → mouseup) : sans cette question, il déclencherait un
+// déploiement — et, sur un mur shardé, une re-planification du tissu donc une coupure de sortie,
+// pour un clic qui n'a rien changé. La garde existait pour les fenêtres (`dragGeomOrig`) ; elle
+// manquait aux overlays, blocs et frises, dont chaque clic postait un deploy complet.
+function _gestureChanged() {
+    if (dragGroupOrig.some(g => {
+        const o = _refObj(g.r);
+        return o && (o.x !== g.x || o.y !== g.y);
+    })) return true;
+    const o = _refObj(_selPrimary());
+    return !!(o && dragOrigRect && (o.w !== dragOrigRect.w || o.h !== dragOrigRect.h));
+}
+
+// Cibles d'aimant à EXCLURE pendant un geste : tous les membres du groupe (un objet ne doit pas
+// s'aimanter sur ses propres compagnons, qui se déplacent avec lui).
+function _dragSkip(k, i) {
+    return dragGroupOrig.length ? dragGroupOrig.map(g => ({kind: g.r.k, i: g.r.i})) : [{kind: k, i}];
+}
+
+// Fenêtre PRIMAIRE au sens strict : -1 si la référence courante n'est pas une fenêtre. Sert à
+// n'afficher qu'UN cadre blanc et QU'UNE poignée de redimensionnement sur tout le mur.
+function _winPrimary() {
+    const p = _selPrimary();
+    return (p && p.k === 'win') ? p.i : -1;
+}
+
+// ─── ÉDITION À PLUSIEURS : verrou consultatif + garde de révision ────────────
+// Le composer poste TOUT l'état du mur à chaque geste : sans garde-fou, deux personnes s'écrasent
+// l'une l'autre sans jamais savoir pourquoi leur travail disparaît (« l'image de A disparaît dès
+// que B modifie quelque chose », 2026-08-11). Deux protections, volontairement distinctes :
+//   • le VERROU (app/edit_lock.py) dit QUI a la main, et laisse reprendre la main sciemment ;
+//   • la RÉVISION (`base_rev` du déploiement) refuse un envoi bâti sur un état périmé — elle
+//     couvre aussi ce qui ne passe pas par ici (page Câbles, macros, restauration de projet).
+// Le verrou n'interdit rien côté serveur : c'est un outil de conversation, pas de sécurité.
+let mwRev        = null;    // révision de deploy_config sur laquelle notre édition est bâtie
+let mwVerrou     = {a_moi: true, user_name: '', depuis_s: 0, libre: true};
+let _mwBattement = null;    // minuterie du battement de cœur
+
+function mwLectureSeule() { return !mwVerrou.a_moi; }
+
+// Un geste d'écriture est-il permis ? Sert de garde AUX POINTS D'ÉCRITURE (et pas seulement
+// dans l'UI) : un raccourci clavier, une macro ou un appel resté en vol ne doivent pas passer
+// derrière le bandeau.
+function mwPeutEcrire() {
+    if (mwLectureSeule()) {
+        mwFlash(T('plugin.multiview.lock_readonly_flash').replace('{nom}', mwVerrou.user_name || '?'));
+        return false;
+    }
+    return true;
+}
+
+function mwMajVerrouUI() {
+    const box = document.getElementById('mw_verrou');
+    const txt = document.getElementById('mw_verrou_txt');
+    const ed  = document.getElementById('mw-editor');
+    if (ed) ed.classList.toggle('lecture-seule', mwLectureSeule());
+    if (!box || !txt) return;
+    box.hidden = !mwLectureSeule();
+    if (mwLectureSeule()) {
+        const min = Math.max(1, Math.round((mwVerrou.depuis_s || 0) / 60));
+        txt.textContent = T('plugin.multiview.lock_held_by')
+            .replace('{nom}', mwVerrou.user_name || '?')
+            .replace('{min}', String(min));
+    }
+}
+
+async function mwVerrouPrendre(force) {
+    if (editorVmid === null) return;
+    try {
+        const r = await fetch(`/api/containers/${editorVmid}/edit-lock`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({force: !!force})
+        });
+        const j = await r.json();
+        mwVerrou = j;
+        if (j.rev !== undefined && mwRev === null) mwRev = j.rev;
+    } catch (e) {
+        // Réseau perdu : on ne bascule PAS en lecture seule (ce serait punir l'utilisateur pour
+        // une panne côté serveur) ; le prochain battement rétablira la vérité.
+    }
+    mwMajVerrouUI();
+}
+
+function mwPrendreLaMain() { mwVerrouPrendre(true); }
+
+// Conflit d'écriture : quelqu'un d'autre a modifié ce mur depuis qu'on l'a ouvert. Notre envoi
+// n'est pas parti. On bascule l'éditeur en lecture seule le temps de la décision — continuer à
+// éditer une copie périmée ne produirait que des refus en série — et on propose de recharger.
+function mwConflit(par) {
+    const box = document.getElementById('mw_verrou');
+    const txt = document.getElementById('mw_verrou_txt');
+    const btn = document.getElementById('mw_verrou_btn');
+    if (box && txt && btn) {
+        box.hidden = false;
+        txt.textContent = par
+            ? T('plugin.multiview.lock_conflict_by').replace('{nom}', par)
+            : T('plugin.multiview.lock_conflict');
+        btn.textContent = T('plugin.multiview.lock_reload');
+        btn.onclick = () => { const v = editorVmid; btn.onclick = mwPrendreLaMain; chargerMw(v); };
+    }
+    const ed = document.getElementById('mw-editor');
+    if (ed) ed.classList.add('lecture-seule');
+    mwFlash(T('plugin.multiview.lock_conflict'));
+}
+
+function mwVerrouRendre() {
+    if (_mwBattement) { clearInterval(_mwBattement); _mwBattement = null; }
+    const vmid = editorVmid;
+    if (vmid === null) return;
+    // `keepalive` : la requête survit à la fermeture de l'onglet ou au changement de page.
+    try {
+        fetch(`/api/containers/${vmid}/edit-lock`, {method: 'DELETE', keepalive: true}).catch(() => {});
+    } catch (e) {}
+}
+
+function mwVerrouDemarrer(battement_s) {
+    if (_mwBattement) clearInterval(_mwBattement);
+    const p = Math.max(5, parseInt(battement_s) || 20) * 1000;
+    // Le battement RENOUVELLE notre verrou et, quand on ne l'a pas, RÉINTERROGE : un mur libéré
+    // par l'autre (fermeture d'onglet, expiration) redevient éditable sans recharger la page.
+    _mwBattement = setInterval(() => {
+        if (editorVmid === null) return;
+        mwVerrouPrendre(false);
+    }, p);
+}
+
 function histList(kind) {
     const k = HIST_LIST[kind || selectedHistKind];
     editorParams[k] = editorParams[k] || [];
@@ -73,6 +308,15 @@ const OVERLAY_FONTS = [
 
 const HANDLE_SIZE = 10;
 const SNAP_PX     = 8;      // distance de snap (en coords canvas)
+
+// Entier d'un champ, où ZÉRO est une valeur LÉGITIME. `parseInt(v) || defaut` est le piège :
+// 0 est falsy, donc saisir 0 rendait le défaut — « l'opacité du fond ne peut pas valoir 0, elle
+// se met à 100 » (signalé le 2026-08-11). Le défaut ne doit servir que si le champ est vide ou
+// illisible. Les bornes restent à l'appelant (min/max propres à chaque réglage).
+function numOu(v, defaut) {
+    const n = parseInt(v, 10);
+    return Number.isNaN(n) ? defaut : n;
+}
 
 function primaryIdx() {
     return selectedIdxs.length ? selectedIdxs[selectedIdxs.length - 1] : -1;
@@ -403,7 +647,14 @@ async function chargerMw(vmid) {
         mwFlash(T('plugin.multiview.flash_not_multiview'));
         return;
     }
+    // On quitte le mur précédent : on lui rend la main avant de changer d'éditeur.
+    if (editorVmid !== null && editorVmid !== vmid) mwVerrouRendre();
     editorVmid   = vmid;
+    // Révision de la configuration CHARGÉE : c'est l'état sur lequel toute notre édition sera
+    // bâtie, et ce que le serveur comparera à chaque déploiement (garde anti-écrasement).
+    mwRev = (c.config_rev === undefined || c.config_rev === null) ? null : parseInt(c.config_rev);
+    mwVerrou = {a_moi: true, user_name: '', depuis_s: 0, libre: true};
+    mwVerrouPrendre(false).then(() => mwVerrouDemarrer(mwVerrou.battement_s));
     mwFabricStart();   // régions de calcul + annonce des réorganisations (murs shardés)
     editorParams = Object.assign({
         flux_config: [],
@@ -443,11 +694,16 @@ async function chargerMw(vmid) {
     editorParams.out_height = editorParams.out_height || editorParams.height || _sysf.h;
     editorParams.fps        = editorParams.fps        || _sysf.fps;
     editorParams.scan       = editorParams.scan       || _sysf.scan;
-    // Couleurs locales pour le rendu (non sauvegardé)
-    editorParams.flux_config = (editorParams.flux_config || []).map((f, i) => Object.assign({
+    // Couleur : purement locale (rendu de l'éditeur), jamais persistée.
+    // `ratio` = format VOULU de la fenêtre. La SOURCE fait foi quand ses dimensions sont
+    // connues (résolues à chaque déploiement depuis le flow_def), sinon le ratio PERSISTÉ
+    // (fenêtre non câblée : format du modèle de PiP, ou 16:9 par défaut). Ne jamais le
+    // dériver de w/h : une fenêtre déformée verrouillerait sa déformation.
+    editorParams.flux_config = (editorParams.flux_config || []).map((f, i) => Object.assign({}, f, {
         color: COLORS[i % COLORS.length],
-        ratio: (f.in_w && f.in_h) ? f.in_w / f.in_h : 16/9
-    }, f));
+        ratio: (f.in_w && f.in_h) ? f.in_w / f.in_h
+             : ((f.ratio && f.ratio > 0) ? f.ratio : 16/9)
+    }));
     editorParams.overlays = (editorParams.overlays || []);
     // Blocs VU-mètres de MUR : stockés côté serveur en FRACTIONS 0..1 du mur (meter_blocks) →
     // convertis en PIXELS canvas pour l'édition (comme les overlays), reconvertis en fractions
@@ -481,10 +737,7 @@ async function chargerMw(vmid) {
         }));
     });
     padBank();   // banque à indices stables : toujours max_inputs entrées
-    selectedIdxs = [];
-    selectedOverlay = -1;
-    selectedBlock = -1;
-    selectedHist = -1;
+    _selClear();
     renderEditor(c.hostname);
 }
 
@@ -922,7 +1175,7 @@ function ajouterEntree() {
     f.w = Math.min(f.w, out_w); f.h = Math.min(f.h, out_h);
     f.x = Math.max(0, Math.min(out_w - f.w, f.x));
     f.y = Math.max(0, Math.min(out_h - f.h, f.y));
-    selectedIdxs = [idx];
+    _selSet('win', idx);
     dessiner();
     hotApplyFull();
 }
@@ -947,18 +1200,16 @@ function ajouterBlocVU() {
     if (!editorParams) return;
     editorParams.meter_blocks = editorParams.meter_blocks || [];
     editorParams.meter_blocks.push(newMeterBlock());
-    selectedBlock = editorParams.meter_blocks.length - 1;
-    selectedOverlay = -1;
-    selectedHist = -1;
-    selectedIdxs = [];
+    _selSet('blk', editorParams.meter_blocks.length - 1);
     dessiner();
     hotApplyFull();
 }
 
 function supprimerBlocVU() {
     if (selectedBlock < 0) return;
-    editorParams.meter_blocks.splice(selectedBlock, 1);
-    selectedBlock = -1;
+    const _i = selectedBlock;
+    editorParams.meter_blocks.splice(_i, 1);
+    _selDrop('blk', _i);   // décale les références au-delà, retire la sienne
     dessiner();
     hotApplyFull();
 }
@@ -986,16 +1237,16 @@ function ajouterBlocHist(kind) {
     if (!editorParams) return;
     histList(kind).push(newHistBlock(kind));
     selectedHistKind = kind;
-    selectedHist = histList(kind).length - 1;
-    selectedBlock = -1; selectedOverlay = -1; selectedIdxs = [];
+    _selSet(kind === 'audio' ? 'ah' : 'vh', histList(kind).length - 1);
     dessiner();
     hotApplyFull();
 }
 
 function supprimerBlocHist() {
     if (selectedHist < 0) return;
-    histList(selectedHistKind).splice(selectedHist, 1);
-    selectedHist = -1;
+    const _i = selectedHist, _k = (selectedHistKind === 'audio') ? 'ah' : 'vh';
+    histList(selectedHistKind).splice(_i, 1);
+    _selDrop(_k, _i);
     dessiner();
     hotApplyFull();
 }
@@ -1018,14 +1269,14 @@ function hitHist(pos) {
     return null;
 }
 
-function beginHistDrag(hit, pos) {
-    selectedHistKind = hit.kind;
-    selectedHist = hit.i;
-    selectedBlock = -1; selectedOverlay = -1; selectedIdxs = [];
+function beginHistDrag(hit, pos, additive) {
+    selectedHistKind = hit.kind;   // la liste visée doit être posée AVANT la sélection
+    _selGrab(hit.kind === 'audio' ? 'ah' : 'vh', hit.i, additive);
     dragHist = true;
     dragMode = hit.mode;
     dragStart = pos;
     dragOrigRect = {...histList(hit.kind)[hit.i]};
+    _beginGroupDrag();
     _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
     dessiner();
 }
@@ -1037,12 +1288,29 @@ function histMouseMove(e) {
     const b = histList(selectedHistKind)[selectedHist];
     if (!b) return;
     const ow = editorParams.out_width, oh = editorParams.out_height;
+    // AIMANT : les frises l'ignoraient purement et simplement — aucun appel à computeSnap/
+    // computeSnapResize ici, alors que les overlays et les blocs VU passent par les deux. Elles
+    // étaient donc les seuls objets du mur impossibles à aligner au geste. `_snapRects` les
+    // connaissait déjà (familles 'vh'/'ah'), y compris comme CIBLES : le reste du mur s'alignait
+    // sur elles, mais elles ne s'alignaient sur rien.
+    const skip = { kind: selectedHistKind === 'audio' ? 'ah' : 'vh', i: selectedHist };
     if (dragMode === 'move') {
-        b.x = Math.max(0, Math.min(ow - b.w, Math.round(dragOrigRect.x + dx)));
-        b.y = Math.max(0, Math.min(oh - b.h, Math.round(dragOrigRect.y + dy)));
+        let nx = Math.max(0, Math.min(ow - b.w, Math.round(dragOrigRect.x + dx)));
+        let ny = Math.max(0, Math.min(oh - b.h, Math.round(dragOrigRect.y + dy)));
+        if (snapEnabled) {
+            const sn = computeSnap(_dragSkip(skip.kind, selectedHist), nx, ny, b.w, b.h);
+            nx = sn.x; ny = sn.y; snapGuides = sn.guides;
+        } else snapGuides = [];
+        _applyGroupMove(nx, ny);
     } else if (dragMode === 'resize') {
-        const nw = Math.max(48, Math.min(ow - b.x, Math.round(dragOrigRect.w + dx)));
-        const nh = Math.max(24, Math.min(oh - b.y, Math.round(dragOrigRect.h + dy)));
+        let nw = Math.max(48, Math.min(ow - b.x, Math.round(dragOrigRect.w + dx)));
+        let nh = Math.max(24, Math.min(oh - b.y, Math.round(dragOrigRect.h + dy)));
+        if (snapEnabled) {
+            // Frise à format LIBRE (aucun ratio imposé, comme un overlay) → ratio = 0 : les deux
+            // axes s'aimantent indépendamment (cf. computeSnapResize).
+            const sn = computeSnapResize(skip, b.x, b.y, nw, nh, 0);
+            nw = Math.max(48, sn.w); nh = Math.max(24, sn.h); snapGuides = sn.guides;
+        } else snapGuides = [];
         b.w = nw % 2 === 0 ? nw : nw - 1;
         b.h = nh % 2 === 0 ? nh : nh - 1;
     }
@@ -1056,7 +1324,7 @@ function drawHistLayer(ctx) {
     ['video', 'audio'].forEach(kind => {
         histList(kind).forEach((b, i) => {
             if (b.hidden) return;
-            const sel = (kind === selectedHistKind && i === selectedHist);
+            const sel = _selHas(kind === 'audio' ? 'ah' : 'vh', i);
             ctx.save();
             ctx.fillStyle = 'rgba(14,16,20,0.85)';
             ctx.fillRect(b.x, b.y, b.w, b.h);
@@ -1164,7 +1432,7 @@ function onHistChange() {
     if (!b) return;
     const isVideo = selectedHistKind === 'video';
     b.duration = parseInt(document.getElementById('hb_duration').value) || 30;
-    b.opacity = Math.max(10, Math.min(100, parseInt(document.getElementById('hb_opacity').value) || 85));
+    b.opacity = Math.max(10, Math.min(100, numOu(document.getElementById('hb_opacity').value, 85)));
     b.label = document.getElementById('hb_label').value || '';
     // Masquer SANS supprimer : le moteur saute les blocs `hidden` (script.py, _hist_units) — la
     // config et le câblage sont conservés. Utile pour comparer le coût du mur avec/sans la frise.
@@ -1205,7 +1473,7 @@ function serializeHistBlocks(kind) {
         const o = {
             x: frac(b.x, ow), y: frac(b.y, oh), w: frac(b.w, ow), h: frac(b.h, oh),
             duration: DURS.includes(d) ? d : 30,
-            opacity: Math.max(10, Math.min(100, parseInt(b.opacity) || 85)),
+            opacity: Math.max(10, Math.min(100, numOu(b.opacity, 85))),
             label: b.label || '',
             hidden: !!b.hidden,
         };
@@ -1228,7 +1496,9 @@ function supprimerEntreeSelectionnee() {
         const f = editorParams.flux_config[i];
         if (f) f.hidden = true;
     });
-    selectedIdxs = [];
+    // Les fenêtres masquées sortent de la sélection ; les objets d'autres familles y restent.
+    mwSel = mwSel.filter(r => r.k !== 'win');
+    _selSync();
     dessiner();
     hotApplyFull();
 }
@@ -1246,7 +1516,10 @@ function toggleEntryHidden(i, shown) {
 function refreshEntryPanel() {
     const panel = document.getElementById('ed_entry_panel');
     if (!panel) return;
-    const primary = primaryIdx();
+    // Un seul panneau ouvert à la fois : celui de la RÉFÉRENCE. Avec une sélection mixte, des
+    // fenêtres peuvent être sélectionnées alors que la référence est un texte — le panneau de
+    // fenêtre resterait ouvert sur un objet qui n'est plus celui qu'on édite.
+    const primary = _winPrimary();
     if (primary < 0) {
         panel.hidden = true;
         return;
@@ -1397,8 +1670,21 @@ function onEntryChange() {
         }
     }
     f.label_source = document.getElementById('ed_label_source').value || 'hostname';
+    // SOURCE VIDÉO : le hot-apply /plugin/window ne transporte pas `path` et le proxy ne le
+    // persiste pas (liste blanche `_MV_WINDOW_PERSIST`, app/routes/plugin_registry.py) — changer
+    // la source depuis ce panneau ne touchait donc NI le conteneur NI la base : la nouvelle source
+    // s'affichait dans l'éditeur puis disparaissait au rechargement. On passe par le déploiement
+    // (hot-apply /reconfigure côté serveur), seul chemin qui résout les dimensions de la nouvelle
+    // source, les proxies de pyramide et le tissu des murs shardés — et qui ne ferme QUE le Reader
+    // de la fenêtre concernée (les autres tuiles ne se figent pas).
+    // La source AUDIO, elle, RESTE sur /plugin/window : c'est lui qui purge les états audio ouverts
+    // de la fenêtre (`_do_window`), là où `/reconfigure` ne purge que ceux des BLOCS VU de mur —
+    // l'aiguiller vers le déploiement laisserait les VU sur l'ANCIENNE source. Elle est désormais
+    // persistée côté proxy (même liste blanche).
+    const _pathAvant = f.path || '';
     f.path         = document.getElementById('ed_path').value;
     { const _as = document.getElementById('ed_audio_path'); if (_as) f.audio_path = _as.value; }
+    const _srcChange = (f.path || '') !== _pathAvant;
     f.show_label   = document.getElementById('ed_show_label').checked;
     f.label_proportional = document.getElementById('ed_label_proportional').checked;
     f.tsl_index      = parseInt(document.getElementById('ed_tsl_index').value) || 0;
@@ -1411,13 +1697,16 @@ function onEntryChange() {
     f.meter_channels = parseInt(document.getElementById('ed_meter_channels').value) || 0;
     f.meter_position = document.getElementById('ed_meter_position').value || 'right';
     f.meter_inside   = document.getElementById('ed_meter_inside').value === '1';
-    f.meter_opacity  = Math.max(10, Math.min(100, parseInt(document.getElementById('ed_meter_opacity').value) || 70));
+    f.meter_opacity  = Math.max(10, Math.min(100, numOu(document.getElementById('ed_meter_opacity').value, 70)));
     f.meter_scale    = document.getElementById('ed_meter_scale').value || 'dbfs';
     ANC_FLAGS.forEach(k => { f[k] = document.getElementById('ed_' + k).checked; });
     f.anc_position   = document.getElementById('ed_anc_position').value || 'bottom';
-    f.anc_opacity    = Math.max(0, Math.min(100, parseInt(document.getElementById('ed_anc_opacity').value) || 60));
+    f.anc_opacity    = Math.max(0, Math.min(100, numOu(document.getElementById('ed_anc_opacity').value, 60)));
     dessiner();
-    hotApplyWindow(primary);
+    // Changement de source → déploiement (le seul chemin qui l'applique ET la persiste, cf.
+    // ci-dessus). Tout le reste tient dans le hot-apply de fenêtre, sans coupure ni redeploy.
+    if (_srcChange) hotApplyFull();
+    else hotApplyWindow(primary);
 }
 
 function onEntryGeomChange() {
@@ -1660,7 +1949,8 @@ function drawCanvas() {
     // Images de fond (overlay layer=background) : sous les fenêtres vidéo.
     drawOverlayLayer(ctx, 'background');
 
-    const primary = primaryIdx();
+    // Cadre blanc + poignée : sur LA référence du mur (globale), pas une par famille.
+    const primary = _winPrimary();
     editorParams.flux_config.forEach((f, i) => {
         if (f.hidden) return;   // entrée de la banque non affichée
         const sel = isSelected(i);
@@ -1858,6 +2148,7 @@ function getCanvasPos(e) {
 }
 
 function canvasMouseDown(e) {
+    if (mwLectureSeule()) return;   // regarder oui, déplacer non
     // Pointer Events : capture du geste (souris, stylet ou doigt) jusqu'au relâchement.
     if (e.pointerId !== undefined && e.target.setPointerCapture) {
         try { e.target.setPointerCapture(e.pointerId); } catch(_) {}
@@ -1867,20 +2158,19 @@ function canvasMouseDown(e) {
     const pos = getCanvasPos(e);
     // 1. Overlays de premier plan (au-dessus de la vidéo)
     let hit = hitOverlay(pos, 'foreground');
-    if (hit) return beginOverlayDrag(hit, pos);
+    if (hit) return beginOverlayDrag(hit, pos, e.shiftKey);
     // 2. Blocs de mur (VU-mètres, frises d'historique) — au-dessus des fenêtres, toujours manipulables
     const hhit = hitHist(pos);
-    if (hhit) return beginHistDrag(hhit, pos);
+    if (hhit) return beginHistDrag(hhit, pos, e.shiftKey);
     const bhit = hitBlock(pos);
-    if (bhit) return beginBlockDrag(bhit, pos);
+    if (bhit) return beginBlockDrag(bhit, pos, e.shiftKey);
     // 3. Fenêtres vidéo
-    const primary = primaryIdx();
+    const primary = _winPrimary();   // poignée de redimensionnement : sur LA référence, et elle seule
     for (let i = editorParams.flux_config.length - 1; i >= 0; i--) {
         const f = editorParams.flux_config[i];
         if (f.hidden) continue;   // entrées masquées : pas dans le canvas
         if (i === primary &&
             pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
-            selectedOverlay = -1; selectedBlock = -1; selectedHist = -1;
             dragMode = 'resize'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...f};
             dragGeomOrig = _geomSnapshot();
             _setCanvasCursor('nwse-resize');
@@ -1888,12 +2178,11 @@ function canvasMouseDown(e) {
         }
         if (pos.x >= f.x && pos.x <= f.x + f.w &&
             pos.y >= f.y && pos.y <= f.y + f.h) {
-            selectedOverlay = -1; selectedBlock = -1; selectedHist = -1;
-            // Si on commence le drag sur une fenêtre DÉJÀ sélectionnée (sans Maj), on garde la
-            // sélection multiple pour la déplacer en groupe ; sinon clic = sélection simple.
-            if (!(isSelected(i) && !e.shiftKey)) toggleSelection(i, e.shiftKey);
-            dragMode = 'move'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...editorParams.flux_config[primaryIdx()]};
-            dragGroupOrig = selectedIdxs.map(j => ({ j, x: editorParams.flux_config[j].x, y: editorParams.flux_config[j].y }));
+            // Saisir une fenêtre DÉJÀ sélectionnée (sans Maj) garde le groupe et la promeut en
+            // référence ; Maj bascule son appartenance ; sinon clic = sélection simple.
+            _selGrab('win', i, e.shiftKey);
+            dragMode = 'move'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...f};
+            _beginGroupDrag();
             dragGeomOrig = _geomSnapshot();
             _setCanvasCursor('move');
             dessiner();
@@ -1902,11 +2191,8 @@ function canvasMouseDown(e) {
     }
     // 4. Images de fond (sous la vidéo)
     hit = hitOverlay(pos, 'background');
-    if (hit) return beginOverlayDrag(hit, pos);
-    if (!e.shiftKey) selectedIdxs = [];
-    selectedOverlay = -1;
-    selectedBlock = -1;
-    selectedHist = -1;
+    if (hit) return beginOverlayDrag(hit, pos, e.shiftKey);
+    if (!e.shiftKey) _selClear();   // clic dans le vide = tout désélectionner (Maj = ne rien changer)
     dragMode = null;
     dessiner();
 }
@@ -1927,23 +2213,25 @@ function hitBlock(pos) {
     return null;
 }
 
-function beginBlockDrag(hit, pos) {
-    selectedBlock = hit.i;
-    selectedOverlay = -1;
-    selectedHist = -1;
-    selectedIdxs = [];
+function beginBlockDrag(hit, pos, additive) {
+    _selGrab('blk', hit.i, additive);
     dragBlock = true;
     dragMode = hit.mode;
     dragStart = pos;
     dragOrigRect = {...editorParams.meter_blocks[hit.i]};
+    _beginGroupDrag();
     _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
     dessiner();
 }
 
 function hitOverlay(pos, layer) {
-    const ovs = editorParams.overlays || [];
-    for (let i = ovs.length - 1; i >= 0; i--) {
-        const o = ovs[i];
+    // MÊME ORDRE que le dessin (cf. drawOverlayLayer : les overlays dynamiques passent au-dessus),
+    // parcouru à l'envers — on saisit ce qu'on voit. Sans ça, cliquer sur une horloge posée sur une
+    // image aurait attrapé l'image, qui est pourtant derrière à l'écran.
+    const ovs = (editorParams.overlays || []).map((o, i) => ({o, i}));
+    ovs.sort((a, b) => (_ovDynamique(a.o) ? 1 : 0) - (_ovDynamique(b.o) ? 1 : 0));
+    for (let k = ovs.length - 1; k >= 0; k--) {
+        const {o, i} = ovs[k];
         const isBg = (o.kind === 'image' && o.layer === 'background');
         if (layer === 'background' ? !isBg : isBg) continue;
         if (i === selectedOverlay &&
@@ -1957,31 +2245,21 @@ function hitOverlay(pos, layer) {
     return null;
 }
 
-function beginOverlayDrag(hit, pos) {
-    selectedOverlay = hit.i;
-    selectedBlock = -1;
-    selectedHist = -1;
-    selectedIdxs = [];
+function beginOverlayDrag(hit, pos, additive) {
+    _selGrab('ov', hit.i, additive);
     dragOverlay = true;
     dragMode = hit.mode;
     dragStart = pos;
     dragOrigRect = {...editorParams.overlays[hit.i]};
+    _beginGroupDrag();
     _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
     dessiner();
 }
 
+// Sélection d'une FENÊTRE : passe par l'API inter-familles (cf. `mwSel`). Maj+clic ajoute/retire
+// sans toucher aux objets d'autres familles déjà sélectionnés — c'est là tout l'intérêt.
 function toggleSelection(i, additive) {
-    if (additive) {
-        const at = selectedIdxs.indexOf(i);
-        if (at >= 0) selectedIdxs.splice(at, 1);
-        else selectedIdxs.push(i);
-    } else if (!selectedIdxs.includes(i)) {
-        selectedIdxs = [i];
-    } else {
-        // Réordonne pour que i devienne le primary
-        selectedIdxs = selectedIdxs.filter(x => x !== i);
-        selectedIdxs.push(i);
-    }
+    _selGrab('win', i, additive);
 }
 
 // Curseur attendu à une position donnée (hors drag) : coin bas-droite d'une fenêtre/overlay
@@ -2029,29 +2307,15 @@ function canvasMouseMove(e) {
     const out_h = editorParams.out_height;
 
     if (dragMode === 'move') {
-        // Delta visé d'après la fenêtre primaire (avec snap), puis appliqué À TOUT LE GROUPE.
+        // Delta visé d'après l'objet TIRÉ (avec aimant), puis appliqué À TOUT LE GROUPE — lequel
+        // peut désormais mêler fenêtres, textes, horloges, VU et frises.
         let nx = Math.max(0, Math.min(out_w - f.w, Math.round(dragOrigRect.x + dx)));
         let ny = Math.max(0, Math.min(out_h - f.h, Math.round(dragOrigRect.y + dy)));
         if (snapEnabled) {
-            const snapped = computeSnap({ kind: 'win', i: primary }, nx, ny, f.w, f.h);
+            const snapped = computeSnap(_dragSkip('win', primary), nx, ny, f.w, f.h);
             nx = snapped.x; ny = snapped.y; snapGuides = snapped.guides;
         } else snapGuides = [];
-        let ddx = nx - dragOrigRect.x, ddy = ny - dragOrigRect.y;
-        // Clamp le delta pour qu'AUCUNE fenêtre du groupe ne sorte du cadre.
-        const grp = dragGroupOrig.length ? dragGroupOrig : [{ j: primary, x: dragOrigRect.x, y: dragOrigRect.y }];
-        let loX = -Infinity, hiX = Infinity, loY = -Infinity, hiY = Infinity;
-        grp.forEach(g => {
-            const gf = editorParams.flux_config[g.j];
-            loX = Math.max(loX, -g.x); hiX = Math.min(hiX, out_w - gf.w - g.x);
-            loY = Math.max(loY, -g.y); hiY = Math.min(hiY, out_h - gf.h - g.y);
-        });
-        ddx = Math.max(loX, Math.min(hiX, ddx));
-        ddy = Math.max(loY, Math.min(hiY, ddy));
-        grp.forEach(g => {
-            const gf = editorParams.flux_config[g.j];
-            gf.x = Math.round(g.x + ddx);
-            gf.y = Math.round(g.y + ddy);
-        });
+        _applyGroupMove(nx, ny);
     } else if (dragMode === 'resize') {
         const ratio = dragOrigRect.w / dragOrigRect.h;
         let nw = Math.max(64, Math.min(out_w - f.x, Math.round(dragOrigRect.w + dx)));
@@ -2079,18 +2343,24 @@ function overlayMouseMove(e) {
         let nx = Math.max(0, Math.min(out_w - o.w, Math.round(dragOrigRect.x + dx)));
         let ny = Math.max(0, Math.min(out_h - o.h, Math.round(dragOrigRect.y + dy)));
         if (snapEnabled) {
-            const sn = computeSnap(skip, nx, ny, o.w, o.h);
+            const sn = computeSnap(_dragSkip('ov', selectedOverlay), nx, ny, o.w, o.h);
             nx = sn.x; ny = sn.y; snapGuides = sn.guides;
         } else snapGuides = [];
-        o.x = Math.max(0, Math.min(out_w - o.w, nx));
-        o.y = Math.max(0, Math.min(out_h - o.h, ny));
+        _applyGroupMove(nx, ny);
     } else if (dragMode === 'resize') {
+        // Image en « contain » : la boîte EST l'image, son format est donc contraint — plus de
+        // marges vides entre le cadre et l'image. Les autres overlays (et les images en « cover »
+        // ou « étirer ») restent libres : leur boîte a un sens propre.
+        const rImg = _ovBoiteContrainte(o);
         let nw = Math.max(16, Math.min(out_w - o.x, Math.round(dragOrigRect.w + dx)));
-        let nh = Math.max(16, Math.min(out_h - o.y, Math.round(dragOrigRect.h + dy)));
+        let nh = rImg > 0 ? Math.max(16, Math.round(nw / rImg))
+                          : Math.max(16, Math.min(out_h - o.y, Math.round(dragOrigRect.h + dy)));
+        if (rImg > 0 && o.y + nh > out_h) {          // débordement → on réduit à format constant
+            nh = Math.max(16, out_h - o.y);
+            nw = Math.max(16, Math.round(nh * rImg));
+        }
         if (snapEnabled) {
-            // Overlay LIBRE (pas de ratio imposé, contrairement à une fenêtre vidéo) : on snappe
-            // les deux axes indépendamment, d'où ratio = 0 (cf. computeSnapResize).
-            const sn = computeSnapResize(skip, o.x, o.y, nw, nh, 0);
+            const sn = computeSnapResize(_dragSkip('ov', selectedOverlay), o.x, o.y, nw, nh, rImg, 16);
             nw = sn.w; nh = sn.h; snapGuides = sn.guides;
         } else snapGuides = [];
         o.w = nw % 2 === 0 ? nw : nw - 1;
@@ -2111,11 +2381,10 @@ function blockMouseMove(e) {
         let nx = Math.max(0, Math.min(out_w - b.w, Math.round(dragOrigRect.x + dx)));
         let ny = Math.max(0, Math.min(out_h - b.h, Math.round(dragOrigRect.y + dy)));
         if (snapEnabled) {
-            const sn = computeSnap(skip, nx, ny, b.w, b.h);
+            const sn = computeSnap(_dragSkip('blk', selectedBlock), nx, ny, b.w, b.h);
             nx = sn.x; ny = sn.y; snapGuides = sn.guides;
         } else snapGuides = [];
-        b.x = Math.max(0, Math.min(out_w - b.w, nx));
-        b.y = Math.max(0, Math.min(out_h - b.h, ny));
+        _applyGroupMove(nx, ny);
     } else if (dragMode === 'resize') {
         let nw = Math.max(24, Math.min(out_w - b.x, Math.round(dragOrigRect.w + dx)));
         let nh = Math.max(24, Math.min(out_h - b.y, Math.round(dragOrigRect.h + dy)));
@@ -2132,22 +2401,28 @@ function blockMouseMove(e) {
 
 function canvasMouseUp() {
     _setCanvasCursor('default');   // le prochain survol réévaluera (move/resize/défaut)
-    if (dragOverlay) {
-        dragOverlay = false; dragMode = null; dessiner();
-        hotApplyFull();   // résout l'image base64 + hot-apply /overlays (pas de coupure)
+    // Repères d'aimant remis à zéro dans TOUS les cas : seule la branche « fenêtre » le faisait,
+    // si bien que le premier rendu du geste SUIVANT (dessiner() du mousedown, dragMode déjà posé)
+    // retraçait les repères du geste précédent le temps d'une image.
+    snapGuides = [];
+    const bouge = _gestureChanged();
+    if (dragOverlay || dragBlock || dragHist) {
+        dragOverlay = dragBlock = dragHist = false; dragMode = null; dragGeomOrig = null;
+        dessiner();
+        // Overlays / blocs / frises : un seul canal de persistance (deploy → hot-apply
+        // /overlays + /reconfigure, sans coupure). Il couvre aussi les FENÊTRES éventuellement
+        // déplacées dans le même groupe — inutile d'y ajouter des POST /window par fenêtre.
+        if (bouge) hotApplyFull();
         return;
     }
-    if (dragBlock) {
-        dragBlock = false; dragMode = null; dessiner();
-        hotApplyFull();   // même canal que les overlays : full deploy → hot-apply /reconfigure
-        return;
-    }
-    if (dragHist) {
-        dragHist = false; dragMode = null; dessiner();
+    dragMode = null; dessiner();
+    // Groupe MIXTE tiré par une fenêtre : les objets d'autres familles ont bougé eux aussi, et
+    // eux ne savent pas se hot-appliquer fenêtre par fenêtre → un seul déploiement couvre tout.
+    if (bouge && mwSel.some(r => r.k !== 'win')) {
+        dragGeomOrig = null;
         hotApplyFull();
         return;
     }
-    dragMode = null; snapGuides = []; dessiner();
     // Ne hot-appliquer que les fenêtres dont la géométrie a RÉELLEMENT bougé pendant le geste.
     // Un clic de SÉLECTION passe aussi par ici (mousedown sur une fenêtre → mouseup sans
     // déplacement) : il ne doit rien poster. Sur un mur SHARDÉ, chaque POST /plugin/window
@@ -2208,12 +2483,23 @@ function syncGeomFields() {
 
 // Boutons d'outils : actifs selon le nombre de fenêtres sélectionnées (data-min).
 function updateToolbar() {
-    const n = selectedIdxs.length;
+    // La barre compte l'UNION de la sélection, toutes familles confondues. Avant 0.111.0 elle ne
+    // lisait que `selectedIdxs` (les fenêtres) : cliquer sur un texte, un VU ou une frise grisait
+    // TOUS les outils — signalé cinq fois par un testeur le 2026-08-11, une fois par famille.
+    const n = _selCount();
     document.querySelectorAll('#mw-toolbar .tool-btn[data-min]').forEach(b => {
         b.disabled = n < parseInt(b.dataset.min);
     });
+    // Copier/coller des RÉGLAGES reste propre aux fenêtres : les champs copiés (bandeau, tally,
+    // VU, ANC, modèle de PiP) n'existent pas sur un texte ou une frise.
+    const nWin = selectedIdxs.length;
+    const copy = document.getElementById('ed_copy_btn');
+    if (copy) copy.disabled = nWin === 0;
     const paste = document.getElementById('ed_paste_btn');
-    if (paste) paste.disabled = !reglagesClipboard || n === 0;
+    if (paste) paste.disabled = !reglagesClipboard || nWin === 0;
+    const why = (n > 0 && nWin === 0) ? T('plugin.multiview.tools_windows_only') : '';
+    const row = document.getElementById('mw_row_settings');
+    if (row) row.title = why;
 }
 
 // Sélection d'une entrée au clavier depuis le tableau (Entrée / Espace).
@@ -2225,6 +2511,7 @@ function entryRowKey(ev, i) {
 
 function hotApplyWindow(idx) {
     if (editorVmid === null || !editorParams) return;
+    if (mwLectureSeule()) return;   // lecture seule : aucun envoi, même déclenché autrement que par l'UI
     mwFabricBurst();
     const f = editorParams.flux_config[idx];
     if (!f) return;
@@ -2276,6 +2563,7 @@ function hotApplyFull() {
 
 function hotApplyStyle() {
     if (editorVmid === null || !editorParams) return;
+    if (mwLectureSeule()) return;
     fetch(`/api/containers/${editorVmid}/plugin/style`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -2327,16 +2615,16 @@ function ajouterOverlay(kind) {
     if (!editorParams) return;
     editorParams.overlays = editorParams.overlays || [];
     editorParams.overlays.push(newOverlay(kind));
-    selectedOverlay = editorParams.overlays.length - 1;
-    selectedIdxs = []; selectedBlock = -1; selectedHist = -1;
+    _selSet('ov', editorParams.overlays.length - 1);
     dessiner();
     hotApplyFull();
 }
 
 function supprimerOverlay() {
     if (selectedOverlay < 0) return;
-    editorParams.overlays.splice(selectedOverlay, 1);
-    selectedOverlay = -1;
+    const _i = selectedOverlay;
+    editorParams.overlays.splice(_i, 1);
+    _selDrop('ov', _i);
     dessiner();
     hotApplyFull();
 }
@@ -2351,7 +2639,7 @@ function serializeMeterBlocks() {
         channels: parseInt(b.channels) || 2,
         ch_start: Math.max(1, Math.min(16, parseInt(b.ch_start) || 1)),
         scale: b.scale || 'dbfs',
-        opacity: Math.max(10, Math.min(100, parseInt(b.opacity) || 70)),
+        opacity: Math.max(10, Math.min(100, numOu(b.opacity, 70))),
         align: b.align || 'left',
         width_mode: b.width_mode || 'auto',
         audio_path: b.audio_path || '',
@@ -2362,7 +2650,7 @@ function serializeMeterBlocks() {
 
 function serializeOverlays() {
     const ev = v => { v = parseInt(v) || 0; return v % 2 === 0 ? v : v - 1; };
-    const clamp = (v, d) => Math.max(0, Math.min(100, parseInt(v ?? d)));
+    const clamp = (v, d) => Math.max(0, Math.min(100, numOu(v, d)));
     return (editorParams.overlays || []).map(o => {
         const base = { id: o.id, kind: o.kind, layer: o.layer || 'foreground',
             x: parseInt(o.x) || 0, y: parseInt(o.y) || 0, w: ev(o.w), h: ev(o.h) };
@@ -2431,6 +2719,31 @@ function clockSample(o) {
     return p.join(':') || (dash ? '--:--:--' : '12:34:56');
 }
 
+// Format NATIF d'une image importée (0 si pas encore décodée). Sert à faire coller la boîte à
+// l'image : en mode « contain », toute marge est du vide, et c'est ce vide qui faisait dire au
+// testeur que « l'encadré est plus grand que l'image et empêche de la redimensionner » — la
+// poignée se trouvait au coin de la boîte, loin du coin visible de l'image (2026-08-11).
+function _ovImageRatio(o) {
+    if (!o || o.kind !== 'image') return 0;
+    const img = _ovImg(o);
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return 0;
+    return img.naturalWidth / img.naturalHeight;
+}
+// La boîte doit-elle suivre le format de l'image ? Uniquement en « contain » : « cover » recadre
+// volontairement, « étirer » déforme volontairement — dans les deux cas la boîte a un sens propre.
+function _ovBoiteContrainte(o) {
+    return (o && o.kind === 'image' && (o.fit || 'contain') === 'contain') ? _ovImageRatio(o) : 0;
+}
+// Ajuste la boîte au format `r` en gardant la LARGEUR (et en rentrant dans le cadre).
+function _ovColleAuFormat(o, r) {
+    if (!(r > 0)) return;
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    let w = Math.min(o.w, ow - o.x), h = Math.round(w / r);
+    if (o.y + h > oh) { h = oh - o.y; w = Math.round(h * r); }
+    o.w = Math.max(16, w % 2 === 0 ? w : w - 1);
+    o.h = Math.max(16, h % 2 === 0 ? h : h - 1);
+}
+
 function drawImageFit(ctx, img, o) {
     const iw = img.naturalWidth, ih = img.naturalHeight;
     const fit = o.fit || 'contain';
@@ -2442,12 +2755,27 @@ function drawImageFit(ctx, img, o) {
     ctx.restore();
 }
 
+// Un overlay est-il DYNAMIQUE au sens du moteur ? Miroir exact de `_dyn_overlays()`
+// (script.py) : horloges et textes à variables. Le moteur les rend en tuiles PER-FRAME, blendées
+// APRÈS la couche d'habillage bakée qui porte les images et les textes fixes. Sur l'écran, une
+// horloge est donc TOUJOURS au-dessus d'une image, quel que soit l'ordre de la liste — alors que
+// l'éditeur, lui, dessinait dans l'ordre du tableau et pouvait montrer l'image par-dessus
+// l'horloge (signalé le 2026-08-11). L'aperçu suit désormais l'ordre du moteur.
+// ⚠ Ce n'est pas un choix d'ergonomie mais une CONSÉQUENCE du découpage bake / per-frame, sur
+// lequel repose la tenue de cadence : la couche bakée ne se redessine pas à chaque trame.
+function _ovDynamique(o) {
+    return o.kind === 'clock' || (o.kind === 'text' && String(o.text || '').includes('%'));
+}
+
 function drawOverlayLayer(ctx, layer) {
     const t = _tok || _readTokens();
-    (editorParams.overlays || []).forEach((o, i) => {
+    // Index d'origine conservé (sélection, poignée) : on ne réordonne que le DESSIN.
+    const ordonnes = (editorParams.overlays || []).map((o, i) => ({o, i}));
+    ordonnes.sort((a, b) => (_ovDynamique(a.o) ? 1 : 0) - (_ovDynamique(b.o) ? 1 : 0));
+    ordonnes.forEach(({o, i}) => {
         const isBg = (o.kind === 'image' && o.layer === 'background');
         if (layer === 'background' ? !isBg : isBg) return;
-        const sel = (i === selectedOverlay);
+        const sel = _selHas('ov', i);
         ctx.save();
         if (o.kind === 'image') {
             const img = _ovImg(o);
@@ -2510,25 +2838,106 @@ function drawOverlayLayer(ctx, layer) {
 }
 
 // ── Rendu des blocs VU-mètres de mur sur le canvas de l'éditeur ──
-// Aperçu schématique (pas les vraies barres — l'éditeur n'a pas de flux audio live) : quelques
-// barres mock à hauteur fixe, juste pour distinguer visuellement un bloc d'une fenêtre.
+// ★ GÉOMÉTRIE FIDÈLE AU MOTEUR (0.111.0). L'aperçu étalait `n` barres sur toute la largeur du
+// bloc, ignorant la colonne de graduations, la largeur RÉELLE des barres, le mode de largeur et
+// l'alignement : « la largeur des peak meters et l'alignement ne sont pas représentatifs de ce
+// qui est diffusé » (2026-08-11). Les constantes et le calcul ci-dessous sont le miroir exact de
+// `_meter_grad`, `_meter_layout`, `_meter_fit_dims` et `_draw_meter` (script.py) — mêmes valeurs,
+// mêmes seuils, même ordre. Seuls les NIVEAUX restent fictifs : l'éditeur n'a pas de flux audio.
+// ⚠ Deux copies de la même géométrie : toute correction faite dans script.py doit être portée ici.
+const MW_METER = {
+    BAR_W: 5, GAP: 1,          // METER_BAR_W / METER_GAP
+    TICK_DBFS: 22, TICK_PPM: 26, TICK_MARKS: 6,   // METER_TICK_W_*
+    LABEL_H: 12,               // bande des numéros de canal, sous les barres
+};
+// Niveau de graduations EFFECTIF et largeur de colonne — miroir de `_meter_grad`. En mode auto,
+// la décision se prend sur la place réellement allouée (seuil 40 % de la largeur du bloc).
+function _mwMeterGrad(b, scale, rw) {
+    const mode = String(b.graduations || 'auto').toLowerCase();
+    const twFull = (scale === 'ppm') ? MW_METER.TICK_PPM : MW_METER.TICK_DBFS;
+    if (mode === 'full')  return {grad: 'full',  tick: twFull};
+    if (mode === 'marks') return {grad: 'marks', tick: MW_METER.TICK_MARKS};
+    if (mode === 'none')  return {grad: 'none',  tick: 0};
+    if (rw > 0 && twFull <= rw * 0.40)              return {grad: 'full',  tick: twFull};
+    if (rw > 0 && MW_METER.TICK_MARKS <= rw * 0.40) return {grad: 'marks', tick: MW_METER.TICK_MARKS};
+    return {grad: 'none', tick: 0};
+}
+function _mwMeterLayout(n, tick, bar, gap) { return tick + n * bar + (n - 1) * gap; }
+// Mode `fit` : SEULES les barres s'élargissent — colonne et espacement restent fixes, sinon
+// l'échelle dB et ses repères se déforment. Repli sur la largeur intrinsèque si c'est trop étroit.
+function _mwMeterFitDims(n, rw, tick) {
+    const gap = MW_METER.GAP;
+    const bar0 = Math.floor((rw - tick - (n - 1) * gap) / n);
+    const bar = (bar0 < 2) ? MW_METER.BAR_W : bar0;
+    return {tick, bar, gap, mw: _mwMeterLayout(n, tick, bar, gap)};
+}
+// Géométrie complète d'un bloc VU : ce que le moteur dessinera, aux mêmes pixels près.
+function mwMeterGeom(b) {
+    const n = Math.max(1, Math.min(16, parseInt(b.channels) || 2));
+    const rw = b.w, rh = b.h;
+    const scale = b.scale || 'dbfs';
+    const g = _mwMeterGrad(b, scale, rw);
+    const side = String(b.grad_side || 'left').toLowerCase();
+    const tick = (side === 'inside' || g.grad === 'none') ? 0 : g.tick;   // « inside » : colonne superposée
+    const mh = Math.max(20, rh - 1);
+    let dims, mx;
+    if ((b.width_mode || 'auto') === 'fit') {
+        dims = _mwMeterFitDims(n, rw, tick);
+        mx = b.x;
+    } else {
+        dims = {tick, bar: MW_METER.BAR_W, gap: MW_METER.GAP,
+                mw: _mwMeterLayout(n, tick, MW_METER.BAR_W, MW_METER.GAP)};
+        const al = b.align || 'left';
+        mx = b.x + (al === 'center' ? Math.floor((rw - dims.mw) / 2)
+                  : al === 'right'  ? (rw - dims.mw) : 0);
+    }
+    // Barres après la colonne quand elle est à gauche ; dès le bord quand elle est à droite
+    // (ou absente — tick vaut alors 0 et les deux expressions coïncident).
+    const barX0 = (side === 'right') ? mx : mx + dims.tick;
+    return {n, mx, my: b.y, mw: dims.mw, mh, tick: dims.tick, bar: dims.bar, gap: dims.gap,
+            side, grad: g.grad, barX0, barsH: Math.max(20, mh - MW_METER.LABEL_H)};
+}
+
 function drawBlocksLayer(ctx, t) {
     (editorParams.meter_blocks || []).forEach((b, i) => {
         if (b.hidden) return;
-        const sel = (i === selectedBlock);
+        const sel = _selHas('blk', i);
+        const G = mwMeterGeom(b);
         ctx.save();
-        ctx.fillStyle = 'rgba(20,160,180,0.16)';
+        // Emprise du BLOC (la zone que l'utilisateur pose) — teintée, discrète.
+        ctx.fillStyle = 'rgba(20,160,180,0.10)';
         ctx.fillRect(b.x, b.y, b.w, b.h);
-        const n = Math.max(1, Math.min(16, parseInt(b.channels) || 2));
-        const pad = 4;
-        const bw = Math.max(2, (b.w - pad * 2) / (n * 1.4));
-        for (let ch = 0; ch < n; ch++) {
-            const bx = b.x + pad + ch * bw * 1.4;
-            const lvl = 0.35 + 0.3 * Math.abs(Math.sin(ch + 1));
-            const bh = Math.max(2, (b.h - pad * 2) * lvl);
-            ctx.fillStyle = 'rgba(90,210,140,0.85)';
-            ctx.fillRect(bx, b.y + b.h - pad - bh, bw, bh);
+        // Emprise du MÈTRE lui-même : là où le moteur peindra vraiment. C'est tout l'objet du
+        // correctif — le mètre n'occupe pas forcément tout le bloc, et sa position dans le bloc
+        // dépend de l'alignement.
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(G.mx, G.my, G.mw, G.mh);
+        // Colonne de graduations (traits seuls ou traits + chiffres, selon la place disponible).
+        if (G.tick > 0) {
+            const gx = (G.side === 'right') ? (G.mx + G.mw - G.tick) : G.mx;
+            ctx.fillStyle = 'rgba(255,255,255,0.10)';
+            ctx.fillRect(gx, G.my, G.tick, G.mh);
+            ctx.strokeStyle = 'rgba(220,220,220,0.55)';
+            ctx.lineWidth = 1;
+            for (let k = 0; k <= 4; k++) {
+                const y = Math.round(G.my + G.barsH * k / 4) + 0.5;
+                const x1 = (G.side === 'right') ? gx + 4 : gx + G.tick;
+                const x0 = (G.side === 'right') ? gx : gx + G.tick - 4;
+                ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+            }
         }
+        // Barres : largeur et espacement RÉELS. Les niveaux, eux, sont fictifs (pas d'audio ici).
+        const bottom = G.my + G.barsH;
+        for (let ch = 0; ch < G.n; ch++) {
+            const bx = G.barX0 + ch * (G.bar + G.gap);
+            const lvl = 0.35 + 0.3 * Math.abs(Math.sin(ch + 1));
+            const bh = Math.max(2, G.barsH * lvl);
+            ctx.fillStyle = 'rgba(90,210,140,0.85)';
+            ctx.fillRect(bx, bottom - bh, G.bar, bh);
+        }
+        // Bande des numéros de canal (12 px réservés par le moteur sous les barres).
+        ctx.fillStyle = 'rgba(220,220,220,0.30)';
+        ctx.fillRect(G.mx, bottom, G.mw, Math.min(MW_METER.LABEL_H, G.my + G.mh - bottom));
         ctx.strokeStyle = sel ? '#ffffff' : '#20c4d8';
         ctx.lineWidth = sel ? 2 : 1;
         ctx.setLineDash(sel ? [6, 4] : [4, 3]);
@@ -2592,7 +3001,7 @@ function onBlockChange() {
     b.channels = parseInt(document.getElementById('mb_channels').value) || 2;
     b.ch_start = Math.max(1, Math.min(16, parseInt(document.getElementById('mb_ch_start').value) || 1));
     b.scale = document.getElementById('mb_scale').value;
-    b.opacity = Math.max(10, Math.min(100, parseInt(document.getElementById('mb_opacity').value) || 70));
+    b.opacity = Math.max(10, Math.min(100, numOu(document.getElementById('mb_opacity').value, 70)));
     b.align = document.getElementById('mb_align').value;
     b.width_mode = document.getElementById('mb_width_mode').value;
     b.label = document.getElementById('mb_label').value || '';
@@ -2633,6 +3042,37 @@ function _tzLoad() {
 }
 // Peuple le <select> et sélectionne `val`. Les options sont groupées par région (une liste plate
 // de ~500 entrées est inutilisable) ; l'entrée vide « fuseau du mur » reste en tête.
+// Fuseaux « UTC±N » PRÉSENTABLES. La liste servie par le conteneur est la tzdata brute
+// (`zoneinfo.available_timezones()`), et elle porte trois pièges signalés le 2026-08-11 :
+//   1. ★ LE SIGNE EST INVERSÉ. `Etc/GMT+2` vaut UTC−2 — c'est la convention POSIX, pas un bug de
+//      tzdata : le signe y est celui de l'opération à appliquer au temps local pour revenir à UTC.
+//      Affichée telle quelle, l'option « GMT+2 » posait donc une horloge à UTC−2. Vérifié sur ce
+//      contrôleur : Etc/GMT+2 → décalage réel UTC−2, Etc/GMT-2 → UTC+2.
+//   2. Des doublons : `Etc/GMT`, `Etc/GMT+0` et `Etc/GMT-0` désignent tous UTC, plus les alias
+//      sans région (GMT, GMT0, Zulu, Universal, Greenwich, UCT…).
+//   3. Des valeurs qui semblent absurdes lues comme des offsets : `Etc/GMT-13` et `Etc/GMT-14`
+//      sont réels — ce sont UTC+13 et UTC+14 (Tonga, Kiribati) — mais illisibles ainsi.
+// On construit donc un groupe « UTC » SYNTHÉTIQUE, étiqueté dans le sens que lit un humain
+// (UTC+2 = deux heures d'avance), dont la VALEUR reste le nom de zone correct. Les zones
+// géographiques (Europe/…, America/…) passent inchangées : elles portent l'heure d'été, ce qu'un
+// offset fixe ne fait pas.
+const _TZ_ALIAS_PLATS = new Set(['GMT', 'GMT0', 'GMT+0', 'GMT-0', 'UCT', 'UTC', 'Universal',
+                                 'Greenwich', 'Zulu']);
+function _tzOffsetOptions(items) {
+    // Zones réellement servies (donc réellement présentes dans l'image du conteneur).
+    const dispo = new Set(items.map(it => it.value));
+    const out = [];
+    if (dispo.has('UTC')) out.push({value: 'UTC', label: 'UTC (±0)'});
+    for (let n = 14; n >= -12; n--) {
+        if (n === 0) continue;                       // couvert par « UTC (±0) » ci-dessus
+        const zone = 'Etc/GMT' + (n > 0 ? '-' : '+') + Math.abs(n);   // ★ signe INVERSÉ (POSIX)
+        if (dispo.has(zone)) out.push({value: zone, label: 'UTC' + (n > 0 ? '+' : '−') + Math.abs(n)});
+    }
+    return out;
+}
+
+// Peuple le <select> et sélectionne `val`. Les options sont groupées par région (une liste plate
+// de ~500 entrées est inutilisable) ; l'entrée vide « fuseau du mur » reste en tête.
 function _tzFill(id, val) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -2640,24 +3080,35 @@ function _tzFill(id, val) {
         if (el.dataset.filled !== '1') {
             el.innerHTML = '';
             const groups = new Map();
-            items.forEach(it => {
-                if (!it.value) {   // entrée « hérite du mur », toujours en premier
-                    el.appendChild(new Option(it.label, ''));
-                    return;
-                }
-                const reg = it.value.includes('/') ? it.value.split('/')[0] : 'UTC';
-                if (!groups.has(reg)) {
+            const mkGroup = nom => {
+                if (!groups.has(nom)) {
                     const g = document.createElement('optgroup');
-                    g.label = reg; groups.set(reg, g); el.appendChild(g);
+                    g.label = nom; groups.set(nom, g); el.appendChild(g);
                 }
-                groups.get(reg).appendChild(new Option(it.label, it.value));
+                return groups.get(nom);
+            };
+            const vide = items.find(it => !it.value);
+            if (vide) el.appendChild(new Option(vide.label, ''));   // « hérite du mur », en tête
+            // Décalages fixes, en premier : c'est ce que cherche un opérateur pressé.
+            _tzOffsetOptions(items).forEach(o => mkGroup('UTC').appendChild(new Option(o.label, o.value)));
+            items.forEach(it => {
+                if (!it.value) return;
+                // Alias plats et famille Etc/ : remplacés par le groupe UTC ci-dessus.
+                if (it.value.startsWith('Etc/') || _TZ_ALIAS_PLATS.has(it.value)) return;
+                const reg = it.value.includes('/') ? it.value.split('/')[0] : 'Autres';
+                mkGroup(reg).appendChild(new Option(it.label, it.value));
             });
             el.dataset.filled = '1';
+        }
+        // Valeur enregistrée absente des options (alias écarté, zone retirée de la tzdata) : on
+        // l'ajoute telle quelle plutôt que de laisser le select retomber en silence sur « hérite
+        // du mur » — l'horloge afficherait alors autre chose que ce que la base contient.
+        if (val && !Array.from(el.options).some(o => o.value === val)) {
+            el.appendChild(new Option(val, val));
         }
         el.value = val || '';
     });
 }
-
 // ─── Insertion de VARIABLES dans un champ texte ────────────────────────────────────────────
 // Catalogue servi par /api/text-variables : défini UNE SEULE FOIS côté orchestrateur et partagé
 // avec l'éditeur de modèles de PiP. Ici on ne propose que le groupe « Système » : les variables
@@ -2854,7 +3305,7 @@ function onOverlayChange() {
         o.align = g('ov_align').value;
         o.color = g('ov_color').value;
         o.bg_color = g('ov_bg_on').checked ? g('ov_bg_color').value : '';
-        o.bg_opacity = Math.max(0, Math.min(100, parseInt(g('ov_bg_opacity').value) || 100));
+        o.bg_opacity = Math.max(0, Math.min(100, numOu(g('ov_bg_opacity').value, 100)));
         o.tally_index = parseInt(g('ov_tally_index').value) || 0;
         o.color_on = g('ov_color_on').value;
         o.bg_color_on = g('ov_bg_color_on').value;
@@ -2893,7 +3344,7 @@ function onOverlayChange() {
     if (o.kind === 'image') {
         o.layer = g('ov_layer').value;
         o.fit = g('ov_fit').value;
-        o.opacity = Math.max(0, Math.min(100, parseInt(g('ov_opacity').value) || 100));
+        o.opacity = Math.max(0, Math.min(100, numOu(g('ov_opacity').value, 100)));
     }
     dessiner();
     hotApplyFull();
@@ -2951,13 +3402,14 @@ function _downscaleToB64(file, maxSide, cb) {
         const img = new Image();
         img.onload = () => {
             const w = img.naturalWidth, h = img.naturalHeight;
+            const ratioNatif = (w > 0 && h > 0) ? w / h : 0;
             const scale = Math.min(1, maxSide / Math.max(w, h));
             const cw = Math.max(1, Math.round(w * scale));
             const ch = Math.max(1, Math.round(h * scale));
             const cv = document.createElement('canvas');
             cv.width = cw; cv.height = ch;
             cv.getContext('2d').drawImage(img, 0, 0, cw, ch);
-            cb((cv.toDataURL('image/png').split(',')[1]) || '', file.name);
+            cb((cv.toDataURL('image/png').split(',')[1]) || '', file.name, ratioNatif);
         };
         img.onerror = () => cb('', file.name);
         img.src = reader.result;
@@ -2972,9 +3424,13 @@ function importOverlayImage(input) {
     if (!file) return;
     const o = editorParams.overlays[selectedOverlay];
     const maxSide = Math.max(editorParams.out_width, editorParams.out_height, 1280);
-    _downscaleToB64(file, maxSide, (b64, name) => {
+    _downscaleToB64(file, maxSide, (b64, name, ratioNatif) => {
         o.image_b64 = b64;
         o.image_name = name;
+        // La boîte prend le FORMAT du fichier importé : sans ça elle gardait ses 20 % × 20 % du
+        // mur, l'image s'y affichait avec des marges (mode « contain ») et la poignée de
+        // redimensionnement se retrouvait loin du coin visible de l'image.
+        if ((o.fit || 'contain') === 'contain') _ovColleAuFormat(o, ratioNatif);
         input.value = '';   // autorise la réimportation du même fichier
         dessiner();
         hotApplyFull();
@@ -2990,9 +3446,12 @@ function importOverlayImage(input) {
 // `skip` = {kind, i} de l'objet en cours de déplacement, à exclure de ses propres cibles.
 function _snapRects(skip) {
     const out = [];
+    // `skip` = une exclusion {kind,i} ou une LISTE (déplacement de groupe : chaque membre bouge,
+    // aucun ne doit servir de cible aux autres).
+    const skips = !skip ? [] : (Array.isArray(skip) ? skip : [skip]);
     const add = (kind, list) => (list || []).forEach((o, i) => {
         if (!o || o.hidden) return;
-        if (skip && skip.kind === kind && skip.i === i) return;
+        if (skips.some(sk => sk && sk.kind === kind && sk.i === i)) return;
         if (!(o.w > 0) || !(o.h > 0)) return;
         out.push(o);
     });
@@ -3063,7 +3522,9 @@ function computeSnap(skip, x, y, w, h) {
     return {x: Math.round(snapX), y: Math.round(snapY), guides};
 }
 
-function computeSnapResize(skip, x, y, w, h, ratio) {
+// `minPx` = plancher de dimension : 64 px pour une fenêtre vidéo (défaut historique), plus bas
+// pour un objet posé — une pastille, un petit logo sont légitimes.
+function computeSnapResize(skip, x, y, w, h, ratio, minPx) {
     // Snap uniquement le coin bas-droit (resize est ancré haut-gauche)
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
@@ -3074,26 +3535,64 @@ function computeSnapResize(skip, x, y, w, h, ratio) {
         yTargets.push(o.y, o.y + o.h);
     });
     const guides = [];
+    // ratio > 0 : objet à FORMAT CONTRAINT (fenêtre vidéo). Le coin bas-droit suit la souris,
+    // donc les DEUX bords bougent — mais un rectangle à ratio fixe ne peut satisfaire qu'UNE
+    // cible à la fois. On retient la plus PROCHE DU COIN (bord droit vs cibles verticales,
+    // bord bas vs cibles horizontales, distance en pixels canvas), puis on recalcule l'autre
+    // dimension au ratio : les deux axes bougent, un seul est aimanté.
+    // ⚠ Avant 0.111.0, les deux axes étaient aimantés INDÉPENDAMMENT : la hauteur déduite du
+    // ratio était écrasée par `snapH = t - y` sans toucher à la largeur → l'aimant DÉFORMAIT
+    // la fenêtre. Constaté en production (mur multiview-Vincent : PiP 6..9 à 1,79/1,77/1,82
+    // au lieu de 1,778), et propagé ensuite par « Remplir » qui conserve fidèlement le ratio
+    // courant d'une fenêtre déjà déformée.
+    if (ratio > 0) {
+        const MN = minPx || 64;
+        let best = null; // {d, w, h, axis}
+        xTargets.forEach(t => {
+            const d = Math.abs((x + w) - t);
+            if (d > SNAP_PX) return;
+            const nw = t - x, nh = Math.round(nw / ratio);
+            // Une cible dont la dimension DÉDUITE sortirait du cadre (ou passerait sous le
+            // plancher) n'est pas atteignable à ratio constant : on ne la propose pas.
+            if (nw < MN || nh < MN || y + nh > out_h) return;
+            if (!best || d < best.d) best = {d, w: nw, h: nh, axis: 'v'};
+        });
+        yTargets.forEach(t => {
+            const d = Math.abs((y + h) - t);
+            if (d > SNAP_PX) return;
+            const nh = t - y, nw = Math.round(nh * ratio);
+            if (nw < MN || nh < MN || x + nw > out_w) return;
+            if (!best || d < best.d) best = {d, w: nw, h: nh, axis: 'h'};
+        });
+        if (!best) return {w: Math.max(MN, w), h: Math.max(MN, h), guides};
+        guides.push(best.axis === 'v' ? {type: 'v', pos: x + best.w}
+                                      : {type: 'h', pos: y + best.h});
+        // L'autre bord peut tomber PILE sur une cible (grille régulière) : on trace aussi son
+        // repère, pour ne pas laisser croire que seul un côté est aligné.
+        if (best.axis === 'v') {
+            if (yTargets.some(t => Math.abs((y + best.h) - t) <= 1)) guides.push({type: 'h', pos: y + best.h});
+        } else if (xTargets.some(t => Math.abs((x + best.w) - t) <= 1)) {
+            guides.push({type: 'v', pos: x + best.w});
+        }
+        return {w: best.w, h: best.h, guides};
+    }
+    // ratio ≤ 0 : objet à format LIBRE (overlay, bloc VU) — chaque axe s'aimante seul, il n'y a
+    // aucune contrainte à respecter entre les deux. Sans ce cas, `snapW / 0` valait l'infini et
+    // le redimensionnement d'un overlay explosait.
     let bestDx = SNAP_PX + 1, snapW = w;
     xTargets.forEach(t => {
         const d = Math.abs((x + w) - t);
         if (d <= SNAP_PX && d < bestDx) { bestDx = d; snapW = t - x; }
     });
     if (bestDx <= SNAP_PX) guides.push({type: 'v', pos: x + snapW});
-    // ratio > 0 : la hauteur SUIT la largeur (fenêtre vidéo, aspect préservé). ratio ≤ 0 : objet
-    // à format LIBRE (overlay, bloc VU) — la hauteur part de celle demandée et se snappe seule.
-    // Sans ce cas, `snapW / 0` valait l'infini et le redimensionnement d'un overlay explosait.
-    let snapH = ratio > 0 ? Math.round(snapW / ratio) : h;
-    let bestDy = SNAP_PX + 1;
+    let snapH = h, bestDy = SNAP_PX + 1;
     yTargets.forEach(t => {
         const d = Math.abs((y + snapH) - t);
         if (d <= SNAP_PX && d < bestDy) { bestDy = d; snapH = t - y; }
     });
     if (bestDy <= SNAP_PX) guides.push({type: 'h', pos: y + snapH});
-    // Plancher : 64 px pour une fenêtre vidéo, 16 pour un objet libre (un overlay peut
-    // légitimement être petit — une pastille tally, un chiffre d'horloge).
-    const mn = ratio > 0 ? 64 : 16;
-    return {w: Math.max(mn, snapW), h: Math.max(mn, snapH), guides};
+    // Plancher 16 px : un overlay peut légitimement être petit (pastille tally, chiffre d'horloge).
+    return {w: Math.max(16, snapW), h: Math.max(16, snapH), guides};
 }
 
 // ─── Déployer la composition ─────────────────────────────────
@@ -3101,6 +3600,7 @@ function computeSnapResize(skip, x, y, w, h, ratio) {
 async function deployerEditor() {
     mwFabricBurst();
     if (editorVmid === null) return;
+    if (!mwPeutEcrire()) return;   // le bandeau dit déjà qui a la main ; on ne poste rien
     // Sérialise les déploiements : un appel pendant un POST en cours est rejoué à la
     // fin (jamais deux deploys concurrents, jamais un dernier changement perdu).
     if (deployerEditor._busy) { deployerEditor._pending = true; return; }
@@ -3136,6 +3636,13 @@ async function deployerEditor() {
         x: f.x, y: f.y,
         w: f.w % 2 === 0 ? f.w : f.w - 1,
         h: f.h % 2 === 0 ? f.h : f.h - 1,
+        // Format VOULU de la fenêtre (aspect du modèle de PiP, sinon de la source, sinon 16:9).
+        // Ce n'est PAS w/h : c'est la référence que « Remplir » et le resize à la poignée doivent
+        // respecter. Il n'était pas sérialisé → au rechargement `ratioOf` retombait en dernier
+        // recours sur la géométrie COURANTE d'une fenêtre déjà déformée, et « Remplir » figeait
+        // la déformation au lieu de la corriger. Non pixel-déterminant (cf. la liste noire de
+        // signature de cellule, app/compositor_fabric.py) : ne re-matérialise aucun shard.
+        ratio: (f.ratio && f.ratio > 0) ? f.ratio : undefined,
         show_label: !!f.show_label,
         show_tally: !!f.show_tally,
         label_proportional: !!f.label_proportional,
@@ -3148,13 +3655,13 @@ async function deployerEditor() {
         meter_channels: parseInt(f.meter_channels) || 0,
         meter_position: f.meter_position || 'right',
         meter_inside:   !!f.meter_inside,
-        meter_opacity:  Math.max(10, Math.min(100, parseInt(f.meter_opacity) || 70)),
+        meter_opacity:  Math.max(10, Math.min(100, numOu(f.meter_opacity, 70))),
         meter_scale:    f.meter_scale || 'dbfs',
         // Métadonnées ANC par fenêtre (absentes de la sérialisation avant 0.29.0 →
         // les flags étaient PERDUS au déploiement).
         ...Object.fromEntries(ANC_FLAGS.map(k => [k, !!f[k]])),
         anc_position:   f.anc_position || 'bottom',
-        anc_opacity:    Math.max(0, Math.min(100, parseInt(f.anc_opacity ?? 60))),
+        anc_opacity:    Math.max(0, Math.min(100, numOu(f.anc_opacity, 60))),
         // Modèle de PiP (résolu, embarqué dans le deploy_config → snapshoté avec les projets)
         template:       f.template || null,
         template_ref:   f.template_ref || '',
@@ -3191,9 +3698,27 @@ async function deployerEditor() {
     try {
         r = await fetch('/api/containers/' + editorVmid + '/deploy', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({type: 'multiview', params, path: '/opt/script/main.py'})
+            // `base_rev` : l'état sur lequel notre travail est bâti. Le serveur refuse (409) si
+            // QUELQU'UN D'AUTRE a écrit depuis — nos propres écritures ne nous bloquent jamais
+            // (le déploiement est asynchrone : on ne peut pas connaître la révision qu'on vient
+            // de produire). Absent = pas de garde, comportement historique.
+            body: JSON.stringify({type: 'multiview', params, path: '/opt/script/main.py',
+                                  ...(mwRev === null ? {} : {base_rev: mwRev})})
         });
     } catch(e) {}
+    if (r && r.status === 409) {
+        let j = {}; try { j = await r.json(); } catch (e) {}
+        if (j.error === 'config_perimee') {
+            // Le travail de l'autre est en base, le nôtre ne part pas : on le DIT, et on propose
+            // la seule issue honnête — recharger. Écraser en silence est exactement le défaut
+            // qu'on corrige ; réessayer en boucle le serait tout autant.
+            if (btn) { btn.disabled = false; btn.textContent = T('plugin.multiview.deploy'); }
+            deployerEditor._busy = false;
+            deployerEditor._pending = false;
+            mwConflit(j.par || '');
+            return;
+        }
+    }
     if (btn) { btn.disabled = false; btn.textContent = T('plugin.multiview.deploy'); }
     if (r && r.ok) {
         if (btn) {
@@ -3230,67 +3755,50 @@ function _alignRect(o, mode, ref, out_w, out_h) {
     o.y = Math.max(0, Math.min(out_h - o.h, o.y));
 }
 
-// Objet à sélection unique actuellement visé, ou null. L'ordre suit celui de canvasMouseUp.
-function _singleSelected() {
-    if (!editorParams) return null;
-    if (selectedOverlay >= 0 && (editorParams.overlays || [])[selectedOverlay])
-        return editorParams.overlays[selectedOverlay];
-    if (selectedBlock >= 0 && (editorParams.meter_blocks || [])[selectedBlock])
-        return editorParams.meter_blocks[selectedBlock];
-    if (selectedHist >= 0) {
-        const l = histList(selectedHistKind) || [];
-        if (l[selectedHist]) return l[selectedHist];
-    }
-    return null;
+
+// Membres de la sélection, RÉFÉRENCE EN DERNIER, avec l'objet géométrique de chacun.
+function _selMembres() {
+    return _selRefs().map(r => ({r, o: _refObj(r)})).filter(m => m.o);
+}
+// Persistance après un outil de disposition : une seule règle. Dès qu'un objet d'une autre
+// famille est touché, le déploiement (hot-apply /reconfigure + /overlays) couvre TOUT, fenêtres
+// comprises ; s'il n'y a que des fenêtres, on garde les POST /window ciblés — moins coûteux, et
+// surtout sans re-planification de tissu sur un mur shardé.
+function _persistMembres(membres) {
+    if (membres.some(m => m.r.k !== 'win')) { hotApplyFull(); return; }
+    membres.forEach(m => hotApplyWindow(m.r.i));
 }
 
 function aligner(mode) {
-    const out_w0 = editorParams ? editorParams.out_width : 0;
-    const out_h0 = editorParams ? editorParams.out_height : 0;
-    // Overlay / bloc / frise sélectionné : alignement sur le CANVAS (référence unique possible —
-    // ces objets ne se sélectionnent pas à plusieurs). Même canal de persistance que leur drag.
-    const so = _singleSelected();
-    if (so) {
-        _alignRect(so, mode, { x: 0, y: 0, w: out_w0, h: out_h0 }, out_w0, out_h0);
-        dessiner();
-        syncGeomFields();
-        hotApplyFull();
-        return;
-    }
-    if (!editorParams || selectedIdxs.length === 0) return;
-    const fc = editorParams.flux_config;
-    const out_w = editorParams.out_width;
-    const out_h = editorParams.out_height;
-
-    // Référence : primary si ≥2 sélectionnées, sinon le canvas
-    let ref;
-    if (selectedIdxs.length >= 2) {
-        const p = fc[primaryIdx()];
-        ref = {x: p.x, y: p.y, w: p.w, h: p.h};
-    } else {
-        ref = {x: 0, y: 0, w: out_w, h: out_h};
-    }
-    selectedIdxs.forEach(i => {
-        const f = fc[i];
-        if (selectedIdxs.length >= 2 && i === primaryIdx()) return;
-        _alignRect(f, mode, ref, out_w, out_h);
+    if (!editorParams) return;
+    const membres = _selMembres();
+    if (!membres.length) return;
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    // Référence : l'objet PRIMAIRE (dernier sélectionné) dès qu'il y a au moins deux membres,
+    // sinon le cadre. Règle inchangée — elle vaut désormais pour un mélange de familles.
+    const prim = membres[membres.length - 1].o;
+    const ref = (membres.length >= 2) ? {x: prim.x, y: prim.y, w: prim.w, h: prim.h}
+                                      : {x: 0, y: 0, w: ow, h: oh};
+    membres.forEach((m, k) => {
+        if (membres.length >= 2 && k === membres.length - 1) return;   // la référence ne bouge pas
+        _alignRect(m.o, mode, ref, ow, oh);
     });
     dessiner();
-    selectedIdxs.forEach(i => hotApplyWindow(i));
+    syncGeomFields();
+    _persistMembres(membres);
 }
-
 function matchSize(mode) {
-    if (!editorParams || selectedIdxs.length < 2) {
+    const membres = editorParams ? _selMembres() : [];
+    if (membres.length < 2) {
         mwFlash(T('plugin.multiview.flash_select2'));
         return;
     }
-    const fc = editorParams.flux_config;
-    const ref = fc[primaryIdx()];
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
-    selectedIdxs.forEach(i => {
-        if (i === primaryIdx()) return;
-        const f = fc[i];
+    const ref = membres[membres.length - 1].o;   // référence = dernier sélectionné, toutes familles
+    membres.forEach((m, k) => {
+        if (k === membres.length - 1) return;
+        const f = m.o;
         if (mode === 'w' || mode === 'both') {
             f.w = ref.w % 2 === 0 ? ref.w : ref.w - 1;
             if (f.x + f.w > out_w) f.x = out_w - f.w;
@@ -3301,58 +3809,82 @@ function matchSize(mode) {
         }
     });
     dessiner();
-    selectedIdxs.forEach(i => hotApplyWindow(i));
+    syncGeomFields();
+    _persistMembres(membres);
 }
 
 function distribuer(axis) {
-    if (!editorParams || selectedIdxs.length < 3) {
+    const membres = editorParams ? _selMembres() : [];
+    if (membres.length < 3) {
         mwFlash(T('plugin.multiview.flash_select3'));
         return;
     }
-    const fc = editorParams.flux_config;
-    const items = selectedIdxs.map(i => ({i, f: fc[i]}));
+    const items = membres.slice();   // trié ci-dessous : l'ordre de sélection n'est pas l'ordre à l'écran
     if (axis === 'h') {
-        items.sort((a, b) => a.f.x - b.f.x);
-        const x0 = items[0].f.x;
-        const xN = items[items.length - 1].f.x;
+        items.sort((a, b) => a.o.x - b.o.x);
+        const x0 = items[0].o.x;
+        const xN = items[items.length - 1].o.x;
         const step = (xN - x0) / (items.length - 1);
-        items.forEach((it, k) => { it.f.x = Math.round(x0 + step * k); });
+        items.forEach((it, k) => { it.o.x = Math.round(x0 + step * k); });
     } else {
-        items.sort((a, b) => a.f.y - b.f.y);
-        const y0 = items[0].f.y;
-        const yN = items[items.length - 1].f.y;
+        items.sort((a, b) => a.o.y - b.o.y);
+        const y0 = items[0].o.y;
+        const yN = items[items.length - 1].o.y;
         const step = (yN - y0) / (items.length - 1);
-        items.forEach((it, k) => { it.f.y = Math.round(y0 + step * k); });
+        items.forEach((it, k) => { it.o.y = Math.round(y0 + step * k); });
     }
     dessiner();
-    selectedIdxs.forEach(i => hotApplyWindow(i));
+    syncGeomFields();
+    _persistMembres(membres);
 }
 
-// Remplir : les fenêtres sélectionnées se TUILENT le long d'un axe (largeur en parts
-// égales, ou hauteur), dans leur ordre courant. L'AUTRE dimension suit le RATIO de
-// chaque fenêtre (pas de déformation) ; la fenêtre est centrée sur cet autre axe et,
-// si le ratio la ferait déborder, elle est réduite pour rester dans l'image.
-// Ex. 4 PiP (un à gauche, un à droite, deux au centre) → 4 colonnes égales, chacune
-// à la bonne hauteur 16:9 et centrée verticalement.
+// Remplir : les objets sélectionnés (toutes familles) se TUILENT le long d'un axe — largeur en
+// parts égales, ou hauteur — dans leur ordre À L'ÉCRAN. L'AUTRE dimension suit le RATIO de chaque
+// objet (pas de déformation) ; l'objet est centré sur cet autre axe et, si le ratio le ferait
+// déborder, il est réduit pour rester dans l'image.
+// Ex. 4 PiP (un à gauche, un à droite, deux au centre) → 4 colonnes égales, chacune à la bonne
+// hauteur 16:9 et centrée verticalement.
 function remplir(axis) {
-    if (!editorParams || selectedIdxs.length < 1) return;
-    const fc = editorParams.flux_config;
+    if (!editorParams) return;
     const out_w = editorParams.out_width, out_h = editorParams.out_height;
-    const items = selectedIdxs.map(i => fc[i]);
-    const n = items.length;
+    const membres = _selMembres();
+    if (!membres.length) return;
+    // UN SEUL objet à format LIBRE (texte, horloge, image, bloc VU, frise) : « remplir » ne peut
+    // pas vouloir dire tuiler — il est seul — et il n'a aucun ratio à préserver. Il prend donc
+    // toute la largeur (ou toute la hauteur) du cadre, l'autre dimension inchangée : le geste du
+    // bandeau. Une FENÊTRE seule, elle, garde son format (c'est de la vidéo) et suit le tuilage
+    // ci-dessous, qui la pose plein cadre à ratio constant.
+    if (membres.length === 1 && membres[0].r.k !== 'win') {
+        const o = membres[0].o;
+        if (axis === 'h') { o.x = 0; o.w = out_w & ~1; }
+        else              { o.y = 0; o.h = out_h & ~1; }
+        dessiner();
+        syncGeomFields();
+        _persistMembres(membres);
+        return;
+    }
+    const n = membres.length;
     const evDim = v => Math.max(2, Math.round(v) & ~1);   // dimension paire ≥ 2
     const evPos = v => Math.max(0, Math.round(v) & ~1);   // position paire ≥ 0
-    // Ratio d'une tuile : aspect du modèle de PiP effectif (format libre) prioritaire,
-    // sinon ratio source / géométrie courante (historique).
-    const ratioOf = f => mwTemplateAspect(f)
-                       || ((f.ratio && f.ratio > 0) ? f.ratio
-                       : (f.in_w && f.in_h) ? f.in_w / f.in_h
-                       : (f.h ? f.w / f.h : 16 / 9));
+    // Ratio d'un membre : pour une FENÊTRE, l'aspect du modèle de PiP (format libre) prioritaire,
+    // sinon le ratio voulu, sinon la source, sinon la géométrie. Pour les autres familles, leur
+    // forme courante — c'est la seule notion de proportion qu'elles aient.
+    const ratioOf = m => {
+        const o = m.o;
+        if (m.r.k === 'win') {
+            return mwTemplateAspect(o)
+                || ((o.ratio && o.ratio > 0) ? o.ratio
+                : (o.in_w && o.in_h) ? o.in_w / o.in_h
+                : (o.h ? o.w / o.h : 16 / 9));
+        }
+        return (o.h > 0) ? o.w / o.h : 16 / 9;
+    };
+    const items = membres.slice();
     if (axis === 'h') {
-        items.sort((a, b) => a.x - b.x);
+        items.sort((a, b) => a.o.x - b.o.x);
         const colW = Math.max(2, Math.floor(out_w / n) & ~1);
-        items.forEach((f, k) => {
-            const r = ratioOf(f);
+        items.forEach((m, k) => {
+            const f = m.o, r = ratioOf(m);
             f.x = k * colW;
             let w = (k === n - 1) ? (out_w - k * colW) : colW;
             let h = w / r;
@@ -3362,10 +3894,10 @@ function remplir(axis) {
             f.y = evPos((out_h - f.h) / 2);               // centré verticalement
         });
     } else {
-        items.sort((a, b) => a.y - b.y);
+        items.sort((a, b) => a.o.y - b.o.y);
         const rowH = Math.max(2, Math.floor(out_h / n) & ~1);
-        items.forEach((f, k) => {
-            const r = ratioOf(f);
+        items.forEach((m, k) => {
+            const f = m.o, r = ratioOf(m);
             f.y = k * rowH;
             let h = (k === n - 1) ? (out_h - k * rowH) : rowH;
             let w = h * r;
@@ -3376,9 +3908,9 @@ function remplir(axis) {
         });
     }
     dessiner();
-    selectedIdxs.forEach(i => hotApplyWindow(i));
+    syncGeomFields();
+    _persistMembres(membres);
 }
-
 // ─── Modèles de grille (templates) ───────────────────────────
 // Géométries prédéfinies appliquées aux fenêtres de la banque DANS L'ORDRE des
 // indices (sources/labels/meters/tsl conservés, comme appliquerLayout) ; le
@@ -3430,9 +3962,7 @@ function appliquerTemplate(key) {
     if (tpl.cells.length > fc.length) {
         mwFlash(T('plugin.multiview.flash_template_short').replace('{name}', key).replace('{n}', n));
     }
-    selectedIdxs = [];
-    selectedOverlay = -1;
-    selectedBlock = -1;
+    _selClear();
     dessiner();
     hotApplyFull();   // /reconfigure atomique à chaud (géométrie + hidden de toute la banque)
 }
@@ -3678,9 +4208,7 @@ function _chargerLayoutDansEditeur(l) {
         });
     });
     padBank();
-    selectedIdxs = [];
-    selectedOverlay = -1;
-    selectedBlock = -1;
+    _selClear();
     const hostnameEl = document.getElementById('ed_hostname');
     const hostname = hostnameEl ? hostnameEl.textContent.trim() : '';
     renderEditor(hostname);
