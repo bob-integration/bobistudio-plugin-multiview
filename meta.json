@@ -1,7 +1,11 @@
 {
-  "version": "0.111.0",
-  "date": "2026-08-15",
+  "version": "0.112.0",
+  "date": "2026-08-17",
   "changes": {
+    "`force_cpu` n'empêchait PAS le mur de détenir la carte (0.112.0)": [
+      "★★ La sonde GPU (`import cupy` + `getDeviceCount()`) s'exécutait au chargement du script, ~150 lignes AVANT que `force_cpu` soit lu. Or cet appel INITIALISE le pilote CUDA et ouvre `/dev/nvidia*` : un mur explicitement basculé en CPU épinglait donc quand même la carte, sans jamais s'en servir. Constaté en tentant un reset GPU refusé, les détenteurs étant des conteneurs multiview en repli CPU.",
+      "La sonde devient `_detect_gpu()`, appelée après `CONFIG` et UNIQUEMENT si `force_cpu` est faux. Le défaut du module est désormais CPU (`xp=np`, `GPU=False`, `cp=None`) : aucun chemin du chargement ne touche le pilote tant que le GPU n'est pas voulu. Comportement inchangé hors `force_cpu` (auto-détection identique) ; sous `force_cpu`, l'état exposé sur `:8080` (`gpu: false`) est le même qu'avant — seule la détention du périphérique disparaît."
+    ],
     "L'aimant DÉFORMAIT les fenêtres (0.111.0)": [
       "★ `computeSnapResize` aimantait les DEUX axes indépendamment : la hauteur déduite de la largeur au ratio était ensuite écrasée par le snap vertical (`snapH = t - y`) sans que la largeur bouge. Toute accroche verticale pendant un redimensionnement cassait donc le format de la fenêtre. Mesuré en base sur le mur multiview-Vincent : PiP 1..5 à 1,778 pile, PiP 6..9 à 1,789 / 1,767 / 1,822 / 1,820.",
       "Un rectangle à format contraint ne peut satisfaire qu'UNE cible à la fois : on retient désormais la plus PROCHE DU COIN (bord droit contre les cibles verticales, bord bas contre les horizontales) et on recalcule l'autre dimension au ratio — les deux bords bougent, un seul est aimanté. Une cible dont la dimension déduite sortirait du cadre n'est plus proposée. Les objets à format LIBRE (overlays, blocs VU) gardent leur aimant par axe.",

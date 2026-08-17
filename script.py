@@ -39,19 +39,32 @@ def _mxl_lib_state():
 # CPU/GPU (cf. chantier multiview-GPU). L'habillage PIL reste HÔTE/numpy (caché, optimisé en tuiles) ;
 # seules ses tuiles YUV résultantes sont uploadées pour le blend. Repli numpy = OCTET-IDENTIQUE à
 # avant (xp is np). Le gain GPU EXIGE le transfert épinglé+groupé (banc Phase 0 : sinon régression).
-try:
-    import cupy as cp
-    cp.cuda.runtime.getDeviceCount()      # lève si aucun device (pas de --gpus / image CPU)
-    xp = cp
-    GPU = True
+#
+# ⚠ 2026-08-17 — LA SONDE EST DIFFÉRÉE, PAS EXÉCUTÉE ICI. `import cupy` suivi de
+# `getDeviceCount()` INITIALISE le pilote CUDA et OUVRE /dev/nvidia* : un mur configuré en
+# `force_cpu` épinglait donc quand même la carte (le repli était lu ~150 lignes plus bas, bien
+# après la sonde). Conséquence mesurée : `nvidia-smi --gpu-reset` refusé, la carte restant
+# détenue par des conteneurs qui ne s'en servaient pas. Le défaut est CPU ; `_detect_gpu()` est
+# appelé après `CONFIG` (donc après le gate `force_cpu`), et lui seul touche le pilote.
+xp = np
+GPU = False
+_GPU_NAME = None
+cp = None
+
+
+def _detect_gpu():
+    """Sonde cupy (OUVRE /dev/nvidia*). N'appeler que si le GPU est réellement voulu."""
+    global cp, xp, GPU, _GPU_NAME
     try:
-        _GPU_NAME = cp.cuda.runtime.getDeviceProperties(0)["name"].decode("utf-8", "replace")
+        import cupy as _cp
+        _cp.cuda.runtime.getDeviceCount()   # lève si aucun device (pas de --gpus / image CPU)
+        cp, xp, GPU = _cp, _cp, True
+        try:
+            _GPU_NAME = _cp.cuda.runtime.getDeviceProperties(0)["name"].decode("utf-8", "replace")
+        except Exception:
+            _GPU_NAME = "GPU"
     except Exception:
-        _GPU_NAME = "GPU"
-except Exception:
-    xp = np
-    GPU = False
-    _GPU_NAME = None
+        cp, xp, GPU, _GPU_NAME = None, np, False, None
 
 def _to_xp(a):
     """numpy hôte → tableau backend (device si GPU, identité si CPU)."""
@@ -195,12 +208,11 @@ def set_log_level(niveau):
 
 
 # Filet anti-régression : `force_cpu` force le chemin numpy ÉPROUVÉ (xp=np) MÊME sur un nœud GPU,
-# sans changer d'image. Réassigne les globals AVANT toute boucle de rendu → repli instantané identique
-# au multiview 100% CPU si le chemin GPU posait souci. Absent/false → aucun effet (auto-détection).
-if CONFIG.get("force_cpu"):
-    xp = np
-    GPU = False
-    _GPU_NAME = None
+# sans changer d'image. Absent/false → auto-détection (sonde cupy). C'est ICI, et nulle part avant,
+# que le pilote NVIDIA est touché : sous `force_cpu` la sonde n'est JAMAIS lancée, donc le conteneur
+# ne détient aucun /dev/nvidia* et ne bloque plus un reset de carte (cf. commentaire de _detect_gpu).
+if not CONFIG.get("force_cpu"):
+    _detect_gpu()
 
 # ─── Kernel compose fusionné C (libbobi_mvk, chantier fusion numpy→C 2026-07) ─────────────
 # Chemin CPU uniquement (le GPU garde ses ElementwiseKernel fusionnés) : blend / blend_pre /
