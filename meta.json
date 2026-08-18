@@ -1,7 +1,12 @@
 {
-  "version": "0.112.0",
-  "date": "2026-08-17",
+  "version": "0.113.0",
+  "date": "2026-08-18",
   "changes": {
+    "Proxies réclamés pour des tuiles qui ne réduisent pas (0.113.0)": [
+      "★★ `_compute_proxy_needs()` publiait un besoin de proxy pour TOUTE source câblée, sans jamais vérifier que la taille demandée était plus petite que la source. Un assembleur de mur shardé recopie ses shards 1:1 : il réclamait donc à la pyramide un proxy aux dimensions exactes de la source — un flux qui ne serait qu'une copie, et que `_pick_proxy` n'aurait aucune raison de préférer au plein.",
+      "Conséquence côté orchestrateur : la pyramide du nœud, déjà à 16/16 de ses sources utiles, ne pouvait pas les câbler et levait « capacité insuffisante pour câbler 3 source(s) » toutes les 60 s. Une alarme insatisfaisable par construction — l'exploitant ne pouvait ni la corriger (le schéma plafonne à 16 entrées) ni la faire taire. Constatée à Horace le 2026-08-17 : 10 levées en 2 h sur un parc par ailleurs sain, occupant la place des alertes qui compteraient.",
+      "Une tuile ne publie plus de besoin quand elle est aussi grande ou plus grande que sa source. `in_w`/`in_h` sont les dimensions de TRAME résolues par l'orchestrateur depuis la base, donc le même espace que `_video_rect` : la comparaison vaut aussi pour une source entrelacée. Aucun effet sur les tuiles qui réduisent réellement — c'est-à-dire tout mur normal."
+    ],
     "`force_cpu` n'empêchait PAS le mur de détenir la carte (0.112.0)": [
       "★★ La sonde GPU (`import cupy` + `getDeviceCount()`) s'exécutait au chargement du script, ~150 lignes AVANT que `force_cpu` soit lu. Or cet appel INITIALISE le pilote CUDA et ouvre `/dev/nvidia*` : un mur explicitement basculé en CPU épinglait donc quand même la carte, sans jamais s'en servir. Constaté en tentant un reset GPU refusé, les détenteurs étant des conteneurs multiview en repli CPU.",
       "La sonde devient `_detect_gpu()`, appelée après `CONFIG` et UNIQUEMENT si `force_cpu` est faux. Le défaut du module est désormais CPU (`xp=np`, `GPU=False`, `cp=None`) : aucun chemin du chargement ne touche le pilote tant que le GPU n'est pas voulu. Comportement inchangé hors `force_cpu` (auto-détection identique) ; sous `force_cpu`, l'état exposé sur `:8080` (`gpu: false`) est le même qu'avant — seule la détention du périphérique disparaît."

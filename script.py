@@ -1572,6 +1572,19 @@ def _compute_proxy_needs():
             continue
         if w < 2 or h < 2:
             continue
+        # Une tuile qui ne RÉDUIT pas n'a rien à demander : un proxy à la taille native (ou plus
+        # grande) ne serait qu'une copie de la source, que `_pick_proxy` n'aurait aucune raison de
+        # préférer au plein. C'est le cas de TOUTES les tuiles d'un assembleur de mur shardé, qui
+        # recopie ses shards 1:1 — il réclamait donc à la pyramide autant de proxies inutiles
+        # qu'il a de shards. La pyramide, déjà pleine de ses sources utiles, ne pouvait pas les
+        # servir et alertait « capacité insuffisante pour câbler N source(s) » toutes les 60 s :
+        # une alarme insatisfaisable par construction, que l'exploitant ne pouvait ni corriger ni
+        # faire taire (constatée à Horace le 2026-08-17, 10 levées en 2 h sur un parc sain).
+        # in_w/in_h = dimensions de TRAME, résolues par l'orchestrateur depuis la DB (deploy.py) —
+        # même espace que `_video_rect`, la comparaison est donc directe, entrelacé compris.
+        sw = int(cfg.get("in_w") or 0); sh = int(cfg.get("in_h") or 0)
+        if sw > 0 and sh > 0 and w >= sw and h >= sh:
+            continue
         d = counts.setdefault(shm, {{}})
         d[(w, h)] = d.get((w, h), 0) + 1
     return {{shm: [[w, h, c] for (w, h), c in d.items()] for shm, d in counts.items()}}
