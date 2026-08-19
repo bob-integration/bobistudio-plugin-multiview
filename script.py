@@ -6834,6 +6834,37 @@ _frame_neuve = False   # trame courante : au moins une entrée a avancé (cf. `f
 # morte DANS NOTRE Instance) ⇒ ensure_input escalade sur une Instance MXL dédiée à cette entrée.
 _stale_drops = {{}}
 
+# PALIER DE RECONNEXION — i → instant monotone avant lequel on NE ROUVRE PAS l'entrée i.
+#
+# ★ INCIDENT HORACE 2026-08-19, et c'est un nœud entier qui est tombé. Deux proxys amont n'ont
+# jamais été produits (trois workers de la pyramide muets). Les shards qui les consommaient ont
+# appliqué « Reader périmé → largue et rouvre » À CHAQUE TRAME, sans palier, pendant 43 heures :
+# **7 802 100 et 9 012 600 tentatives** relevées sur une seule entrée chacun. Chaque cycle laissait
+# un descripteur de fichier ouvert dans libmxl (fuite corrigée en amont depuis, v1.1.0-rc1) — soit
+# ~2 Gio de mémoire NOYAU par conteneur, jusqu'à toucher `memory.max`. Le noyau s'est alors mis à
+# récupérer les pages du conteneur : la composition est passée de 13 ms à 7,2 s par trame, le mur
+# est tombé à 0,6 fps, et la sortie 2110 en aval s'est mise à répéter des trames.
+#
+# ★ CE QUE ÇA APPREND : le défaut n'était pas de reconnecter, c'était l'ABSENCE DE PALIER. Elle
+# transforme un dégât LOCAL et bénin (une tuile sans image) en dégât GLOBAL (le nœud, donc les
+# DEUX murs). Une boucle d'erreur à cadence trame est une arme, quel que soit son coût unitaire :
+# ici il aura suffi d'un fd de 200 octets.
+#
+# Les DEUX premières tentatives restent IMMÉDIATES — c'est tout l'intérêt du mécanisme, un
+# producteur qui recrée son flux doit être rattrapé en une trame. Seule une entrée qui échoue
+# EN BOUCLE ralentit. On ne renonce jamais : une source peut revenir.
+_reouvrir_apres = {{}}
+_REOUV_IMMEDIAT   = 2      # tentatives sans aucun délai (reconnexion « normale »)
+_REOUV_PALIER_MAX = 5.0    # plafond du palier, en secondes
+
+
+def _palier_reouverture(n):
+    """Délai avant la n-ième tentative de réouverture. 0 tant qu'on est en reconnexion normale."""
+    if n <= _REOUV_IMMEDIAT:
+        return 0.0
+    return min(_REOUV_PALIER_MAX, 0.1 * (2 ** min(n - _REOUV_IMMEDIAT, 6)))
+
+
 def ensure_input(i, want_path=None, want_w=None, want_h=None):
     """Ouvre/maintient la source de la fenêtre i. Si (want_path,want_w,want_h) est fourni
     (proxy choisi par _select_input), on ouvre CE shm ; sinon la source pleine câblée."""
@@ -6859,6 +6890,13 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
         _close_source(cur)
         with state_lock:
             if i < len(sources): sources[i] = None
+    # PALIER : une entrée qui échoue en boucle attend avant d'être retentée (cf. _reouvrir_apres).
+    # On rend None — la tuile reste en « no signal », exactement comme pendant l'attente d'une
+    # source absente. Le coût d'un cran de retard sur la reconnexion est invisible à l'image ; le
+    # coût de ne pas l'avoir a été un nœud.
+    _due = _reouvrir_apres.get(i)
+    if _due is not None and time.monotonic() < _due:
+        return None
     # ESCALADE : au 2ᵉ décrochage consécutif de la MÊME entrée, on ouvre sur une Instance dédiée
     # — cache vierge, donc résolution du flux SUR DISQUE (banc : seul chemin qui récupère quand le
     # GC est bloqué par une référence résiduelle de notre propre Instance).
@@ -6961,8 +6999,16 @@ def _drop_input(i, rd, raison=""):
     # le flux périmé reste résolvable PAR NOM tant qu'il n'est pas collecté — sans GC, la
     # réouverture retombe sur L'ORPHELIN qu'on vient de lâcher (mesuré : boucle drop/reopen à
     # ½ cadence sur un shard dont le proxy amont avait été recréé).
-    try: _gc_mxl()
-    except Exception: pass
+    # ⚠ GC SEULEMENT SUR LES PREMIÈRES TENTATIVES. `garbage_collect()` est GLOBAL au domaine MXL :
+    # il purge des générations entières, y compris celles d'AUTRES process. Mesuré le 2026-08-19 à
+    # Horace : pendant une reconnexion emballée, quatre flux VIVANTS du moteur 2110 (`_1`, `_5`,
+    # `_9`, `_13`) ont été collectés et le moteur a dû les recréer — tous leurs autres lecteurs
+    # sont alors restés accrochés à la génération morte, à 0 fps, sans le savoir. Le GC est utile
+    # pour lâcher une génération périmée AU MOMENT de la reconnexion ; le rejouer à cadence trame
+    # n'apporte rien et casse les voisins.
+    if _stale_drops.get(i, 0) < _REOUV_IMMEDIAT:
+        try: _gc_mxl()
+        except Exception: pass
     with state_lock:
         if i < len(sources): sources[i] = None
     # TRACE OBLIGATOIRE (niveau « warning » : passe même en log_level=info, et ce n'est PAS une
@@ -6971,11 +7017,17 @@ def _drop_input(i, rd, raison=""):
     # coûté le plus de temps sur l'incident du 2026-07-26 (shards totalement muets).
     _n = _stale_drops.get(i, 0) + 1
     _stale_drops[i] = _n
-    # Source réellement absente/arrêtée → on retente indéfiniment : on ne garde en « warning » que
-    # les 3 premières tentatives puis une ligne par centaine (RÈGLE 3 : pas de rafale au journal).
-    log("multiview: entrée %d (%s) — Reader PÉRIMÉ%s, reconnexion (tentative %d)%s"
+    # Source réellement absente/arrêtée → on retente indéfiniment, mais DE PLUS EN PLUS ESPACÉ
+    # (cf. _reouvrir_apres). Sans ce palier, une seule entrée manquante a produit 9 012 600
+    # tentatives en 43 h et tué le nœud.
+    _att = _palier_reouverture(_n)
+    _reouvrir_apres[i] = (time.monotonic() + _att) if _att else 0.0
+    # On ne garde en « warning » que les 3 premières tentatives puis une ligne par centaine
+    # (RÈGLE 3 : pas de rafale au journal).
+    log("multiview: entrée %d (%s) — Reader PÉRIMÉ%s, reconnexion (tentative %d%s)%s"
         % (i, _cur.get("path", "?") if isinstance(_cur, dict) else "?",
            (" : " + raison) if raison else "", _n,
+           ", prochaine dans %.1fs" % _att if _att else "",
            " → Instance DÉDIÉE" if _n >= 2 else ""),
         "warning" if (_n <= 3 or _n % 100 == 0) else "debug")
     _in_track.pop(i, None)
@@ -7431,7 +7483,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
             FLUX_CONFIG[:] = new_fc
             mv_state["inputs"][:] = new_inputs
             sources[:] = new_sources
-            _in_track.clear(); _stale_drops.clear()
+            _in_track.clear(); _stale_drops.clear(); _reouvrir_apres.clear()
             _stale_since.clear()
             if _fc_changed or _reconf_changed:
                 geom_dirty.set()
@@ -8302,7 +8354,7 @@ while True:
                 if _s is not None:
                     _close_source(_s)
             sources[:] = [None] * len(sources)
-            _in_track.clear(); _stale_drops.clear()
+            _in_track.clear(); _stale_drops.clear(); _reouvrir_apres.clear()
         time.sleep(0.02)
         continue   # source(s) refermée(s) → ensure_input rouvre proprement à la frame suivante
     if INPUT_LOCKED:
@@ -8575,6 +8627,7 @@ while True:
                 continue
             _stale_since.pop(i, None)   # lecture réussie → réarme le compteur de péremption
             _stale_drops.pop(i, None)   # … et l'escalade Instance dédiée (reconnexion réussie)
+            _reouvrir_apres.pop(i, None)  # … et le palier : une entrée qui relit est repartie
             fi = got[0]; src_view = got[2]
             _fi_in_trame[i] = fi
             # TRANSIT (arrivée) = âge de la trame d'entrée (now_tai − dernière écriture producteur),

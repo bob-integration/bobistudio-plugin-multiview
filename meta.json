@@ -1,7 +1,13 @@
 {
-  "version": "0.113.0",
-  "date": "2026-08-18",
+  "version": "0.114.0",
+  "date": "2026-08-19",
   "changes": {
+    "Palier sur la reconnexion d'entrée, et GC du domaine MXL borné (0.114.0)": [
+      "★★★ INCIDENT HORACE 2026-08-19 — un nœud entier perdu par une boucle d'erreur à cadence trame. Deux proxys amont n'étaient plus produits ; les shards qui les lisaient appliquaient « Reader périmé → largue et rouvre » À CHAQUE TRAME, sans palier : **7 802 100 et 9 012 600 tentatives** sur une seule entrée chacun, en 43 h. Chaque cycle laissait un fd ouvert dans libmxl (bug amont, corrigé en v1.1.0-rc1) → ~2 Gio de mémoire NOYAU par conteneur → `memory.max` atteint → le noyau récupère les pages du conteneur → compose à **7,2 s par trame** au lieu de 13 ms, mur à 0,6 fps, sortie 2110 en répétition.",
+      "Le défaut n'était PAS de reconnecter, c'était l'ABSENCE DE PALIER : elle transforme un dégât local et bénin (une tuile sans image) en dégât global (le nœud, donc les deux murs). Une boucle d'erreur à cadence trame est une arme quel que soit son coût unitaire — ici 200 octets.",
+      "`_reouvrir_apres` : les DEUX premières tentatives restent immédiates (c'est tout l'intérêt du mécanisme — rattraper en une trame un producteur qui recrée son flux), au-delà le délai double jusqu'à 5 s. On ne renonce jamais : une source peut revenir. La tuile reste en « no signal » pendant l'attente, exactement comme pour une source absente.",
+      "★★ `garbage_collect()` n'est plus appelé qu'aux premières tentatives. Il est GLOBAL au domaine MXL et purge des générations entières, y compris celles d'AUTRES process : mesuré le même jour, une reconnexion emballée a collecté quatre flux VIVANTS du moteur 2110 (`_1`, `_5`, `_9`, `_13`), que le moteur a dû recréer — laissant tous leurs autres lecteurs accrochés à la génération morte, à 0 fps, sans le savoir. Utile au moment de la reconnexion, nuisible rejoué à 50 Hz."
+    ],
     "Proxies réclamés pour des tuiles qui ne réduisent pas (0.113.0)": [
       "★★ `_compute_proxy_needs()` publiait un besoin de proxy pour TOUTE source câblée, sans jamais vérifier que la taille demandée était plus petite que la source. Un assembleur de mur shardé recopie ses shards 1:1 : il réclamait donc à la pyramide un proxy aux dimensions exactes de la source — un flux qui ne serait qu'une copie, et que `_pick_proxy` n'aurait aucune raison de préférer au plein.",
       "Conséquence côté orchestrateur : la pyramide du nœud, déjà à 16/16 de ses sources utiles, ne pouvait pas les câbler et levait « capacité insuffisante pour câbler 3 source(s) » toutes les 60 s. Une alarme insatisfaisable par construction — l'exploitant ne pouvait ni la corriger (le schéma plafonne à 16 entrées) ni la faire taire. Constatée à Horace le 2026-08-17 : 10 levées en 2 h sur un parc par ailleurs sain, occupant la place des alertes qui compteraient.",
