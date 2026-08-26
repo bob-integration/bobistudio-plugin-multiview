@@ -1,16 +1,24 @@
 // ─── i18n ─────────────────────────────────────────────────────
 // Catalogue plugin.multiview.* (plugins/multiview/i18n/<lang>.json, fusionné par
 // app/i18n.py ; préfixe `plugin.` exposé côté JS par js_catalog → window.t()).
-const T = (k) => (window.t ? window.t(k) : k);
+// `window.t` rend la CLÉ BRUTE quand elle manque du catalogue. Écrire ce retour tel quel dans le
+// DOM remplacerait le français du gabarit par « plugin.multiview.fps_target » à l'écran — vécu le
+// 2026-08-21 (catalogues écrasés par une écriture concurrente). On teste donc le retour.
+const T = (k, repli) => {
+    const v = window.t ? window.t(k) : k;
+    return (v && v !== k) ? v : (repli !== undefined ? repli : k);
+};
 
 // Traduit le HTML statique du composer (injecté par le shell Traitements) :
 // data-i18n (textContent), data-i18n-title, data-i18n-aria, data-i18n-ph.
 function mwApplyI18n(root) {
     const r = root || document;
-    r.querySelectorAll('[data-i18n]').forEach(n => { n.textContent = T(n.dataset.i18n); });
-    r.querySelectorAll('[data-i18n-title]').forEach(n => { n.title = T(n.dataset.i18nTitle); });
-    r.querySelectorAll('[data-i18n-aria]').forEach(n => { n.setAttribute('aria-label', T(n.dataset.i18nAria)); });
-    r.querySelectorAll('[data-i18n-ph]').forEach(n => { n.placeholder = T(n.dataset.i18nPh); });
+    // Le gabarit porte le français EN DUR : on ne l'écrase que si la clé est RÉSOLUE (2e argument
+    // = ce qui est déjà à l'écran), sinon une clé manquante afficherait son propre nom.
+    r.querySelectorAll('[data-i18n]').forEach(n => { n.textContent = T(n.dataset.i18n, n.textContent); });
+    r.querySelectorAll('[data-i18n-title]').forEach(n => { n.title = T(n.dataset.i18nTitle, n.title); });
+    r.querySelectorAll('[data-i18n-aria]').forEach(n => { n.setAttribute('aria-label', T(n.dataset.i18nAria, n.getAttribute('aria-label'))); });
+    r.querySelectorAll('[data-i18n-ph]').forEach(n => { n.placeholder = T(n.dataset.i18nPh, n.placeholder); });
 }
 
 // ─── État global ──────────────────────────────────────────────
@@ -2596,7 +2604,11 @@ function newOverlay(kind) {
         color: '#ffffff', bg_color: '', bg_opacity: 100,
         tally_index: 0, color_on: '#ffd400', bg_color_on: '#cc0000',
     };
-    if (kind === 'text')  Object.assign(o, { text: 'TEXTE', text_source: 'local', tsl_index: 0,
+    // Contenu par défaut d'un nouvel habillage texte : c'est une VALEUR (elle part dans la vidéo),
+    // mais une valeur de CRÉATION — comme « Nouveau dossier » d'un explorateur de fichiers. Elle
+    // suit donc la langue de celui qui crée, et ne bougera plus ensuite.
+    if (kind === 'text')  Object.assign(o, { text: T('plugin.multiview.new_text_default', 'TEXTE'),
+        text_source: 'local', tsl_index: 0,
         label_row: '', label_col: 0, tally_level: 0, tally_red: false, tally_green: false });
     if (kind === 'clock') Object.assign(o, {
         // tz vide = fuseau du MUR (réglage système). Une horloge neuve suit donc le mur, et

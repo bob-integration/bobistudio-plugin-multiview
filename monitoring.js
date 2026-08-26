@@ -33,7 +33,7 @@
 
         const srcNodes = sources.length
             ? sources.map((s, si) => `<div class="mvg-node mvg-src" id="g${gi}-s${si}">
-                    <div class="mvg-node-title">Source</div>
+                    <div class="mvg-node-title">${T('plugin.multiview.mvg_source', 'Source')}</div>
                     <code>${esc(s)}</code></div>`).join('')
             : `<div class="mvg-node mvg-src"><div class="meta">aucune source</div></div>`;
 
@@ -42,7 +42,7 @@
             const shared = s.kind === 'shared';
             return `<div class="mvg-node ${shared ? 'mvg-shared' : 'mvg-shard'}" id="g${gi}-h${hi}"
                          data-srcs="${srcs.join(',')}">
-                <div class="mvg-node-title">${shared ? 'Partagé' : 'Shard ' + (hi + 1)}
+                <div class="mvg-node-title">${shared ? T('plugin.multiview.mvg_shared', 'Partagé') : 'Shard ' + (hi + 1)}
                     <span class="mvg-n">${s.cells || 0} cell.</span></div>
                 <code>${esc(s.shm || '')}</code>
                 <div class="mvg-node-meta">${s.out_w || '?'}×${s.out_h || '?'} · ${fmtFmt(s.format)}</div>

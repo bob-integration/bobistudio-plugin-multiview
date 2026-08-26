@@ -192,7 +192,7 @@
             </div>
             <!-- Texte -->
             <div class="mw-editor-row ov-grp" data-kind="text">
-                <div class="field field-grow"><label for="ov_text" data-i18n="plugin.multiview.text">Texte</label><textarea id="ov_text" rows="2" onchange="onOverlayChange()" oninput="onOverlayTextInput()" style="resize:vertical;font-family:inherit;min-height:2.2em" title="Entrée = saut de ligne"></textarea></div>
+                <div class="field field-grow"><label for="ov_text" data-i18n="plugin.multiview.text">Texte</label><textarea id="ov_text" rows="2" onchange="onOverlayChange()" oninput="onOverlayTextInput()" style="resize:vertical;font-family:inherit;min-height:2.2em" data-i18n-title="plugin.multiview.text_enter_title" title="Entrée = saut de ligne"></textarea></div>
                 <!-- Insertion de variables %nom% dans le texte. Overlay de MUR : seul le groupe « Système »
                      est proposé — les variables de source décrivent la source d'une FENÊTRE, un mur n'en a pas. -->
                 <div class="field" id="ov_vars_grp"><label for="ov_vars" data-i18n="plugin.multiview.insert_var">Variable</label><select id="ov_vars"></select></div>
@@ -230,7 +230,7 @@
                 <button type="button" class="btn" onclick="chronoAction('reset')" data-i18n="plugin.multiview.chrono_btn_reset">⟲ Réinitialiser</button>
             </div>
             <div class="mw-editor-row" id="ov_cdwarn_grp" hidden>
-                <label class="field field-inline" for="ov_cd_warn" title="Décompte : passe en couleur d'alerte en approchant de 0"><input type="checkbox" class="ios-toggle" id="ov_cd_warn" onchange="onOverlayChange()"> <span data-i18n="plugin.multiview.cd_warn">Alerte fin de décompte</span></label>
+                <label class="field field-inline" for="ov_cd_warn" data-i18n-title="plugin.multiview.cd_warn_title" title="Décompte : passe en couleur d'alerte en approchant de 0"><input type="checkbox" class="ios-toggle" id="ov_cd_warn" onchange="onOverlayChange()"> <span data-i18n="plugin.multiview.cd_warn">Alerte fin de décompte</span></label>
                 <div class="field field-narrow"><label for="ov_cd_warn_orange" data-i18n="plugin.multiview.cd_warn_orange">Orange à (s)</label><input type="number" id="ov_cd_warn_orange" min="0" max="3600" onchange="onOverlayChange()"></div>
                 <div class="field field-color"><label for="ov_cd_color_orange" data-i18n="plugin.multiview.cd_color_orange">Couleur orange</label><input type="color" id="ov_cd_color_orange" onchange="onOverlayChange()"></div>
                 <div class="field field-narrow"><label for="ov_cd_warn_red" data-i18n="plugin.multiview.cd_warn_red">Rouge à (s)</label><input type="number" id="ov_cd_warn_red" min="0" max="3600" onchange="onOverlayChange()"></div>
@@ -351,9 +351,9 @@
         </div>
         <div class="row">
             <label class="field field-inline" for="ed_genlock" title="Verrouille la phase de sortie sur la grille PTP. Param structurel : un changement redéploie le container." data-i18n-title="plugin.multiview.genlock_title"><input type="checkbox" class="ios-toggle" id="ed_genlock"> Genlock</label>
-            <div class="field"><label for="ed_fps_target" title="Cadence visée pour ce mur. Si le multiview sature, le tissu de composition le découpe automatiquement pour tenir cette cadence (auto = budget global du cluster).">Cadence visée</label>
+            <div class="field"><label for="ed_fps_target" data-i18n="plugin.multiview.fps_target" data-i18n-title="plugin.multiview.fps_target_title" title="Cadence visée pour ce mur. Si le multiview sature, le tissu de composition le découpe automatiquement pour tenir cette cadence (auto = budget global du cluster).">Cadence visée</label>
                 <select id="ed_fps_target" onchange="onGlobalChange()">
-                    <option value="0">Auto (global)</option>
+                    <option value="0" data-i18n="plugin.multiview.fps_auto">Auto (global)</option>
                     <option value="50">50 fps</option>
                     <option value="25">25 fps</option>
                 </select></div>
