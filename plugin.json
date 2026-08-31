@@ -672,5 +672,9 @@
       ]
     }
   ],
-  "video_format": false
+  "video_format": false,
+  "events": {
+    "_comment": "Ports d'ÉVÉNEMENTS NMOS (IS-07), distincts des ports MXL de `wiring`. Déclaratif à dessein : le tally ne vivait que dans config_schema, donc aucun code ne pouvait savoir qu'un plugin en consomme sans deviner sur des noms de clés.",
+    "consumes": ["tally"]
+  }
 }
