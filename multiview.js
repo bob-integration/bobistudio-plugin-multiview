@@ -612,9 +612,12 @@ function _tslPopulateOverlaySelects() {
 // est maintenant une entité de `tally_levels` : il a un identifiant stable et un nom écrit par
 // l'exploitant, et le protocole qui le sert n'entre plus dans son identité.
 function _tallyLevelOptions() {
-    let opts = '<option value="0">— Aucun —</option>';
+    // ★ LA VALEUR EST L'UUID, LE LIBELLÉ PORTE LE NUMÉRO. Le numéro n'est qu'un rang
+    // d'affichage : réordonner les niveaux le réécrit, et une tuile qui l'aurait mémorisé
+    // pointerait ensuite un autre niveau — sans rien afficher d'anormal.
+    let opts = '<option value="">— Aucun —</option>';
     for (const n of (_tslNiveaux || [])) {
-        opts += `<option value="${n.id}">${n.id} — ${escapeHtmlMv(n.nom || '')}</option>`;
+        opts += `<option value="${n.uuid}">${n.num} — ${escapeHtmlMv(n.nom || '')}</option>`;
     }
     return opts;
 }
@@ -1016,7 +1019,7 @@ function newEntry(idx, hidden) {
         label_proportional: false,   // taille du label proportionnelle à la fenêtre
         tsl_index: 0,
         label_col: 0,
-        tally_level: 0,              // niveau de Tally (0 = aucun ; sinon un id `tally_levels`)
+        tally_level: '',             // niveau de Tally (vide = aucun ; sinon un UUID `tally_levels`)
         tally_red: false,
         tally_green: false,
         // Peak meters
