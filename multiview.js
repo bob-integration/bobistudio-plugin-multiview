@@ -530,7 +530,10 @@ const AUDIO_PATH_NONE = '__none__';
 // ─── Noms de colonnes labels + connexions TSL (= niveaux de Tally) ───────────
 let _tslLabelNames = ["Hostname", "MXL", "Label 2", "Label 3", "Label 4",
                       "Label 5", "Label 6", "Label 7", "Label 8", "Label 9"];
-let _tslConns = [];   // [{id, name, …}] connexions = niveaux de Tally (choix par cellule)
+let _tslConns = [];   // [{id, name, …}] connexions TSL (diagnostic ; PLUS les niveaux)
+// Niveaux de Tally du site — des ENTITÉS NOMMÉES (`tally_levels`), plus des bandes déduites
+// d'une base TSL. Une tuile en choisit un ; le service dit qui le sert.
+let _tslNiveaux = [];
 let _labelRows = [];  // [{shm, name}] lignes du tableau /labels (overlay texte central)
 
 async function _loadTslLabelNames() {
@@ -543,6 +546,10 @@ async function _loadTslLabelNames() {
         ]);
         if (rl.ok) _tslLabelNames = await rl.json();
         if (rc.ok) _tslConns = await rc.json();
+        try {
+            const rn = await fetch('/api/tally/levels');
+            if (rn.ok) _tslNiveaux = await rn.json();
+        } catch (e) { _tslNiveaux = []; }
         // Lignes = sources réelles (tous kinds) + lignes manuelles/texte (source_labels).
         const rows = [], seen = new Set();
         if (rs.ok) for (const s of (await rs.json())) {
@@ -569,18 +576,7 @@ function _tslPopulateSelects() {
     const tl = document.getElementById('ed_tally_level');
     if (tl) {
         const cur = tl.value;
-        // Niveaux de Tally = connexions actives, regroupées par bande tally_base → numéro 1-4.
-        // La connexion qui sert le niveau (et son Rouge/Vert) est définie dans le service.
-        const seen = new Set();
-        let opts = '<option value="0">— Aucun —</option>';
-        for (const c of (_tslConns || [])) {
-            if (!c.enabled) continue;
-            const n = Math.floor((c.tally_base || 0) / 3) + 1;
-            if (seen.has(n)) continue;
-            seen.add(n);
-            opts += `<option value="${n}">Niveau ${n} — ${escapeHtmlMv(c.name)}</option>`;
-        }
-        tl.innerHTML = opts;
+        tl.innerHTML = _tallyLevelOptions();
         tl.value = cur;
     }
     _tslPopulateOverlaySelects();
@@ -605,18 +601,22 @@ function _tslPopulateOverlaySelects() {
     const tl = document.getElementById('ov_tally_level');
     if (tl) {
         const cur = tl.value;
-        const seen = new Set();
-        let opts = '<option value="0">— Aucun —</option>';
-        for (const c of (_tslConns || [])) {
-            if (!c.enabled) continue;
-            const n = Math.floor((c.tally_base || 0) / 3) + 1;
-            if (seen.has(n)) continue;
-            seen.add(n);
-            opts += `<option value="${n}">Niveau ${n} — ${escapeHtmlMv(c.name)}</option>`;
-        }
-        tl.innerHTML = opts;
+        tl.innerHTML = _tallyLevelOptions();
         tl.value = cur;
     }
+}
+
+// ★ LES NIVEAUX SONT NOMMÉS, PLUS DÉDUITS. Ce menu listait `tally_base / 3 + 1` : le pas de 3
+// du mot de contrôle TSL 5.0, recopié dans l'éditeur du mur, avec pour effet un plafond de
+// quatre niveaux et des numéros qui bougeaient dès qu'une connexion changeait de base. Un niveau
+// est maintenant une entité de `tally_levels` : il a un identifiant stable et un nom écrit par
+// l'exploitant, et le protocole qui le sert n'entre plus dans son identité.
+function _tallyLevelOptions() {
+    let opts = '<option value="0">— Aucun —</option>';
+    for (const n of (_tslNiveaux || [])) {
+        opts += `<option value="${n.id}">${n.id} — ${escapeHtmlMv(n.nom || '')}</option>`;
+    }
+    return opts;
 }
 
 function escapeHtmlMv(s) {
@@ -1016,7 +1016,7 @@ function newEntry(idx, hidden) {
         label_proportional: false,   // taille du label proportionnelle à la fenêtre
         tsl_index: 0,
         label_col: 0,
-        tally_level: 0,              // niveau de Tally (0 = aucun ; 1-4 = bande tally_base)
+        tally_level: 0,              // niveau de Tally (0 = aucun ; sinon un id `tally_levels`)
         tally_red: false,
         tally_green: false,
         // Peak meters

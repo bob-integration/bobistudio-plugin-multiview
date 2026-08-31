@@ -616,7 +616,7 @@
     ],
     "TSL : modèle « niveau de Tally » + couleurs Rouge/Vert par cellule (0.22.0)": [
       "Config tally par fenêtre repensée côté opérateur : on choisit une « Colonne » (label) et un « Niveau de Tally » (1-4), puis les couleurs (Aucune / Rouge / Vert / Rouge + Vert). On ne voit plus TT/LH/RH ni de connexion. Remplace les anciens sélecteurs Tally L/R.",
-      "Le service mappe « quelle connexion sert quel niveau de Tally » (bande tally_base) et définit Rouge/Vert PAR connexion (colonnes « Rouge ← champ » / « Vert ← champ », défaut TT/LH). Plusieurs productions = plusieurs niveaux ; un niveau est réassignable côté service sans toucher les multiviews.",
+      "Un niveau de Tally est une entité nommée du site (Réglages → Labels & Tally), pas une bande déduite d'un protocole. Le service dit QUI le sert : une connexion TSL en alimente un, et ses colonnes « Rouge ← champ » / « Vert ← champ » (défaut TT/LH) disent seulement où l'afficheur d'en face attend chaque couleur. Un niveau a plusieurs états — l'ambre est le cumul du rouge et du vert. Plusieurs productions = plusieurs niveaux ; un niveau est réassignable côté service sans toucher les multiviews.",
       "label_col + la config tally sont maintenant inclus dans le déploiement (corrige un trou : ils n'étaient pas persistés).",
       "Choix Centralisé / TSL Direct conservé. Offset index TSL corrigé à 8 (service + parser local). En Direct, Rouge=TT / Vert=LH (couleur forcée). Le distributor n'envoie rien aux multiviews en mode Direct."
     ],
