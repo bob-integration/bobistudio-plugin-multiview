@@ -498,7 +498,7 @@ _TOUTES = bobimxl.MXL_GRAIN_VALID_SLICES_ALL   # cf. lecture des entrées : le m
 # chrome/VU/horloges par bande en VRAM (opérandes déjà résidents), D2H par bande épinglé + commit
 # progressif. Sémantique STRICTEMENT identique au slice CPU (_compose_bands est commun : attentes
 # get_slice, budgets PAR TUILE, backoff, ciblage flow — seuls les octets transitent par la VRAM).
-# GATE : ne PAS activer en prod avant le verdict du banc dl360-2/T4 (tools/bench_gpu_slice_gate.py)
+# GATE : ne PAS activer en prod avant le verdict du banc de référence (bi-Xeon + T4) (tools/bench_gpu_slice_gate.py)
 # — le banc Phase 0 a montré que des transferts fins mal faits font RÉGRESSER le GPU. Sans le flag,
 # comportement inchangé : GPU ⇒ whole-frame (upload groupé), le repli documenté docs/chantiers/TISSU_SLICE.md §4.
 GPU_SLICE_REQ = _as_bool(CONFIG.get("gpu_slice", False))
@@ -1579,7 +1579,7 @@ def _compute_proxy_needs():
         # qu'il a de shards. La pyramide, déjà pleine de ses sources utiles, ne pouvait pas les
         # servir et alertait « capacité insuffisante pour câbler N source(s) » toutes les 60 s :
         # une alarme insatisfaisable par construction, que l'exploitant ne pouvait ni corriger ni
-        # faire taire (constatée à Horace le 2026-08-17, 10 levées en 2 h sur un parc sain).
+        # faire taire (constatée en exploitation le 2026-08-17, 10 levées en 2 h sur un parc sain).
         # in_w/in_h = dimensions de TRAME, résolues par l'orchestrateur depuis la DB (deploy.py) —
         # même espace que `_video_rect`, la comparaison est donc directe, entrelacé compris.
         sw = int(cfg.get("in_w") or 0); sh = int(cfg.get("in_h") or 0)
@@ -1834,7 +1834,7 @@ class Handler(BaseHTTPRequestHandler):
                     # changement (keepalive) : marquer sale à chaque paquet re-bakait l'habillage
                     # PLEIN CADRE 10×/s (PIL + RGBA→YUV + upload GPU ≈ 25 ms) — chaque re-bake
                     # tombant dans une trame, le mur perdait le budget 20 ms (mesuré : mur 333
-                    # Horace, 28-36 fps au lieu de 50, `overlays` 13,7 ms dont ~7 de re-bake).
+                    # en exploitation, 28-36 fps au lieu de 50, `overlays` 13,7 ms dont ~7 de re-bake).
                     if tally_state.get(f"{{idx}}_{{slot}}") != color:
                         tally_state[f"{{idx}}_{{slot}}"] = color
                         changed = True; _cells_touchees.add(idx)
@@ -3895,7 +3895,7 @@ def _vh_sample(name, win, now, step):
         # déclenche jamais ; et comme `_vh_pick_path` rend le même chemin, la ré-ouverture
         # périodique ne se déclenche pas non plus (`st["path"] == want`). L'échantillonneur relit
         # alors éternellement le même grain.
-        # Symptôme observé en prod (Horace, frises du mur 361) : vignettes FIGÉES + bande
+        # Symptôme observé en prod (en exploitation, frises d'un mur de 361 tuiles) : vignettes FIGÉES + bande
         # d'événement « freeze » jaune sous la frise, alors que la boucle de mix — qui a, ELLE, sa
         # reconnexion depuis la 0.45.0 — affichait la source bien vivante (latence d'entrée 0,6 ms).
         # Deux Readers sur la même source rendant des verdicts opposés : signature du handle périmé.
@@ -5790,7 +5790,7 @@ for _n in range(2, 10):
 # `%nom%` ou `%nom:cible%` — la cible désigne un NŒUD par son nom. Sans elle, les variables
 # d'infra parlent du nœud qui porte ce mur, ce qui est le cas d'usage courant ; avec elle, un mur
 # de supervision peut afficher n'importe quel nœud du parc. Le nom d'un nœud comporte des tirets
-# (`dl360-1`), d'où leur admission dans l'argument mais pas dans le nom de variable.
+# (`noeud-1`), d'où leur admission dans l'argument mais pas dans le nom de variable.
 _VAR_RE = re.compile(r"%([a-zA-Z_][a-zA-Z0-9_]*)(?::([A-Za-z0-9_.\-]+))?%")
 
 def _texts_with_vars():
@@ -6865,7 +6865,7 @@ _stale_drops = {{}}
 
 # PALIER DE RECONNEXION — i → instant monotone avant lequel on NE ROUVRE PAS l'entrée i.
 #
-# ★ INCIDENT HORACE 2026-08-19, et c'est un nœud entier qui est tombé. Deux proxys amont n'ont
+# ★ INCIDENT EN EXPLOITATION 2026-08-19, et c'est un nœud entier qui est tombé. Deux proxys amont n'ont
 # jamais été produits (trois workers de la pyramide muets). Les shards qui les consommaient ont
 # appliqué « Reader périmé → largue et rouvre » À CHAQUE TRAME, sans palier, pendant 43 heures :
 # **7 802 100 et 9 012 600 tentatives** relevées sur une seule entrée chacun. Chaque cycle laissait
@@ -7030,7 +7030,7 @@ def _drop_input(i, rd, raison=""):
     # ½ cadence sur un shard dont le proxy amont avait été recréé).
     # ⚠ GC SEULEMENT SUR LES PREMIÈRES TENTATIVES. `garbage_collect()` est GLOBAL au domaine MXL :
     # il purge des générations entières, y compris celles d'AUTRES process. Mesuré le 2026-08-19 à
-    # Horace : pendant une reconnexion emballée, quatre flux VIVANTS du moteur 2110 (`_1`, `_5`,
+    # En exploitation : pendant une reconnexion emballée, quatre flux VIVANTS du moteur 2110 (`_1`, `_5`,
     # `_9`, `_13`) ont été collectés et le moteur a dû les recréer — tous leurs autres lecteurs
     # sont alors restés accrochés à la génération morte, à 0 fps, sans le savoir. Le GC est utile
     # pour lâcher une génération périmée AU MOMENT de la reconnexion ; le rejouer à cadence trame
@@ -7225,7 +7225,7 @@ class MvControlHandler(BaseHTTPRequestHandler):
             self.send_response(400); self.end_headers(); return
         _TELEMETRIE.clear()
         # `noeuds` (au pluriel) porte TOUS les nœuds nommés : c'est lui qui permet à un mur de
-        # supervision d'afficher une autre machine que la sienne (`%cpu_noeud:dl360-1%`). L'oublier
+        # supervision d'afficher une autre machine que la sienne (`%cpu_noeud:noeud-1%`). L'oublier
         # ici faisait silencieusement retomber tout ciblage sur « — ».
         for _sec in ("noeud", "orchestrateur", "noeuds"):
             if isinstance(b.get(_sec), dict):
@@ -8265,7 +8265,7 @@ REOPEN_STALE_S = 2.0
 STALE_REOPEN_MS = 5000.0
 
 # GC CPython DISCIPLINÉ (chantier tissu slice — grain tardif de l'assembleur) : le collect gen2
-# AUTOMATIQUE tombe N'IMPORTE OÙ dans le cycle (mesuré au banc dl360-1 : pause strictement
+# AUTOMATIQUE tombe N'IMPORTE OÙ dans le cycle (mesuré au banc de référence : pause strictement
 # périodique ~34 s → le grain de sortie sort +1 epoch en retard, phase +25 ms, le TX aval rate
 # sa fenêtre → compteur late / trou d'1 trame quand le rejeu ne couvre pas). Remède standard :
 # on COUPE le déclenchement automatique et on collecte MANUELLEMENT au point sûr (fin de cycle,

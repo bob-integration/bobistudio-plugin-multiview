@@ -4,7 +4,7 @@
 > (0.24.x/0.25.x, cadence « flow ») est la RÉFÉRENCE SÉMANTIQUE — le GPU ne change QUE le
 > lieu des octets (VRAM), jamais le protocole (attentes get_slice, budgets par tuile,
 > backoff, ciblage d'index d'epoch, commit progressif).
-> État : squelette 0.26.0 (flag `gpu_slice`, défaut OFF) ; **banc gate PASSÉ (T4 dl360Horace,
+> État : squelette 0.26.0 (flag `gpu_slice`, défaut OFF) ; **banc gate PASSÉ (T4 sur noeud de référence,
 > sous charge) : verdict GO-MEGA-135** — bandes fines 36 l REJETÉES (trame 15,26 ms, le coût de
 > LANCEMENT des kernels domine : compose 10,6 ms à 30 lancements vs 0,71 ms pleine trame) ;
 > méga-bandes 135 l : trame 5,66 ms, 1ʳᵉ bande 0,58 ms, surcoût transferts +0,12 ms, D2H
@@ -29,7 +29,7 @@ entrées, une bande de sortie tire ~552 Ko (4 tuiles). 30 bandes ⇒ 30 H2D de ~
 (~5-15 µs/appel cuMemcpyAsync + sync), pas par les octets — c'est exactement ce que le
 banc gate doit trancher.
 
-## (a) H2D par bande : LE banc gate (GO/NO-GO, dl360-2/T4)
+## (a) H2D par bande : LE banc gate (GO/NO-GO, nœud de référence + T4)
 
 Script : `tools/bench_gpu_slice_gate.py` (autonome, cupy seul, aucun accès MXL/orchestrateur).
 
@@ -141,7 +141,7 @@ au banc réel (pas au banc gate) :
 - Entrées entrelacées / whole-frame : passent par `_place_batch` (upload groupé) comme avant,
   puis `_compose_bands` les traite en dégénéré (totalSlices=1) — cas mixte couvert.
 
-## Lancer le banc demain (dl360-2/T4)
+## Lancer le banc demain (nœud de référence + T4)
 
 ```bash
 # dans le conteneur GPU (image bobi-compute-gpu, cupy présent) :

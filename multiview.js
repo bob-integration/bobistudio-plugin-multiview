@@ -1437,7 +1437,7 @@ function refreshHistPanel() {
             const base = s.label ? `${s.hostname} → ${s.label} (${s.shm})` : `${s.hostname} → ${s.shm}`;
             // Libellé d'exploitation du niveau courant devant le nom technique (window.SourceLabels,
             // sélecteur global de la barre de navigation) — l'opérateur choisit sa source sous le nom
-            // qu'il lui donne, pas sous « 2110-io-dl360_3 ».
+            // qu'il lui donne, pas sous « 2110-io-noeud_3 ».
             const txt = window.SourceLabels ? window.SourceLabels.display(s.shm, base) : base;
             return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
         });

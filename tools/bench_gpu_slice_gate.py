@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 BOBI SAS, France
-"""Banc GATE GO/NO-GO du slice GPU multiview (TISSU_SLICE_GPU.md §a) — dl360-2/T4.
+"""Banc GATE GO/NO-GO du slice GPU multiview (TISSU_SLICE_GPU.md §a) — nœud de référence + T4.
 
 Autonome : cupy + numpy seulement (aucun MXL/orchestrateur). Mesure, pour une trame
 composite (défaut 1080p 4:2:2 8 bits, 4 tuiles d'entrée 1080p) :
