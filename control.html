@@ -138,7 +138,12 @@
                 <label class="field field-inline" id="ed_label_proportional_row" for="ed_label_proportional" title="La taille du texte suit la taille de la fenêtre : = taille définie quand la fenêtre fait 1/4 de l'image, grossit/réduit ensuite." data-i18n-title="plugin.multiview.label_proportional_title"><input type="checkbox" class="ios-toggle" id="ed_label_proportional" onchange="onEntryChange()"> <span data-i18n="plugin.multiview.label_proportional">Taille du texte proportionnelle</span></label>
                 <div class="field field-narrow" id="ed_tsl_index_row"><label for="ed_tsl_index" data-i18n="plugin.multiview.tsl_index">TSL index</label><input type="number" id="ed_tsl_index" min="0" max="65535" onchange="onEntryChange()"></div>
                 <div class="field field-narrow"><label for="ed_label_col" data-i18n="plugin.multiview.label_col">Colonne label</label><select id="ed_label_col" onchange="onEntryChange()"></select></div>
-                <div class="field field-narrow"><label for="ed_tally_level" data-i18n="plugin.multiview.tally_level">Niveau de Tally</label><select id="ed_tally_level" onchange="onEntryChange()"></select></div>
+                <!-- ⚠ NI <select>, NI <label for>. Le niveau de tally se CUMULE : une tuile peut suivre
+                     plusieurs chaînes de destination. Le contrôle de catalogue (chooseList) est monté
+                     ici — une liste déroulante pour ajouter, des puces pour dire l'état. Et pas de
+                     « for » vers un div : un label ne s'associe qu'à un contrôle, et pointer ailleurs
+                     ne fait rien de bon. -->
+                <div class="field"><span class="mv-champ-t" data-i18n="plugin.multiview.tally_level">Niveaux de Tally</span><div id="ed_tally_level"></div></div>
                 <div class="field field-narrow"><label for="ed_tally_colors" data-i18n="plugin.multiview.tally_colors">Couleurs</label><select id="ed_tally_colors" onchange="onEntryChange()">
                     <option value="none" data-i18n="plugin.multiview.tally_none">Aucune</option>
                     <option value="red" data-i18n="plugin.multiview.tally_red">Rouge</option>
@@ -202,7 +207,7 @@
                 <!-- Mode Central : ligne + colonne du tableau /labels (texte) + niveau + couleurs (allumage) -->
                 <div class="field" id="ov_label_row_grp"><label for="ov_label_row" data-i18n="plugin.multiview.label_row">Ligne</label><select id="ov_label_row" onchange="onOverlayChange()"></select></div>
                 <div class="field field-narrow" id="ov_label_col_grp"><label for="ov_label_col" data-i18n="plugin.multiview.label_col">Colonne label</label><select id="ov_label_col" onchange="onOverlayChange()"></select></div>
-                <div class="field field-narrow" id="ov_tally_level_grp"><label for="ov_tally_level" data-i18n="plugin.multiview.tally_level">Niveau de Tally</label><select id="ov_tally_level" onchange="onOverlayChange()"></select></div>
+                <div class="field" id="ov_tally_level_grp"><span class="mv-champ-t" data-i18n="plugin.multiview.tally_level">Niveaux de Tally</span><div id="ov_tally_level"></div></div>
                 <div class="field field-narrow" id="ov_tally_colors_grp"><label for="ov_tally_colors" data-i18n="plugin.multiview.tally_colors">Couleurs</label><select id="ov_tally_colors" onchange="onOverlayChange()">
                     <option value="none" data-i18n="plugin.multiview.tally_none">Aucune</option>
                     <option value="red" data-i18n="plugin.multiview.tally_red">Rouge</option>

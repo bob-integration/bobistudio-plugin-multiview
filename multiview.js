@@ -573,12 +573,9 @@ function _tslPopulateSelects() {
         lc.innerHTML = _tslLabelNames.map((n, i) => `<option value="${i}">${i} — ${n}</option>`).join('');
         lc.value = cur;
     }
-    const tl = document.getElementById('ed_tally_level');
-    if (tl) {
-        const cur = tl.value;
-        tl.innerHTML = _tallyLevelOptions();
-        tl.value = cur;
-    }
+    // Le contrôle de catalogue tient sa propre liste : on la lui repasse quand elle change.
+    const _c = _tallyCtl('ed_tally_level', onEntryChange);
+    if (_c) _c.options(_tallyLevelOptions());
     _tslPopulateOverlaySelects();
 }
 
@@ -598,12 +595,8 @@ function _tslPopulateOverlaySelects() {
         lc.innerHTML = _tslLabelNames.map((n, i) => `<option value="${i}">${i} — ${escapeHtmlMv(n)}</option>`).join('');
         lc.value = cur;
     }
-    const tl = document.getElementById('ov_tally_level');
-    if (tl) {
-        const cur = tl.value;
-        tl.innerHTML = _tallyLevelOptions();
-        tl.value = cur;
-    }
+    const _co = _tallyCtl('ov_tally_level', onOverlayChange);
+    if (_co) _co.options(_tallyLevelOptions());
 }
 
 // ★ LES NIVEAUX SONT NOMMÉS, PLUS DÉDUITS. Ce menu listait `tally_base / 3 + 1` : le pas de 3
@@ -611,15 +604,35 @@ function _tslPopulateOverlaySelects() {
 // quatre niveaux et des numéros qui bougeaient dès qu'une connexion changeait de base. Un niveau
 // est maintenant une entité de `tally_levels` : il a un identifiant stable et un nom écrit par
 // l'exploitant, et le protocole qui le sert n'entre plus dans son identité.
+// ★ LA VALEUR EST L'UUID, LE LIBELLÉ PORTE LE NUMÉRO. Le numéro n'est qu'un rang d'affichage :
+// réordonner les niveaux le réécrit, et une tuile qui l'aurait mémorisé pointerait ensuite un
+// autre niveau — sans rien afficher d'anormal.
 function _tallyLevelOptions() {
-    // ★ LA VALEUR EST L'UUID, LE LIBELLÉ PORTE LE NUMÉRO. Le numéro n'est qu'un rang
-    // d'affichage : réordonner les niveaux le réécrit, et une tuile qui l'aurait mémorisé
-    // pointerait ensuite un autre niveau — sans rien afficher d'anormal.
-    let opts = '<option value="">— Aucun —</option>';
-    for (const n of (_tslNiveaux || [])) {
-        opts += `<option value="${n.uuid}">${n.num} — ${escapeHtmlMv(n.nom || '')}</option>`;
+    return (_tslNiveaux || []).map(n => ({value: n.uuid, label: `${n.num} — ${n.nom || ''}`}));
+}
+
+// ★ LE CONTRÔLE DE CATALOGUE, MONTÉ UNE FOIS PAR CHAMP. Le tally se CUMULE : une tuile peut
+// suivre plusieurs chaînes de destination, et un `<select>` obligeait à n'en choisir qu'une.
+// On garde l'objet rendu par `chooseList` sur l'élément lui-même : c'est lui qui détient la
+// valeur, et la relire dans le DOM obligerait à connaître son rendu.
+function _tallyCtl(id, onChange) {
+    const el = document.getElementById(id);
+    if (!el || !window.MXLControls) return null;
+    if (!el._ctl) {
+        el._ctl = window.MXLControls.chooseList(el, {
+            options: _tallyLevelOptions(), valeurs: [],
+            vide: '— aucun —', ajouter: '+ Ajouter un niveau…', tout: 'tous choisis',
+            onChange: () => onChange(),
+        });
     }
-    return opts;
+    return el._ctl;
+}
+
+// Une valeur héritée peut être un scalaire (un UUID seul, ou un vieux numéro) : on la ramène
+// TOUJOURS à une liste. Sans ça, une chaîne serait parcourue caractère par caractère.
+function _tallyListe(v) {
+    if (Array.isArray(v)) return v.filter(Boolean).map(String);
+    return (v === null || v === undefined || v === '' || v === 0) ? [] : [String(v)];
 }
 
 function escapeHtmlMv(s) {
@@ -633,7 +646,7 @@ function _tslSetSelects(labelCol, tallyLevel, tallyColors) {
     const tl = document.getElementById('ed_tally_level');
     const tk = document.getElementById('ed_tally_colors');
     if (lc) lc.value = String(labelCol ?? 0);
-    if (tl) tl.value = String(tallyLevel ?? 0);
+    if (tl && tl._ctl) tl._ctl.set(_tallyListe(tallyLevel));
     if (tk) tk.value = tallyColors || 'none';
 }
 
@@ -1019,7 +1032,7 @@ function newEntry(idx, hidden) {
         label_proportional: false,   // taille du label proportionnelle à la fenêtre
         tsl_index: 0,
         label_col: 0,
-        tally_level: '',             // niveau de Tally (vide = aucun ; sinon un UUID `tally_levels`)
+        tally_level: [],             // niveaux de Tally suivis (UUID `tally_levels`) — le tally se cumule
         tally_red: false,
         tally_green: false,
         // Peak meters
@@ -1555,7 +1568,7 @@ function refreshEntryPanel() {
     document.getElementById('ed_label_proportional').checked = !!f.label_proportional;
     document.getElementById('ed_tsl_index').value    = f.tsl_index || 0;
     const _colors = f.tally_red && f.tally_green ? 'both' : f.tally_red ? 'red' : f.tally_green ? 'green' : 'none';
-    _tslSetSelects(f.label_col ?? 0, f.tally_level ?? '', _colors);
+    _tslSetSelects(f.label_col ?? 0, f.tally_level, _colors);
     document.getElementById('ed_x').value = f.x;
     document.getElementById('ed_y').value = f.y;
     document.getElementById('ed_w').value = f.w;
@@ -1703,11 +1716,12 @@ function onEntryChange() {
     // ⚠ PAS DE `parseInt` : un niveau est un UUID depuis le dénouement, et `parseInt` d'un
     // UUID rend NaN — donc `|| 0`, donc AUCUN niveau. Le menu proposait bien les bons
     // identifiants, mais toute modification d'une tuile effaçait son tally, en silence.
-    f.tally_level    = document.getElementById('ed_tally_level').value || '';
+    const _tlc = _tallyCtl('ed_tally_level', onEntryChange);
+    f.tally_level    = _tlc ? _tlc.value() : [];
     const _colors    = document.getElementById('ed_tally_colors').value || 'none';
     f.tally_red      = (_colors === 'red'   || _colors === 'both');
     f.tally_green    = (_colors === 'green' || _colors === 'both');
-    f.show_tally     = !!(f.tally_level && (f.tally_red || f.tally_green));   // gate de rendu
+    f.show_tally     = !!(f.tally_level.length && (f.tally_red || f.tally_green));  // gate de rendu
     f.meter_channels = parseInt(document.getElementById('ed_meter_channels').value) || 0;
     f.meter_position = document.getElementById('ed_meter_position').value || 'right';
     f.meter_inside   = document.getElementById('ed_meter_inside').value === '1';
@@ -2547,7 +2561,7 @@ function hotApplyWindow(idx) {
             label_proportional: !!f.label_proportional,
             tsl_index:      f.tsl_index ?? 0,
             label_col:      f.label_col ?? 0,
-            tally_level:    f.tally_level ?? '',
+            tally_level:    _tallyListe(f.tally_level),   // ⚠ jamais `?? ''` : c'est une LISTE
             tally_red:      !!f.tally_red,
             tally_green:    !!f.tally_green,
             meter_channels: f.meter_channels ?? 0,
@@ -2615,7 +2629,7 @@ function newOverlay(kind) {
     // suit donc la langue de celui qui crée, et ne bougera plus ensuite.
     if (kind === 'text')  Object.assign(o, { text: T('plugin.multiview.new_text_default', 'TEXTE'),
         text_source: 'local', tsl_index: 0,
-        label_row: '', label_col: 0, tally_level: '', tally_red: false, tally_green: false });
+        label_row: '', label_col: 0, tally_level: [], tally_red: false, tally_green: false });
     if (kind === 'clock') Object.assign(o, {
         // tz vide = fuseau du MUR (réglage système). Une horloge neuve suit donc le mur, et
         // n'affiche une autre ville que si l'utilisateur le demande explicitement.
@@ -2682,7 +2696,7 @@ function serializeOverlays() {
             text: o.text || '', text_source: o.text_source || 'local',
             tsl_index: parseInt(o.tsl_index) || 0,
             label_row: o.label_row || '', label_col: parseInt(o.label_col) || 0,
-            tally_level: o.tally_level || '',
+            tally_level: _tallyListe(o.tally_level),
             tally_red: !!o.tally_red, tally_green: !!o.tally_green });
         if (o.kind === 'clock') Object.assign(base, {
             clock_source: o.clock_source || 'ptp',
@@ -3255,7 +3269,8 @@ function refreshOverlayPanel() {
     _tslPopulateOverlaySelects();
     _ovSetVal('ov_label_row', o.label_row || '');
     _ovSetVal('ov_label_col', o.label_col || 0);
-    _ovSetVal('ov_tally_level', o.tally_level || '');
+    const _ovc2 = _tallyCtl('ov_tally_level', onOverlayChange);
+    if (_ovc2) _ovc2.set(_tallyListe(o.tally_level));
     _ovSetVal('ov_tally_colors', o.tally_red && o.tally_green ? 'both'
                                : o.tally_red ? 'red' : o.tally_green ? 'green' : 'none');
     _ovSetVal('ov_clock_source', o.clock_source || 'ptp');
@@ -3335,8 +3350,8 @@ function onOverlayChange() {
         // Central : ligne + colonne du tableau (texte) + niveau + couleurs (allumage).
         o.label_row = g('ov_label_row').value || '';
         o.label_col = parseInt(g('ov_label_col').value) || 0;
-        // Même piège que les tuiles : un niveau est un UUID, `parseInt` rend NaN → 0.
-        o.tally_level = g('ov_tally_level').value || '';
+        const _ovc = _tallyCtl('ov_tally_level', onOverlayChange);
+        o.tally_level = _ovc ? _ovc.value() : [];
         const tc = g('ov_tally_colors').value;
         o.tally_red   = (tc === 'red'  || tc === 'both');
         o.tally_green = (tc === 'green' || tc === 'both');
@@ -3667,7 +3682,7 @@ async function deployerEditor() {
         label_proportional: !!f.label_proportional,
         tsl_index: parseInt(f.tsl_index) || 0,
         label_col: parseInt(f.label_col) || 0,
-        tally_level: f.tally_level || '',
+        tally_level: _tallyListe(f.tally_level),
         tally_red: !!f.tally_red,
         tally_green: !!f.tally_green,
         // Peak meters audio
@@ -4069,7 +4084,7 @@ function _serialiserLayoutCourant() {
             show_tally: !!f.show_tally,
             label_proportional: !!f.label_proportional,
             label_col: f.label_col ?? 0,
-            tally_level: f.tally_level ?? '',
+            tally_level: _tallyListe(f.tally_level),
             tally_red: !!f.tally_red,
             tally_green: !!f.tally_green,
             // Modèle de PiP : fait partie de l'habillage mémorisé par le layout.

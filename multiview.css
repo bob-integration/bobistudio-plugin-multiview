@@ -174,11 +174,17 @@
     min-width: 0;
 }
 .mw-editor .field label,
-.mw-settings .field label {
+.mw-settings .field label,
+/* Même apparence qu'une étiquette, sans en être une. Un <label> renvoie tout clic vers le premier
+   contrôle qu'il contient : autour d'une liste de puces à croix, cliquer à côté en supprimait une.
+   Il convient à un champ unique, pas à une liste d'actions. */
+.mw-editor .field .mv-champ-t,
+.mw-settings .field .mv-champ-t {
     font-size: 0.78em;
     color: var(--text-muted);
     font-weight: 500;
 }
+.mw-editor .field .mv-champ-t { display: block; margin-bottom: 3px; }
 .mw-editor .field input:not([type="checkbox"]),
 .mw-editor .field select,
 .mw-settings .field input:not([type="checkbox"]),

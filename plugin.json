@@ -19,11 +19,16 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.114.0",
+  "version": "0.115.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
-  "nav": { "section": "composition", "label": "Composition", "route": "/composition", "order": 20 },
+  "nav": {
+    "section": "composition",
+    "label": "Composition",
+    "route": "/composition",
+    "order": 20
+  },
   "script_template": "script.py",
   "ui": {
     "control_html": "control.html",
