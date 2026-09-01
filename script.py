@@ -1844,6 +1844,35 @@ class Handler(BaseHTTPRequestHandler):
                         tsl_text[idx] = str(text)
                         changed = True; _cells_touchees.add(idx)
                         _texte_change = True
+                # ═══ COLONNES DE LIBELLÉ, poussées en direct ══════════════════
+                #
+                # ★ ELLES ÉTAIENT CUITES AU DÉPLOIEMENT. Le conteneur ne peut pas lire
+                # `source_labels` : le hook embarquait les huit colonnes par fenêtre, et
+                # `%src_labelN%` les lisait dans la config. Éditer un libellé ne les atteignait
+                # donc jamais — un mur affichait la valeur du jour de son dernier déploiement,
+                # indéfiniment et sans que rien ne le signale.
+                #
+                # Rien à salir ici : les textes à variables sont des tuiles PAR TRAME, dont la
+                # signature (`_pf_sig`) se recalcule sur le rendu. Changer `labels` change le
+                # rendu de `%src_labelN%`, donc la signature, donc la tuile — sans passer par le
+                # re-bake plein cadre, qui coûterait une trame pour un texte de vingt pixels.
+                for _lb in (data.get("labels") or []):
+                    try:
+                        _li = int(_lb["flux_idx"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if not (0 <= _li < len(FLUX_CONFIG)):
+                        continue
+                    _cfg = FLUX_CONFIG[_li]
+                    _neuf = _lb.get("labels")
+                    if isinstance(_neuf, dict):
+                        _neuf = {{str(_k): str(_v or "") for _k, _v in _neuf.items()}}
+                        if _cfg.get("labels") != _neuf:
+                            _cfg["labels"] = _neuf
+                    _pj = _lb.get("projet")
+                    if _pj is not None and _cfg.get("projet") != str(_pj):
+                        _cfg["projet"] = str(_pj)
+
                 # Overlays texte central : id → texte + état actif (résolu côté orchestrateur)
                 ov_changed = False
                 for ov in (data.get("overlays") or []):

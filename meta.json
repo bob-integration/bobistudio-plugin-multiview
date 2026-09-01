@@ -1,7 +1,14 @@
 {
-  "version": "0.115.1",
+  "version": "0.115.2",
   "date": "2026-09-01",
   "changes": {
+    "Les libellés sont poussés EN DIRECT, plus cuits au déploiement (0.115.2)": [
+      "★★★ RÉGRESSION 0.115.x — un mur redéployé repartait SANS AUCUN LIBELLÉ. Côté orchestrateur, le texte n'était poussé qu'aux fenêtres dont le libellé classique est en mode « protocol ». Or le plugin a DEUX consommateurs du texte poussé, et son chemin TSL direct les connaît tous les deux (`wants_tsl_text`) : le libellé classique, ET tout composant `umd` d'un modèle sourcé `tsl`. Le chemin CENTRAL n'avait gardé que le premier — et l'installation courante utilise le second, avec des fenêtres en `label_source: hostname` dont le modèle porte un umd `text_source: tsl`. Elles ne recevaient plus rien ; le texte survivait tant que le conteneur tournait, et disparaissait au premier redémarrage.",
+      "Le texte ne dépend plus non plus des niveaux de tally : les trois conditions étaient groupées dans un même `continue`, si bien qu'une fenêtre voulant son libellé mais sans niveau — le cas le plus courant, une source qui n'est pas à l'antenne — n'en recevait aucun.",
+      "★★ NOUVEAU CANAL : `/tally_bulk` accepte `labels`, les huit colonnes par fenêtre. Elles étaient CUITES dans la config au déploiement, le conteneur ne pouvant pas lire `source_labels` ; éditer un libellé ne les atteignait donc jamais et `%src_labelN%` affichait la valeur du jour du dernier déploiement. Rien n'est sali : les textes à variables sont des tuiles par trame, dont la signature se recalcule sur le rendu — pas de re-bake plein cadre pour un texte de vingt pixels.",
+      "Une fenêtre dont les niveaux n'ont de porteur déclaré nulle part n'est plus SAUTÉE par le distributeur : elle restait figée sur son état d'avant. Quatrième occurrence de la même faute dans cette chaîne.",
+      "Garde-fou : `tests/verif_multiview_libelles_vivants.py`."
+    ],
     "Le libellé d'une fenêtre ne survit plus à sa source (0.115.1)": [
       "★★★ INCIDENT PiP3 2026-09-01 — une fenêtre basculée sur le Clean du mélangeur affichait encore « Mire Externe », le libellé de sa source PRÉCÉDENTE. Le hook de déploiement ne posait `labels` QUE si la nouvelle source avait une ligne dans `source_labels` (`if _r:`) ; sinon il laissait la valeur en place. Et comme il réécrit `flux_config` dans `params`, la valeur périmée se REPERSISTAIT à chaque déploiement — redéployer ne la chassait donc pas, ce que l'exploitant a constaté.",
       "Même faute au niveau au-dessus : le bloc entier était sauté quand la table était vide (`and _lbl`). Sur une installation dont on vient d'effacer les libellés, tous les murs auraient gardé les leurs indéfiniment.",
