@@ -1,7 +1,14 @@
 {
-  "version": "0.114.0",
-  "date": "2026-08-19",
+  "version": "0.115.1",
+  "date": "2026-09-01",
   "changes": {
+    "Le libellé d'une fenêtre ne survit plus à sa source (0.115.1)": [
+      "★★★ INCIDENT PiP3 2026-09-01 — une fenêtre basculée sur le Clean du mélangeur affichait encore « Mire Externe », le libellé de sa source PRÉCÉDENTE. Le hook de déploiement ne posait `labels` QUE si la nouvelle source avait une ligne dans `source_labels` (`if _r:`) ; sinon il laissait la valeur en place. Et comme il réécrit `flux_config` dans `params`, la valeur périmée se REPERSISTAIT à chaque déploiement — redéployer ne la chassait donc pas, ce que l'exploitant a constaté.",
+      "Même faute au niveau au-dessus : le bloc entier était sauté quand la table était vide (`and _lbl`). Sur une installation dont on vient d'effacer les libellés, tous les murs auraient gardé les leurs indéfiniment.",
+      "Les huit colonnes (2→9) sont désormais posées à chaque déploiement, vides comprises : côté conteneur, une colonne absente et une colonne vide ne se distinguent pas, et `_src_label` retombe sur le nom de la fenêtre quand le niveau est vide — le repli voulu. Le `name` choisi par l'utilisateur n'est jamais touché.",
+      "⚠ CE LIBELLÉ RESTE UNE PHOTO prise au déploiement : le conteneur ne peut pas lire `source_labels`. Éditer un libellé dans /labels ne rafraîchit donc pas `%src_labelN%` avant le prochain déploiement. C'est la limite du mécanisme, pas un défaut de ce correctif.",
+      "Garde-fou : `tests/verif_multiview_libelles_cuits.py` (7 contrôles, 3 mutations vérifiées)."
+    ],
     "Palier sur la reconnexion d'entrée, et GC du domaine MXL borné (0.114.0)": [
       "★★★ INCIDENT HORACE 2026-08-19 — un nœud entier perdu par une boucle d'erreur à cadence trame. Deux proxys amont n'étaient plus produits ; les shards qui les lisaient appliquaient « Reader périmé → largue et rouvre » À CHAQUE TRAME, sans palier : **7 802 100 et 9 012 600 tentatives** sur une seule entrée chacun, en 43 h. Chaque cycle laissait un fd ouvert dans libmxl (bug amont, corrigé en v1.1.0-rc1) → ~2 Gio de mémoire NOYAU par conteneur → `memory.max` atteint → le noyau récupère les pages du conteneur → compose à **7,2 s par trame** au lieu de 13 ms, mur à 0,6 fps, sortie 2110 en répétition.",
       "Le défaut n'était PAS de reconnecter, c'était l'ABSENCE DE PALIER : elle transforme un dégât local et bénin (une tuile sans image) en dégât global (le nœud, donc les deux murs). Une boucle d'erreur à cadence trame est une arme quel que soit son coût unitaire — ici 200 octets.",

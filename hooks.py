@@ -219,18 +219,24 @@ def before_deploy(params, context):
             if _shm:
                 _lbl[_shm] = _row
         _fx = params.get("flux_config")
-        if isinstance(_fx, list) and _lbl:
+        if isinstance(_fx, list):
             _out = []
             for _e in _fx:
                 if not isinstance(_e, dict):
                     _out.append(_e); continue
                 _e = dict(_e)
                 _shm = (_e.get("path") or "").removeprefix("/dev/shm/")
-                _r = _lbl.get(_shm)
-                if _r:
-                    _e["labels"] = {str(_n): (_r.get("label_%d" % _n) or "")
-                                    for _n in range(2, 10)}
-                    _e["projet"] = _r.get("projet") or ""
+                # ★ TOUJOURS POSER, MÊME VIDE. Le `if _r:` d'avant ne remplaçait les libellés
+                # que si la nouvelle source en avait : une fenêtre basculée sur un flux sans
+                # ligne de libellé GARDAIT ceux de la source précédente — et comme le résultat
+                # est réécrit dans `params`, la valeur périmée se persistait à chaque
+                # déploiement. C'est la même faute que sur la tuile PiP4 : ne pas savoir n'est
+                # pas une raison de laisser croire. Sans libellé, `_src_label` retombe sur le
+                # nom de la fenêtre, ce qui est le repli voulu.
+                _r = _lbl.get(_shm) or {}
+                _e["labels"] = {str(_n): (_r.get("label_%d" % _n) or "")
+                                for _n in range(2, 10)}
+                _e["projet"] = _r.get("projet") or ""
                 _out.append(_e)
             params["flux_config"] = _out
     except Exception:
