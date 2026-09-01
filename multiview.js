@@ -1555,7 +1555,7 @@ function refreshEntryPanel() {
     document.getElementById('ed_label_proportional').checked = !!f.label_proportional;
     document.getElementById('ed_tsl_index').value    = f.tsl_index || 0;
     const _colors = f.tally_red && f.tally_green ? 'both' : f.tally_red ? 'red' : f.tally_green ? 'green' : 'none';
-    _tslSetSelects(f.label_col ?? 0, f.tally_level ?? 0, _colors);
+    _tslSetSelects(f.label_col ?? 0, f.tally_level ?? '', _colors);
     document.getElementById('ed_x').value = f.x;
     document.getElementById('ed_y').value = f.y;
     document.getElementById('ed_w').value = f.w;
@@ -1700,7 +1700,10 @@ function onEntryChange() {
     f.label_proportional = document.getElementById('ed_label_proportional').checked;
     f.tsl_index      = parseInt(document.getElementById('ed_tsl_index').value) || 0;
     f.label_col      = parseInt(document.getElementById('ed_label_col').value) || 0;
-    f.tally_level    = parseInt(document.getElementById('ed_tally_level').value) || 0;
+    // ⚠ PAS DE `parseInt` : un niveau est un UUID depuis le dénouement, et `parseInt` d'un
+    // UUID rend NaN — donc `|| 0`, donc AUCUN niveau. Le menu proposait bien les bons
+    // identifiants, mais toute modification d'une tuile effaçait son tally, en silence.
+    f.tally_level    = document.getElementById('ed_tally_level').value || '';
     const _colors    = document.getElementById('ed_tally_colors').value || 'none';
     f.tally_red      = (_colors === 'red'   || _colors === 'both');
     f.tally_green    = (_colors === 'green' || _colors === 'both');
@@ -2544,7 +2547,7 @@ function hotApplyWindow(idx) {
             label_proportional: !!f.label_proportional,
             tsl_index:      f.tsl_index ?? 0,
             label_col:      f.label_col ?? 0,
-            tally_level:    f.tally_level ?? 0,
+            tally_level:    f.tally_level ?? '',
             tally_red:      !!f.tally_red,
             tally_green:    !!f.tally_green,
             meter_channels: f.meter_channels ?? 0,
@@ -2612,7 +2615,7 @@ function newOverlay(kind) {
     // suit donc la langue de celui qui crée, et ne bougera plus ensuite.
     if (kind === 'text')  Object.assign(o, { text: T('plugin.multiview.new_text_default', 'TEXTE'),
         text_source: 'local', tsl_index: 0,
-        label_row: '', label_col: 0, tally_level: 0, tally_red: false, tally_green: false });
+        label_row: '', label_col: 0, tally_level: '', tally_red: false, tally_green: false });
     if (kind === 'clock') Object.assign(o, {
         // tz vide = fuseau du MUR (réglage système). Une horloge neuve suit donc le mur, et
         // n'affiche une autre ville que si l'utilisateur le demande explicitement.
@@ -2679,7 +2682,7 @@ function serializeOverlays() {
             text: o.text || '', text_source: o.text_source || 'local',
             tsl_index: parseInt(o.tsl_index) || 0,
             label_row: o.label_row || '', label_col: parseInt(o.label_col) || 0,
-            tally_level: parseInt(o.tally_level) || 0,
+            tally_level: o.tally_level || '',
             tally_red: !!o.tally_red, tally_green: !!o.tally_green });
         if (o.kind === 'clock') Object.assign(base, {
             clock_source: o.clock_source || 'ptp',
@@ -3252,7 +3255,7 @@ function refreshOverlayPanel() {
     _tslPopulateOverlaySelects();
     _ovSetVal('ov_label_row', o.label_row || '');
     _ovSetVal('ov_label_col', o.label_col || 0);
-    _ovSetVal('ov_tally_level', o.tally_level || 0);
+    _ovSetVal('ov_tally_level', o.tally_level || '');
     _ovSetVal('ov_tally_colors', o.tally_red && o.tally_green ? 'both'
                                : o.tally_red ? 'red' : o.tally_green ? 'green' : 'none');
     _ovSetVal('ov_clock_source', o.clock_source || 'ptp');
@@ -3332,7 +3335,8 @@ function onOverlayChange() {
         // Central : ligne + colonne du tableau (texte) + niveau + couleurs (allumage).
         o.label_row = g('ov_label_row').value || '';
         o.label_col = parseInt(g('ov_label_col').value) || 0;
-        o.tally_level = parseInt(g('ov_tally_level').value) || 0;
+        // Même piège que les tuiles : un niveau est un UUID, `parseInt` rend NaN → 0.
+        o.tally_level = g('ov_tally_level').value || '';
         const tc = g('ov_tally_colors').value;
         o.tally_red   = (tc === 'red'  || tc === 'both');
         o.tally_green = (tc === 'green' || tc === 'both');
@@ -3663,7 +3667,7 @@ async function deployerEditor() {
         label_proportional: !!f.label_proportional,
         tsl_index: parseInt(f.tsl_index) || 0,
         label_col: parseInt(f.label_col) || 0,
-        tally_level: parseInt(f.tally_level) || 0,
+        tally_level: f.tally_level || '',
         tally_red: !!f.tally_red,
         tally_green: !!f.tally_green,
         // Peak meters audio
@@ -4065,7 +4069,7 @@ function _serialiserLayoutCourant() {
             show_tally: !!f.show_tally,
             label_proportional: !!f.label_proportional,
             label_col: f.label_col ?? 0,
-            tally_level: f.tally_level ?? 0,
+            tally_level: f.tally_level ?? '',
             tally_red: !!f.tally_red,
             tally_green: !!f.tally_green,
             // Modèle de PiP : fait partie de l'habillage mémorisé par le layout.
