@@ -539,10 +539,10 @@ let _labelRows = [];  // [{shm, name}] lignes du tableau /labels (overlay texte 
 async function _loadTslLabelNames() {
     try {
         const [rl, rc, rs, rsl] = await Promise.all([
-            fetch('/api/tsl/label_names'),
+            fetch('/api/labels/names'),
             fetch('/api/tsl/connections'),
             fetch('/api/sources'),
-            fetch('/api/source_labels'),
+            fetch('/api/labels'),
         ]);
         if (rl.ok) _tslLabelNames = await rl.json();
         if (rc.ok) _tslConns = await rc.json();
