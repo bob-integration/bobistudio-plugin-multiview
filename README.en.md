@@ -2,6 +2,11 @@
 
 *[Version française](README.md)*
 
+> ⚠ **Requires Bobi.Studio 0.9.2 or newer.** Since 0.115.2, label columns are pushed **live** by
+> the orchestrator instead of being frozen at deployment. On an older version nobody pushes them:
+> the wall shows the labels from the day it was last deployed, and **nothing says so** — a window
+> switched to another source keeps the previous one's label. Tally works either way.
+
 Composites several video sources into a single output flow. It is part of
 [Bobi.Studio](https://github.com/bob-integration/bobistudio), a broadcast orchestrator built on
 the ST 2110 / MXL bus.

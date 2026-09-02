@@ -2,6 +2,12 @@
 
 *[English version](README.en.md)*
 
+> ⚠ **Exige Bobi.Studio 0.9.2 ou plus récent.** Depuis la 0.115.2, les colonnes de libellé sont
+> poussées **en direct** par l'orchestrateur au lieu d'être figées au déploiement. Sur une version
+> antérieure, personne ne les pousse : le mur affiche les libellés du jour de son dernier
+> déploiement, et **rien ne le signale** — une fenêtre changée de source garde le libellé de la
+> précédente. Le tally, lui, fonctionne dans les deux cas.
+
 Composite plusieurs sources vidéo en un seul flux de sortie. Il fait partie de
 [Bobi.Studio](https://github.com/bob-integration/bobistudio), un orchestrateur broadcast bâti
 sur le bus ST 2110 / MXL.
