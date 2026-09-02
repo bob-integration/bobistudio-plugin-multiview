@@ -1,10 +1,10 @@
-# Multiviewer
+# Multiview
 
 Compose N sources vidéo en une mosaïque et produit un shm de sortie câblable vers un encodeur ou un sender. Layout configurable via l'éditeur drag-and-drop.
 
 ## Configurer le layout
 
-Depuis **Traitements → Multiviewer** : ouvrir l'éditeur de layout pour positionner les fenêtres, choisir les sources, régler la résolution de sortie.
+Depuis **Traitements → Multiview** : ouvrir l'éditeur de layout pour positionner les fenêtres, choisir les sources, régler la résolution de sortie.
 
 Les modifications sont **live** (pas de redéploiement). Le layout est persisté automatiquement.
 
@@ -47,9 +47,45 @@ de départ ; dupliquez-les pour les adapter.
 
 Enregistrer une disposition (bouton « Enregistrer le layout ») pour la rappeler instantanément plus tard. Les layouts sont globaux (partagés entre instances).
 
-## Tally
+## Tally et libellés
 
-Le multiviewer expose un endpoint TSL 5.0 (TCP, port 4801) pour signalisation tally rouge/vert sur les fenêtres.
+Deux modes, et **le mode central est celui par défaut**.
+
+### Mode central (défaut)
+
+C'est l'orchestrateur qui pousse au mur, en direct, la couleur de tally **et** le texte de chaque
+fenêtre. Le mur n'a aucun serveur à lui, ne parle aucun protocole, et n'a pas besoin d'être
+redéployé quand un libellé change.
+
+**Le tally s'adresse PAR SOURCE.** Une fenêtre reçoit l'état du flux qu'elle affiche, sur le
+**niveau** que vous lui avez donné. Un niveau est une entité nommée — « Antenne », « Plateau » —
+qui appartient à une production ; ce n'est pas un numéro de trame, et changer de protocole demain
+ne changerait rien à ce réglage. Une fenêtre sans niveau n'a pas de tally, ce qui est le cas
+courant : un instrument n'est pas à l'antenne.
+
+> ⚠ Le rouge et le vert d'une fenêtre viennent du **même niveau**. Une source à la fois au
+> programme et en préparation ne consomme donc pas deux entrées : les deux états se cumulent sur
+> son niveau et donnent l'**ambre**, qui allume les deux bandeaux. C'est ainsi que l'orange se voit
+> sur le mur.
+
+**Le libellé vient du tableau des sources** (page Libellés), organisé en colonnes. Chaque fenêtre
+choisit la colonne qu'elle affiche. Les colonnes sont poussées **en direct** : éditer un libellé
+se voit sur le mur sans redéploiement.
+
+> ⚠ **Une colonne vide n'hérite jamais du texte précédent.** Si la colonne demandée est vide pour
+> cette source, l'orchestrateur remonte les autres colonnes pour en trouver une remplie ; s'il n'en
+> trouve aucune, la fenêtre retombe sur son propre nom. Elle ne garde JAMAIS le libellé de la
+> source qu'elle affichait avant — c'est un défaut qui a existé, et qui faisait afficher le nom
+> d'un enregistreur sur le mélangeur.
+
+Une fenêtre dont la source n'a ni tally ni libellé s'**éteint** et affiche son nom. Elle ne reste
+pas figée sur son état d'avant : ne pas savoir n'autorise pas à laisser croire.
+
+### Mode direct
+
+Le mur ouvre son propre serveur **TSL 5.0** (TCP, port 4801) et reçoit le tally d'un contrôleur
+sans passer par l'orchestrateur. Réservé aux cas où l'on veut court-circuiter le contrôleur
+central. Dans ce mode, l'orchestrateur ne pousse rien — il ne faut pas piloter des deux côtés.
 
 ## Outils d'overlay (texte / horloge / image)
 
@@ -74,6 +110,35 @@ comme les fenêtres. Toute modification s'applique **à chaud**.
 > décodé côté multiview. Elle nécessite une source reçue par le moteur MTL (2110_io) qui produit
 > le flux ANC ; les sources générateur/ffmpeg sans ANC affichent `--:--:--:--`.
 
+## Les frises : que s'est-il passé sur cette source ?
+
+Un mur montre l'instant présent. Une **frise** montre la minute écoulée — c'est l'outil à ouvrir
+quand quelqu'un dit « il y a eu quelque chose il y a trente secondes ».
+
+**Frise vidéo** — une vignette par seconde, et sous la bande un ruban d'événements : **gel**,
+**noir**, **perte de signal**.
+
+> ★ La vignette est capturée **à l'instant de l'événement**, puis épinglée dans sa case : la bande
+> montre l'image **sur laquelle ça s'est figé**, et pour une perte de signal la dernière image
+> valide — pas une image quelconque prise dans la seconde.
+
+**Frise audio** — enveloppe des crêtes, **saturation** persistante en rouge, **silence** grisé. Un
+canal muet depuis quarante secondes se voit d'un coup d'œil.
+
+**Profondeur** : 10, 30, 60 ou 120 secondes.
+
+**Deux façons de la poser**, avec le même rendu :
+
+| | source | géométrie |
+|---|---|---|
+| Composant d'un modèle de fenêtre | celle de la fenêtre | relative à la cellule |
+| Bloc libre du mur | câblée en propre | relative au mur entier |
+
+Le coût pour la trame est négligeable : la recomposition d'une frise, qui prend des dizaines de
+millisecondes, est faite par un fil dédié et non dans la boucle de mixage. En ajouter une ne fait
+donc pas tomber la cadence — c'est le **câblage** de sa source qu'il faut prévoir (un bloc de mur
+a besoin de sa propre entrée vidéo ou audio).
+
 ## Réglages avancés (panneau ⚙ du conteneur)
 
 | Réglage | Effet |
@@ -81,6 +146,8 @@ comme les fenêtres. Toute modification s'applique **à chaud**.
 | Orientation | Paysage (défaut), ou portrait (rotation horaire/anti-horaire) — pour un mur destiné à un affichage vertical |
 | Filtre de réduction des vignettes | **Moyenne du bloc** (défaut) : anticrénelage correct, le texte incrusté et les détails fins de la source restent lisibles réduits ; coûte environ 10× plus de CPU par vignette qu'une simple **décimation** (comportement historique, plus rapide mais crénelé). Si le nœud est chargé, surveiller `compose_breakdown_ms.inputs` sur `:8080` avant de garder la moyenne sur beaucoup de tuiles |
 | Sources entrelacées | **Tissage** (défaut) : recompose les deux champs, résolution verticale complète — nécessaire pour que le texte incrusté d'une source 1080i reste lisible. Peut peigner sur du mouvement rapide, largement absorbé par la réduction en vignette. **Champ seul** (historique) : moitié de la résolution verticale, mais insensible au mouvement |
+| Mode tranche | Lit les entrées par tranches et publie la sortie au fur et à mesure, au lieu d'attendre l'image entière. **Un étage en image entière coûte une trame de latence à toute la chaîne qui le traverse**, et cette dette n'apparaît sur aucun compteur — le mur affiche une cadence parfaite. Incompatible avec le portrait et l'entrelacé, qui restent en image entière |
+| Tranche GPU | Le mode tranche sur carte. Opt-in : à n'activer qu'après validation sur l'installation, la carte et le format visés |
 | Afficher « NO SIGNAL » | Bandeau quand une fenêtre n'a pas de source ou pas de grain |
 | Détection image figée (s) | Délai avant d'afficher l'alerte figé sur une fenêtre, 0 = désactivé |
 

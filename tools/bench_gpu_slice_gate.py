@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 BOBI SAS, France
-"""Banc GATE GO/NO-GO du slice GPU multiview (TISSU_SLICE_GPU.md §a) — nœud de référence + T4.
+"""Banc GATE GO/NO-GO du slice GPU multiview (§a) — nœud de référence + T4.
 
 Autonome : cupy + numpy seulement (aucun MXL/orchestrateur). Mesure, pour une trame
 composite (défaut 1080p 4:2:2 8 bits, 4 tuiles d'entrée 1080p) :
@@ -15,7 +15,7 @@ composite (défaut 1080p 4:2:2 8 bits, 4 tuiles d'entrée 1080p) :
   M4  bout-en-bout simulé par taille de bande : gather hôte→épinglé, H2D, place, blends,
       D2H, écriture mmap simulée — temps trame TOTAL + latence 1ʳᵉ bande de sortie.
 
-VERDICT (budget T=20 ms @50p, cf. TISSU_SLICE_GPU.md) :
+VERDICT (budget T=20 ms @50p) :
   GO fin (36)     : surcoût M1+M2 bandé(36) ≤ +1,5 ms ET M4(36) trame ≤ 12 ms ET 1ʳᵉ ≤ 3 ms
   GO méga-bandes  : ∃ b ∈ {135,270,540} : surcoût ≤ +0,5 ms ET trame ≤ 12 ms ET 1ʳᵉ ≤ 8 ms
   NO-GO           : sinon (GPU reste whole-frame ; nœuds tissu GPU → force_cpu + slice CPU)
@@ -303,7 +303,7 @@ for w in why:
 if verdict == "NO-GO":
     print("  → GPU reste whole-frame ; nœuds tissu GPU : force_cpu + slice CPU (0.25.x).")
 elif verdict.startswith("GO-MEGA"):
-    print("  → implémenter gpu_batch_bands (micro-batch §b var.2, TISSU_SLICE_GPU.md) ; "
+    print("  → implémenter gpu_batch_bands (micro-batch de bandes) ; "
           "puis banc réel avec gpu_slice=true.")
 else:
     print("  → activer gpu_slice=true sur un mur de banc (slice_mode, cadence=flow) et "

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Banc MICRO-BATCH GPU du multiview (TISSU_SLICE_GPU.md §b variante 2, post-verdict GO-MEGA-135).
+"""Banc MICRO-BATCH GPU du multiview (micro-batch de bandes, post-verdict GO-MEGA-135).
 
 Rejoue le rendu multiview COMPLET (4 entrées 1080p synthétiques → mur 1080p 2×2, chrome statique
 pré-calculé plein écran + 4 tuiles VU dynamiques) en 3 modes :

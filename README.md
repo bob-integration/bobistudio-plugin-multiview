@@ -128,7 +128,6 @@ registre des plugins.
 - `plugin.json` — câblage, schéma de configuration, surface de macros, points de contrôle.
 - `meta.json` — le journal des versions, et c'est là que vivent les *pourquoi* : chaque entrée
   dit ce qui cassait, ce qui a été mesuré, et ce que la correction a coûté.
-- `TISSU_SLICE_GPU.md` — le chantier de la tranche GPU, avec les verdicts de banc.
 
 ---
 

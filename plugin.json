@@ -2,9 +2,9 @@
   "license": "GPL-3.0-or-later",
   "type": "multiview",
   "runtime": "docker",
-  "label": "Multiviewer",
+  "label": "Multiview",
   "badge": {
-    "label": "Multiviewer",
+    "label": "Multiview",
     "class": "mode-multiview",
     "oklch": "0.77 0.07 306"
   },
@@ -22,7 +22,7 @@
   "version": "0.115.2",
   "settings_panel": false,
   "adapts_input": true,
-  "description": "Multiviewer : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
+  "description": "Multiview : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
   "nav": {
     "section": "composition",
     "label": "Composition",

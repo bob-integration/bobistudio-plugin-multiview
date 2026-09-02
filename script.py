@@ -492,7 +492,7 @@ _slm = CONFIG.get("slice_mode", False)
 SLICE_MODE  = _slm if isinstance(_slm, bool) else str(_slm).strip().lower() in ("1", "true", "yes", "on")
 SLICE_LINES = int(CONFIG.get("slice_lines") or 36)
 _TOUTES = bobimxl.MXL_GRAIN_VALID_SLICES_ALL   # cf. lecture des entrées : le mur exige le grain COMPLET
-# ── GPU SLICE (chantier TISSU_SLICE_GPU.md, squelette banc gate) ──────────────────────────────
+# ── GPU SLICE (squelette banc gate ; verdicts dans meta.json) ──────────────────────────────
 # `gpu_slice` (OPT-IN, défaut off) lève l'exclusion GPU du mode tranche : composition bande par
 # bande EN VRAM — H2D par bande (staging épinglé groupé par bande, _gpu_place_band), blends
 # chrome/VU/horloges par bande en VRAM (opérandes déjà résidents), D2H par bande épinglé + commit
@@ -510,7 +510,7 @@ METERS_PIL = _as_bool(CONFIG.get("meters_pil", False))
 SLICE_ON = (SLICE_MODE and (not GPU or GPU_SLICE_REQ) and not _PORTRAIT and not INTERLACED
             and SLICE_LINES > 0 and OUT_HEIGHT % SLICE_LINES == 0 and SLICE_LINES % _CH == 0)
 GPU_SLICE = GPU and SLICE_ON      # chemin tranche VRAM actif (exige GPU + flag + éligibilité)
-# ── MICRO-BATCH GPU (TISSU_SLICE_GPU.md §b variante 2, verdict banc gate GO-MEGA-135) ─────────
+# ── MICRO-BATCH GPU (verdict de banc GO-MEGA, cf. meta.json-135) ─────────
 # Le banc gate (T4, sous charge) a REJETÉ le bande-à-bande 36 l (trame 15,26 ms — le coût de
 # LANCEMENT des kernels domine : compose 10,6 ms à 30 lancements vs 0,71 ms pleine trame) et voté
 # méga-bandes 135 l (trame 5,66 ms, 1ʳᵉ bande 0,58 ms, surcoût transferts +0,12 ms). Implémentation
@@ -541,7 +541,7 @@ if SLICE_MODE and not SLICE_ON:
     log(f"multiview: slice_mode demandé mais inéligible (gpu={{GPU}} sans gpu_slice "
         f"portrait={{_PORTRAIT}} h={{OUT_HEIGHT}}%{{SLICE_LINES}}) — whole-frame", "warning")
 if GPU_SLICE:
-    log(f"multiview: GPU SLICE actif (opt-in banc, TISSU_SLICE_GPU.md) — bandes de "
+    log(f"multiview: GPU SLICE actif (opt-in banc) — bandes de "
         f"{{SLICE_LINES}} lignes sur {{_GPU_NAME}}, micro-batch {{GPU_BATCH_BANDS}} bande(s)/lot",
         "info")
 # ── CADENCE « flow » (tissu en tranches, docs/chantiers/TISSU_SLICE.md) ──────────────────────────────────────
@@ -2649,7 +2649,7 @@ def _gpu_place_band(cy, cu, cv, stage):
     GO-MEGA-135). UN SEUL H2D par lot : les rangées source (déjà réduites par les vues stridées/
     gathers hôte de _compose_bands) sont concaténées dans le staging hôte ÉPINGLÉ puis uploadées
     groupées — même leçon que le banc Phase 0 (un transfert par tuile, ou pageable, fait RÉGRESSER
-    le GPU), déclinée au lot. Point d'ancrage (a) du banc gate TISSU_SLICE_GPU.md."""
+    le GPU), déclinée au lot. Point d'ancrage (a) du banc gate."""
     total = 0
     for it in stage:
         total += it[0].size + (2 * it[1].size if it[1] is not None else 0)
@@ -7794,7 +7794,7 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
         """Publie le lot précédent : attend son D2H async (recouvert par le compose du lot courant),
         copie pinned→grain puis commit PROGRESSIF au grain SLICE_LINES — validSlices avance de bande
         en bande dès que les lignes sont dans le shm (le réveil aval reste FIN ; seule la PHASE de
-        commit grossit d'un lot, coût assumé du recouvrement — TISSU_SLICE_GPU.md §c)."""
+        commit grossit d'un lot, coût assumé du recouvrement §c)."""
         if _d2h[0] is None:
             return
         _ev, _ka, _kb, (_hy, _hu, _hv) = _d2h[0]

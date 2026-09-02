@@ -128,7 +128,6 @@ plugin registry.
 - `plugin.json` — wiring, config schema, macro surface, control endpoints.
 - `meta.json` — the version log, and where the *why* lives: each entry says what was broken, what
   was measured, and what the fix cost.
-- `TISSU_SLICE_GPU.md` — the GPU slice work, with its bench verdicts (in French).
 
 ---
 
