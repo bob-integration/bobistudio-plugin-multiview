@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.115.2",
+  "version": "0.116.0",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiview : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -290,6 +290,28 @@
       "default": true,
       "label": "Noyau de composition fusionné (C)",
       "help": "Accélère la composition de 4,8 à 6,2×. À DÉSACTIVER si le mur meurt en « code -11 » (SIGSEGV) : le repli numpy est l'ancien chemin, bit-exact — on y perd de la vitesse, jamais de la justesse. Prend effet au redéploiement du script."
+    },
+    {
+      "key": "compute",
+      "type": "select",
+      "label": "Moteur de composition",
+      "help": "Auto : la carte graphique si le nœud en a une, sauf si le réglage global « multiview_force_cpu » est actif. GPU : la carte, même si ce réglage global est actif. CPU : jamais la carte. ⚠ Une carte partagée entre plusieurs murs ou shards les ralentit tous (mesuré le 2026-10-06 : 54 ms par image sur une T4 partagée entre cinq processus, contre 10 ms sur CPU). Ce que le mur utilise RÉELLEMENT s'affiche par le badge « ⚡ GPU » de sa carte (page Containers). Redémarre le mur ; ses shards de tissu suivent.",
+      "default": "auto",
+      "scope": "system",
+      "options": [
+        {
+          "value": "auto",
+          "label": "Auto"
+        },
+        {
+          "value": "gpu",
+          "label": "GPU"
+        },
+        {
+          "value": "cpu",
+          "label": "CPU"
+        }
+      ]
     }
   ],
   "wiring": {

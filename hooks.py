@@ -112,6 +112,34 @@ def _parse_video_formats(raw):
     return result
 
 
+def resolve_compute(params, settings):
+    """`compute` (Auto / GPU / CPU, panneau ⚙) → `force_cpu`, le seul champ que lit le script.
+
+      cpu  → force_cpu True ;
+      gpu  → force_cpu False, ce qui passe outre le réglage global `multiview_force_cpu` ;
+      auto → force_cpu RETIRÉ, puis réglage global.
+    `compute` ABSENT = conteneur d'avant ce champ, ou shard du tissu (qui reçoit `force_cpu` de son
+    mur, jamais `compute`) : un `force_cpu` explicite y est conservé tel quel, sinon réglage
+    global. Les murs qui avaient déjà un `force_cpu` explicite ont reçu un `compute` au boot
+    (`database._migrate_multiview_compute`), sinon le panneau les afficherait en « Auto » et les
+    renverrait sur la carte au premier enregistrement venu."""
+    params = dict(params)
+    compute = str(params.get("compute") or "").strip().lower()
+    if compute == "cpu":
+        params["force_cpu"] = True
+        return params
+    if compute == "gpu":
+        params["force_cpu"] = False
+        return params
+    if compute == "auto":
+        params.pop("force_cpu", None)
+    if "force_cpu" not in params:
+        _fc = str((settings or {}).get("multiview_force_cpu") or "").strip().lower()
+        if _fc in ("1", "true", "yes", "on"):
+            params["force_cpu"] = True
+    return params
+
+
 def before_deploy(params, context):
     """Normalise les params multiview avant déploiement :
     - shm_out dérivé du hostname si encore à la valeur par défaut
@@ -191,13 +219,8 @@ def before_deploy(params, context):
     #    juste un id stable et un kind (le résolveur image base64 est dans deploy.py).
     params["overlays"] = normalize_overlays(params.get("overlays"))
 
-    # 5. Filet anti-régression : repli CPU forcé via le réglage global `multiview_force_cpu`
-    #    (le script lit le param `force_cpu` → xp=numpy même sur nœud GPU). Un param explicite
-    #    déjà posé (par-conteneur) reste prioritaire ; sinon on applique le réglage global.
-    if "force_cpu" not in params:
-        _fc = str(settings.get("multiview_force_cpu") or "").strip().lower()
-        if _fc in ("1", "true", "yes", "on"):
-            params["force_cpu"] = True
+    # 5. Moteur de composition. Le script ne lit que `force_cpu` ; c'est ici qu'il se décide.
+    params = resolve_compute(params, settings)
 
     # 6. Heure CIVILE pour les horloges « PTP » (overlays + composants clock des modèles de
     #    PiP) : fuseau du contrôleur (`tz` — images runtime en UTC) + `tai_utc_offset_s`
