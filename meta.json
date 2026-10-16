@@ -1,7 +1,10 @@
 {
-  "version": "0.116.0",
-  "date": "2026-10-06",
+  "version": "0.116.1",
+  "date": "2026-10-16",
   "changes": {
+    "Les bouches-trous amont ne sont plus composités comme des images (0.116.1)": [
+      "★ TÉMOIN `invalid_grains` SUR :8080. Un grain BOUCHE-TROU posé par un producteur qui saute des index revenait MXL_STATUS_OK avec `validSlices = 0`, et notre idiome `int(gi.validSlices or k)` retournait ce zéro en « k tranches valides » : le bouche-trou était composité comme une image, à pleine confiance. Écarté désormais dans `bobimxl` (le seul point que toute la flotte traverse), et le compte publié par flux sur :8080 — cadence, index et statut de lecture restant tous PARFAITS pendant l'épisode, ce compteur en est le seul témoin."
+    ],
     "Moteur de composition réglable : Auto / GPU / CPU (0.116.0)": [
       "★★ `force_cpu` n'avait AUCUN écran : on ne le posait que par l'API, et rien ne montrait qu'un mur l'avait. Le panneau ⚙ porte désormais « Moteur de composition » (`compute`) : Auto (la carte si le nœud en a une, sauf réglage global `multiview_force_cpu`), GPU (la carte, même contre ce réglage global), CPU (jamais la carte). Le hook de déploiement le traduit en `force_cpu`, le seul champ que lit le script — aucun changement côté conteneur.",
       "« Auto » RETIRE un `force_cpu` hérité : sans cela, choisir Auto sur un mur passé en CPU par l'API n'aurait rien rendu. Pour la même raison, une migration au boot de l'orchestrateur pose `compute: \"cpu\"` (ou « gpu ») sur les murs qui avaient un `force_cpu` explicite — le panneau postant tous ses champs système à chaque enregistrement, il les aurait sinon affichés « Auto » et renvoyés sur la carte au premier réglage modifié. Les shards du tissu ne sont pas migrés : leur `force_cpu` vient de leur mur.",

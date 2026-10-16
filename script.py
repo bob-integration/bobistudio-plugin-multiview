@@ -1770,6 +1770,10 @@ class Handler(BaseHTTPRequestHandler):
                 _update_rate_metrics()
             except Exception:
                 pass
+            # Bouches-trous amont ÉCARTÉS (cf. bobimxl.MXL_GRAIN_FLAG_INVALID) : seul témoin du
+            # comblement d'un trou par le producteur — cadence, index et statut de lecture restent
+            # tous parfaits pendant l'épisode. Calculé à la requête : aucun coût par trame.
+            metrics["invalid_grains"] = bobimxl.invalid_grains_report()
             self._send_json(metrics)
 
     def do_POST(self):
