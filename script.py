@@ -1477,14 +1477,34 @@ _rate_lock  = threading.Lock()
 # ⚠ MINORANT du changement VISIBLE : une horloge incrustée fait bouger l'image sans qu'aucune
 # entrée n'avance. Ce compteur mesure « est-ce que je relaie de la matière NEUVE », pas « est-ce
 # que les pixels ont changé » — c'est la question qui compte pour diagnostiquer une chaîne.
-_rate_total = {{"frames": 0, "missed": 0, "neuves": 0}}   # compteurs MONOTONES (boucle de compo)
+_rate_total = {{"frames": 0, "missed": 0, "neuves": 0, "commits": 0, "grains": 0}}   # MONOTONES
+# ★ COMMITS RÉELS (0.116.2). `frames` compte les TOURS DE BOUCLE réussis — il est incrémenté
+# APRÈS les commits et SANS CONDITION dès que l'itération ne lève pas. Il ne peut donc pas dire
+# si la sortie a effectivement été publiée. Le 2026-10-24, le mur annonçait `fps 50,0`,
+# `frames_missed 0` et tous ses compteurs figés, pendant que l'aval ne recevait que ~34,5 grains/s
+# (compté côté TX) : AUCUN compteur existant ne pouvait trancher entre « le mur ne commite pas
+# 50 fois » et « la perte est entre le commit et le bus ». D'où ces deux-ci.
+#
+# ⚠ DEUX compteurs, parce qu'un seul induirait en erreur. En mode tranche le grain est commité
+# UNE FOIS PAR BANDE (commit progressif, `valid_slices=k+1`) : un mur à 4 bandes fait ~200
+# commits/s pour 50 grains. `commits_per_s` seul se lirait donc comme un EXCÉDENT là où il y a
+# un déficit. `grains_per_s` ne compte que les commits qui FERMENT le grain (`valid_slices=None`,
+# ou le chemin pleine trame / entrelacé) — c'est lui qui est comparable à `frames_per_s` et à ce
+# que voit l'aval, puisque c'est l'ouverture d'un grain qui fait avancer le headIndex.
+def _cpt_commit(final):
+    """Compte un commit. `final` = ce commit ferme le grain (il devient lisible en entier)."""
+    _rate_total["commits"] += 1
+    if final:
+        _rate_total["grains"] += 1
+
 _rate_hist  = deque(maxlen=64)                 # (t_monotone, frames, missed) échantillonnés ~2×/s
 
 def _rate_sample():
     """Échantillon de cadence (appelé par la boucle de compo, ~toutes les 25 trames)."""
     with _rate_lock:
         _rate_hist.append((time.monotonic(), _rate_total["frames"], _rate_total["missed"],
-                           _rate_total["neuves"]))
+                           _rate_total["neuves"], _rate_total["commits"],
+                           _rate_total["grains"]))
 
 def _update_rate_metrics():
     """Publie fps / frames_per_s / frames_missed_per_s.
@@ -1498,13 +1518,14 @@ def _update_rate_metrics():
         hist = list(_rate_hist)
         cur_f = _rate_total["frames"]; cur_m = _rate_total["missed"]
         cur_n = _rate_total["neuves"]
+        cur_c = _rate_total["commits"]; cur_g = _rate_total["grains"]
     if not hist:
         return
     # Bord DROIT : le dernier échantillon (aligné sur trame, donc sans retard) si la boucle suit ;
     # sinon l'instant présent avec les compteurs courants → la valeur chute au lieu de se figer.
-    t_dr, f_dr, m_dr, n_dr = hist[-1]
+    t_dr, f_dr, m_dr, n_dr, c_dr, g_dr = hist[-1]
     if now - t_dr > RATE_STALE_S:
-        t_dr, f_dr, m_dr, n_dr = now, cur_f, cur_m, cur_n
+        t_dr, f_dr, m_dr, n_dr, c_dr, g_dr = now, cur_f, cur_m, cur_n, cur_c, cur_g
     old = None
     for s in hist:
         if t_dr - s[0] <= FPS_WINDOW_S:
@@ -1524,6 +1545,11 @@ def _update_rate_metrics():
     # matière nouvelle, par opposition à la vitesse à laquelle il compose. Un écart franc entre
     # les deux dit que les ENTRÉES ne suivent pas — c'est le maillon faible de la chaîne.
     metrics["fps_content"]         = round((n_dr - old[3]) / dt * _GRAINS_PER_FRAME, 1)
+    # Commits RÉELS, mêmes bords que `fps` → les trois chiffres sont comparables terme à terme.
+    # `grains_per_s` est celui qui doit coller à `fps` : un écart franc dit que des compositions
+    # n'aboutissent PAS à un grain publié, donc que l'aval répétera.
+    metrics["commits_per_s"]       = round((c_dr - old[4]) / dt, 1)
+    metrics["grains_per_s"]        = round((g_dr - old[5]) / dt, 1)
 
 metrics = {{"fps": 0.0, "inputs_latency_ms": {{}}, "own_latency_ms": None,
            # VERSION RÉELLEMENT EN COURS D'EXÉCUTION. `deploy_config.plugin_version` n'est qu'une
@@ -7811,6 +7837,7 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
             ov_u[_a//_CH:_b//_CH] = _hu[_r//_CH:_r//_CH + SLICE_LINES//_CH]
             ov_v[_a//_CH:_b//_CH] = _hv[_r//_CH:_r//_CH + SLICE_LINES//_CH]
             out_writer.commit(gi_o, valid_slices=None if _k == nb - 1 else _k + 1)
+            _cpt_commit(_k == nb - 1)
     # Blends IN-PLACE : GPU → kernel FUSIONNÉ écrivant directement dans la vue canvas (évite le
     # kernel de recopie du setitem — à N lots × plans, le coût de lancement comptait double) ;
     # CPU → strictement équivalent à l'assignation `vue[...] = blend(...)` (mêmes octets).
@@ -8165,6 +8192,7 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
             cv[B0//_CH:b1//_CH].ravel().get(out=ov_v[B0//_CH:b1//_CH].ravel())
             for _k2 in range(_ka, k + 1):
                 out_writer.commit(gi_o, valid_slices=None if _k2 == nb - 1 else _k2 + 1)
+                _cpt_commit(_k2 == nb - 1)
         elif GPU_SLICE and grp > 1:
             # Ancre (c) GREFFÉE (M2 « recouvert » du banc gate, ~0,44 ms gagnés à 135 l) : le D2H
             # du lot j part ASYNC sur le stream dédié après les kernels du lot (event) ; il est
@@ -8202,12 +8230,14 @@ def _compose_bands(cy, cu, cv, batch, chrome_pre, meter_tiles, pf_tiles, fi_out=
                 ov_u[b0//_CH:b1//_CH] = _slgpu["hu"]
                 ov_v[b0//_CH:b1//_CH] = _slgpu["hv"]
             out_writer.commit(gi_o, valid_slices=None if k == nb - 1 else k + 1)
+            _cpt_commit(k == nb - 1)
         else:
             ov_y[b0:b1] = cy[b0:b1]
             if b1 // _CH > b0 // _CH:
                 ov_u[b0//_CH:b1//_CH] = cu[b0//_CH:b1//_CH]
                 ov_v[b0//_CH:b1//_CH] = cv[b0//_CH:b1//_CH]
             out_writer.commit(gi_o, valid_slices=None if k == nb - 1 else k + 1)
+            _cpt_commit(k == nb - 1)
     if GPU_SLICE and grp > 1:
         _flush_d2h()                           # dernier lot (commit final validSlices=None dedans)
     # ★ Publication des mesures d'habillage DE CE CHEMIN (cf. accumulateurs en tête). L'appelant
@@ -8961,6 +8991,7 @@ while True:
                     _gidx, _gi_o, _vw_o = out_writer.open_grain(index=_fbase * 2 + _p)
                     _vw_o[:OUT_FIELD_SIZE] = _out_host(_fld).view(np.uint8)
                     out_writer.commit(_gi_o)
+                    _cpt_commit(True)   # champ entrelacé : 1 grain par champ
             else:
                 # Grain de sortie MXL. Index implicite : open_grain() sans argument appelle
                 # bobimxl.Writer.next_index (grille TAI). Les trois plans sont déversés
@@ -8978,6 +9009,7 @@ while True:
                         pass
                 _out_dans_grain((canvas_y, canvas_u, canvas_v), _vw_o)
                 out_writer.commit(_gi_o)
+                _cpt_commit(True)   # pleine trame : le grain est complet
         ts_out = time.time_ns()
         # Détail du compositing : entrées (lecture+resize+blend tuiles) / habillage / assemblage sortie.
         _t_inputs.push((_t_after_inputs - ts_cycle_start) / 1e6)
