@@ -1800,6 +1800,9 @@ class Handler(BaseHTTPRequestHandler):
             # comblement d'un trou par le producteur — cadence, index et statut de lecture restent
             # tous parfaits pendant l'épisode. Calculé à la requête : aucun coût par trame.
             metrics["invalid_grains"] = bobimxl.invalid_grains_report()
+            # Avance des index émis sur la grille TAI (bobimxl.index_report, grid_ms en ms signées, positif =
+            # futur) : seul témoin d'une sortie écrite dans le futur, la cadence restant parfaite.
+            metrics["index_ahead"] = bobimxl.index_report()
             self._send_json(metrics)
 
     def do_POST(self):
