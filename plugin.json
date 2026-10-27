@@ -19,7 +19,7 @@
     "pin": true,
     "gpu": 1
   },
-  "version": "0.116.3",
+  "version": "0.116.4",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiview : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",
@@ -702,5 +702,13 @@
   "video_format": false,
   "requires": {
     "core_min": "0.9.2"
-  }
+  },
+  "ports": [
+    {
+      "param": "tsl_port",
+      "proto": "tcp",
+      "when": { "tsl_mode": ["direct"] },
+      "desc": "TSL 5.0 en mode Direct : un pupitre du site se connecte à ce port. En mode central (défaut), c'est l'orchestrateur qui reçoit — rien à publier."
+    }
+  ]
 }
