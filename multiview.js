@@ -787,6 +787,10 @@ function renderEditor(hostname) {
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     { const _tm = document.getElementById('ed_tsl_mode'); if (_tm) _tm.value = _resolveTslMode(p); }
     updateTslModeUI();
+    MW_ENGINE_KEYS.forEach(k => {
+        const el = document.getElementById('ed_' + k);
+        if (el) el.value = p[k] || MW_ENGINE_DEFAULTS[k];
+    });
     document.getElementById('ed_snap').checked          = snapEnabled;
     try { populateOutFormatSelect(); } catch (e) { /* sélecteur de format non bloquant */ }
     try { populateOrientationSelect(); } catch (e) { /* sélecteur d'orientation non bloquant */ }
@@ -941,6 +945,19 @@ function onOrientationChange() {
 }
 
 // ─── Handlers globaux ────────────────────────────────────────
+
+// Réglages MOTEUR (scope system) : lus par le script à son DÉMARRAGE seulement. Le ⚙ générique ne
+// les rend pas (manifeste `settings_panel: false`) et ce panneau ne les rendait pas non plus : le
+// filtre de réduction n'était réglable que par l'API (Z8, 2026-10-28). Comme le format de sortie,
+// un changement s'applique au déploiement, qui RÉÉCRIT et redémarre le script (coupure de la
+// sortie) — app/deploy.py:_multiview_startup_keys ne l'annonce plus « appliqué à chaud ».
+const MW_ENGINE_KEYS = ['scale_filter', 'interlace_mode', 'compute'];
+const MW_ENGINE_DEFAULTS = {scale_filter: 'box', interlace_mode: 'weave', compute: 'auto'};
+function onEngineChange(el) {
+    if (!editorParams || !el) return;
+    editorParams[el.dataset.structural] = el.value;
+    mwFlash(T('plugin.multiview.engine_changed_redeploy'));
+}
 
 // Mode tally/UMD : "central" (push orchestrateur) | "direct" (serveur TSL local).
 // Dérivation depuis l'ancien schéma tsl_port/tsl_remote si tsl_mode absent.
@@ -3750,6 +3767,8 @@ async function deployerEditor() {
         fps_target:    editorParams.fps_target || 0,
         tsl_mode:      editorParams.tsl_mode || 'central',
         tsl_port:      editorParams.tsl_port ?? 4801,
+        // Réglages moteur : structurels, le déploiement redémarre le script.
+        ...Object.fromEntries(MW_ENGINE_KEYS.map(k => [k, editorParams[k] || MW_ENGINE_DEFAULTS[k]])),
         // Modèle de PiP par défaut du mur (héritage)
         default_template:     editorParams.default_template || null,
         default_template_ref: editorParams.default_template_ref || ''

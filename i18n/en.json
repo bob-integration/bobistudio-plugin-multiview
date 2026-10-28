@@ -136,6 +136,8 @@
   "plugin.multiview.font": "Font",
   "plugin.multiview.font_missing": "missing font",
   "plugin.multiview.font_size": "Size (0=auto)",
+  "plugin.multiview.engine_changed_redeploy": "Engine setting changed — redeploy to apply it (the script restarts: output interruption).",
+  "plugin.multiview.engine_title": "Engine",
   "plugin.multiview.format_changed_redeploy": "Output format changed — redeploy to apply.",
   "plugin.multiview.fps_auto": "Auto (global)",
   "plugin.multiview.fps_target": "Target rate",

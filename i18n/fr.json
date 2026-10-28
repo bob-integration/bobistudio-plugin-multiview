@@ -136,6 +136,8 @@
   "plugin.multiview.font": "Police",
   "plugin.multiview.font_missing": "police absente",
   "plugin.multiview.font_size": "Taille (0=auto)",
+  "plugin.multiview.engine_changed_redeploy": "Réglage moteur modifié — redéployez pour l'appliquer (le script redémarre : coupure de la sortie).",
+  "plugin.multiview.engine_title": "Moteur",
   "plugin.multiview.format_changed_redeploy": "Format de sortie modifié — redéployez pour l'appliquer.",
   "plugin.multiview.fps_auto": "Auto (global)",
   "plugin.multiview.fps_target": "Cadence visée",
