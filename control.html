@@ -378,21 +378,8 @@
             <div class="field"><label for="ed_tsl_port" data-i18n="plugin.multiview.tsl_port">Port TSL 5.0 local</label><input type="number" id="ed_tsl_port" min="0" max="65535" onchange="onGlobalChange()"></div>
             <div class="field"><span class="meta" data-i18n="plugin.multiview.tsl_direct_help">Le contrôleur (VSM…) doit pointer vers l'IP de ce multiview, sur ce port.</span></div>
         </div>
-        <h3 class="mw-subtitle" data-i18n="plugin.multiview.engine_title">Moteur</h3>
         <div class="row">
-            <div class="field"><label for="ed_scale_filter" data-i18n="type.multiview.cfg.scale_filter.label">Filtre de réduction des vignettes</label>
-                <select id="ed_scale_filter" data-structural="scale_filter" onchange="onEngineChange(this)"><option value="box" data-i18n="type.multiview.cfg.scale_filter.opt.box">Moyenne du bloc (anticrénelage)</option><option value="nearest" data-i18n="type.multiview.cfg.scale_filter.opt.nearest">Décimation (historique, rapide)</option></select>
-                <span class="meta" data-i18n="type.multiview.cfg.scale_filter.help">Une vignette est une réduction de sa source (1920×1080 dans une case 640×360 = 1 pixel sur 9). « Moyenne » filtre correctement : le texte incrusté et les détails fins de la source redeviennent lisibles. « Décimation » est le comportement historique, plus rapide mais crénelé. La moyenne coûte environ 10× plus de CPU par vignette — surveiller compose_breakdown_ms.inputs sur :8080.</span></div>
-        </div>
-        <div class="row">
-            <div class="field"><label for="ed_interlace_mode" data-i18n="type.multiview.cfg.interlace_mode.label">Sources entrelacées</label>
-                <select id="ed_interlace_mode" data-structural="interlace_mode" onchange="onEngineChange(this)"><option value="weave" data-i18n="type.multiview.cfg.interlace_mode.opt.weave">Tissage des deux champs (résolution pleine)</option><option value="bob" data-i18n="type.multiview.cfg.interlace_mode.opt.bob">Champ seul (historique)</option></select>
-                <span class="meta" data-i18n="type.multiview.cfg.interlace_mode.help">Le mur sort toujours en progressif : une source 1080i doit être désentrelacée. « Tissage » recompose les deux champs et rend la résolution verticale complète — c'est le réglage qui rend les incrustations de la source lisibles. « Champ seul » est le comportement historique : moitié de la résolution verticale, mais insensible au mouvement. Le tissage peigne sur les mouvements rapides ; la réduction vers la vignette en absorbe l'essentiel.</span></div>
-        </div>
-        <div class="row">
-            <div class="field"><label for="ed_compute" data-i18n="type.multiview.cfg.compute.label">Moteur de composition</label>
-                <select id="ed_compute" data-structural="compute" onchange="onEngineChange(this)"><option value="auto" data-i18n="type.multiview.cfg.compute.opt.auto">Auto</option><option value="gpu" data-i18n="type.multiview.cfg.compute.opt.gpu">GPU</option><option value="cpu" data-i18n="type.multiview.cfg.compute.opt.cpu">CPU</option></select>
-                <span class="meta" data-i18n="type.multiview.cfg.compute.help">Auto : la carte graphique si le nœud en a une, sauf si le réglage global « multiview_force_cpu » est actif. GPU : la carte, même si ce réglage global est actif. CPU : jamais la carte. ⚠ Une carte partagée entre plusieurs murs ou shards les ralentit tous (mesuré le 2026-10-06 : 54 ms par image sur une T4 partagée entre cinq processus, contre 10 ms sur CPU). Ce que le mur utilise RÉELLEMENT s'affiche par le badge « ⚡ GPU » de sa carte (page Containers). Redémarre le mur ; ses shards de tissu suivent.</span></div>
+            <button type="button" class="btn btn-sm" id="mw-engine-btn" onclick="mwEngineOpen()" aria-haspopup="dialog" data-i18n="plugin.multiview.engine_button">Moteur…</button>
         </div>
         <div class="row mw-deploy-row">
             <button type="button" class="btn btn-orange" id="ed_deploy_btn" onclick="deployerEditor()" data-i18n="plugin.multiview.deploy">Déployer</button>
@@ -419,4 +406,36 @@
         <ul id="layout-saved-list" role="list" aria-live="polite"><li class="meta" data-i18n="plugin.multiview.loading">Chargement…</li></ul>
     </section>
 </aside>
+</div>
+
+<!-- Réglages MOTEUR (scope system) : fenêtre, pas le panneau — trois réglages rares aux longues aides
+     occupaient toute la hauteur de « Sortie & habillage » (décision de l'utilisateur, 2026-10-28). Remplie
+     À L'OUVERTURE depuis les params persistés de l'éditeur ; valider redéploie (coupure de sortie). -->
+<div id="mw-engine-modal" class="modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="mw-engine-title">
+    <div class="modal-card">
+        <div class="modal-head">
+            <h2 id="mw-engine-title" style="margin:0" data-i18n="plugin.multiview.engine_title">Moteur</h2>
+            <button type="button" class="btn btn-sm" onclick="mwEngineClose()" aria-label="Fermer" data-i18n-aria="plugin.multiview.close">✕</button>
+        </div>
+        <div class="row">
+            <div class="field"><label for="ed_scale_filter" data-i18n="type.multiview.cfg.scale_filter.label">Filtre de réduction des vignettes</label>
+                <select id="ed_scale_filter" data-structural="scale_filter"><option value="box" data-i18n="type.multiview.cfg.scale_filter.opt.box">Moyenne du bloc (anticrénelage)</option><option value="nearest" data-i18n="type.multiview.cfg.scale_filter.opt.nearest">Décimation (historique, rapide)</option></select>
+                <span class="meta" data-i18n="type.multiview.cfg.scale_filter.help">Une vignette est une réduction de sa source (1920×1080 dans une case 640×360 = 1 pixel sur 9). « Moyenne » filtre correctement : le texte incrusté et les détails fins de la source redeviennent lisibles. « Décimation » est le comportement historique, plus rapide mais crénelé. La moyenne coûte environ 10× plus de CPU par vignette — surveiller compose_breakdown_ms.inputs sur :8080.</span></div>
+        </div>
+        <div class="row">
+            <div class="field"><label for="ed_interlace_mode" data-i18n="type.multiview.cfg.interlace_mode.label">Sources entrelacées</label>
+                <select id="ed_interlace_mode" data-structural="interlace_mode"><option value="weave" data-i18n="type.multiview.cfg.interlace_mode.opt.weave">Tissage des deux champs (résolution pleine)</option><option value="bob" data-i18n="type.multiview.cfg.interlace_mode.opt.bob">Champ seul (historique)</option></select>
+                <span class="meta" data-i18n="type.multiview.cfg.interlace_mode.help">Le mur sort toujours en progressif : une source 1080i doit être désentrelacée. « Tissage » recompose les deux champs et rend la résolution verticale complète — c'est le réglage qui rend les incrustations de la source lisibles. « Champ seul » est le comportement historique : moitié de la résolution verticale, mais insensible au mouvement. Le tissage peigne sur les mouvements rapides ; la réduction vers la vignette en absorbe l'essentiel.</span></div>
+        </div>
+        <div class="row">
+            <div class="field"><label for="ed_compute" data-i18n="type.multiview.cfg.compute.label">Moteur de composition</label>
+                <select id="ed_compute" data-structural="compute"><option value="auto" data-i18n="type.multiview.cfg.compute.opt.auto">Auto</option><option value="gpu" data-i18n="type.multiview.cfg.compute.opt.gpu">GPU</option><option value="cpu" data-i18n="type.multiview.cfg.compute.opt.cpu">CPU</option></select>
+                <span class="meta" data-i18n="type.multiview.cfg.compute.help">Auto : la carte graphique si le nœud en a une, sauf si le réglage global « multiview_force_cpu » est actif. GPU : la carte, même si ce réglage global est actif. CPU : jamais la carte. ⚠ Une carte partagée entre plusieurs murs ou shards les ralentit tous (mesuré le 2026-10-06 : 54 ms par image sur une T4 partagée entre cinq processus, contre 10 ms sur CPU). Ce que le mur utilise RÉELLEMENT s'affiche par le badge « ⚡ GPU » de sa carte (page Containers). Redémarre le mur ; ses shards de tissu suivent.</span></div>
+        </div>
+        <p class="meta" style="color:var(--status-warning-fg,#c80)" data-i18n="plugin.multiview.engine_changed_redeploy">Réglage moteur modifié — redéployez pour l'appliquer.</p>
+        <div class="row" style="justify-content:flex-end;gap:var(--space-2)">
+            <button type="button" class="btn" onclick="mwEngineClose()" data-i18n="plugin.multiview.cancel">Annuler</button>
+            <button type="button" class="btn btn-orange" onclick="mwEngineApply()" data-i18n="plugin.multiview.engine_apply">Appliquer et redéployer</button>
+        </div>
+    </div>
 </div>

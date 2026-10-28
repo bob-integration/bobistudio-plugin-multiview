@@ -787,10 +787,6 @@ function renderEditor(hostname) {
     document.getElementById('ed_tsl_port').value        = p.tsl_port ?? 0;
     { const _tm = document.getElementById('ed_tsl_mode'); if (_tm) _tm.value = _resolveTslMode(p); }
     updateTslModeUI();
-    MW_ENGINE_KEYS.forEach(k => {
-        const el = document.getElementById('ed_' + k);
-        if (el) el.value = p[k] || MW_ENGINE_DEFAULTS[k];
-    });
     document.getElementById('ed_snap').checked          = snapEnabled;
     try { populateOutFormatSelect(); } catch (e) { /* sélecteur de format non bloquant */ }
     try { populateOrientationSelect(); } catch (e) { /* sélecteur d'orientation non bloquant */ }
@@ -953,10 +949,46 @@ function onOrientationChange() {
 // sortie) — app/deploy.py:_multiview_startup_keys ne l'annonce plus « appliqué à chaud ».
 const MW_ENGINE_KEYS = ['scale_filter', 'interlace_mode', 'compute'];
 const MW_ENGINE_DEFAULTS = {scale_filter: 'box', interlace_mode: 'weave', compute: 'auto'};
-function onEngineChange(el) {
-    if (!editorParams || !el) return;
-    editorParams[el.dataset.structural] = el.value;
+// ★ La fenêtre se REMPLIT À L'OUVERTURE depuis `editorParams` (les params persistés chargés par
+// loadEditor), jamais depuis un état du DOM antérieur : un sélecteur qui affichait sa première option
+// faisait croire à `box` sur un mur réglé `nearest` (Z8 #225, 2026-10-28). Et l'on ne redéploie que
+// si une valeur CHANGE : valider sans rien toucher ne coupe pas la sortie.
+function mwEngineValue(k) {
+    return (editorParams && editorParams[k]) || MW_ENGINE_DEFAULTS[k];
+}
+function mwEngineOpen() {
+    if (!editorParams) return;
+    MW_ENGINE_KEYS.forEach(k => {
+        const el = document.getElementById('ed_' + k);
+        if (el) el.value = mwEngineValue(k);
+    });
+    const m = document.getElementById('mw-engine-modal');
+    if (!m) return;
+    m.style.display = 'flex';
+    document.addEventListener('keydown', mwEngineKey);
+    m.onclick = (e) => { if (e.target === m) mwEngineClose(); };
+    const first = document.getElementById('ed_' + MW_ENGINE_KEYS[0]);
+    if (first) first.focus();
+}
+function mwEngineKey(e) { if (e.key === 'Escape') mwEngineClose(); }
+function mwEngineClose() {
+    const m = document.getElementById('mw-engine-modal');
+    if (m) m.style.display = 'none';
+    document.removeEventListener('keydown', mwEngineKey);
+    const b = document.getElementById('mw-engine-btn');
+    if (b) b.focus();
+}
+function mwEngineApply() {
+    if (!editorParams) return mwEngineClose();
+    let changed = false;
+    MW_ENGINE_KEYS.forEach(k => {
+        const el = document.getElementById('ed_' + k);
+        if (el && el.value && el.value !== mwEngineValue(k)) { editorParams[k] = el.value; changed = true; }
+    });
+    mwEngineClose();
+    if (!changed) return;
     mwFlash(T('plugin.multiview.engine_changed_redeploy'));
+    deployerEditor();
 }
 
 // Mode tally/UMD : "central" (push orchestrateur) | "direct" (serveur TSL local).
