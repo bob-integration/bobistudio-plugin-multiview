@@ -315,6 +315,7 @@
   "plugin.multiview.tsl_mode_direct": "Direct TSL (local server)",
   "plugin.multiview.tsl_port": "Local TSL 5.0 port",
   "plugin.multiview.vars_grp_node": "Node",
+  "plugin.multiview.vars_grp_states": "Container states",
   "plugin.multiview.vars_grp_orch": "Orchestrator",
   "plugin.multiview.vars_grp_rdma": "RDMA",
   "plugin.multiview.vars_grp_sys": "This container",

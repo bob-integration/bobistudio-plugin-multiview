@@ -1850,6 +1850,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(400); self.end_headers()
                 self.wfile.write(str(e).encode())
 
+        elif self.path == "/states":
+            # Valeurs des %state:…% de ce mur (app/wall_states.py). Remplacement INTÉGRAL : une
+            # variable retirée de la config ne garde pas sa dernière valeur à l'écran.
+            try:
+                vals = data.get("values")
+                if not isinstance(vals, dict):
+                    raise ValueError("values: dict attendu")
+                _STATE_VARS.clear()
+                _STATE_VARS.update({{str(k): v for k, v in vals.items()}})
+                self._send_json({{"status": "ok", "n": len(_STATE_VARS)}})
+            except Exception as e:
+                self.send_response(400); self.end_headers()
+                self.wfile.write(str(e).encode())
+
         elif self.path == "/tally_bulk":
             try:
                 updates = data.get("updates") or []
@@ -5786,6 +5800,33 @@ _TEXT_VARS = {{
     "entrees":    lambda: str(sum(1 for c in FLUX_CONFIG if (c.get("path") or "").strip())),
     "duree":      _var_uptime,
 }}
+
+# ═══ ÉTATS D'AUTRES CONTENEURS : %state:<emplacement>.<état>% ════════════════════════════════
+# POUSSÉS par l'orchestrateur (app/wall_states.py, route /states) : le mur n'interroge jamais un
+# autre conteneur. Un décompte arrive comme un INSTANT DE FIN, et se calcule ici à chaque image —
+# régulier sans trafic par seconde. Clé absente ou valeur None → « — » (emplacement hors ligne).
+_STATE_VARS = {{}}
+
+def _fmt_hms(s):
+    s = max(0, int(s))
+    h, r = divmod(s, 3600)
+    m, s = divmod(r, 60)
+    return "%d:%02d:%02d" % (h, m, s) if h else "%02d:%02d" % (m, s)
+
+def _var_state(arg=None):
+    e = _STATE_VARS.get(arg or "")
+    if not isinstance(e, dict):
+        return "—"
+    t = e.get("t")
+    if t == "countdown":
+        rest = (float(e.get("end") or 0) - time.time()) if e.get("run") else float(e.get("frozen") or 0)
+        return _fmt_hms(-int(-max(0.0, rest) // 1))      # arrondi SUPÉRIEUR : « 00:00 » à la fin seulement
+    if t == "elapsed":
+        return _fmt_hms((time.time() - float(e.get("start") or 0)) if e.get("run")
+                        else float(e.get("frozen") or 0))
+    return str(e.get("v", ""))
+
+_TEXT_VARS["state"] = _var_state
 
 def _src_format(cfg):
     w, h = cfg.get("in_w") or 0, cfg.get("in_h") or 0

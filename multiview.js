@@ -3256,6 +3256,8 @@ function _mvFillVarSelect() {
         grp(T('plugin.multiview.vars_grp_node') || 'Nœud', cat.noeud);
         grp(T('plugin.multiview.vars_grp_rdma') || 'RDMA', cat.rdma);
         grp(T('plugin.multiview.vars_grp_orch') || 'Orchestrateur', cat.orchestrateur);
+        // États d'AUTRES conteneurs, par emplacement (clip d'un player, son décompte…).
+        grp(T('plugin.multiview.vars_grp_states') || 'États des conteneurs', cat.states);
         sel.dataset.filled = '1';
         sel.onchange = () => {
             const v = sel.value; sel.value = '';
