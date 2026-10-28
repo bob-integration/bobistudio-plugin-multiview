@@ -292,6 +292,32 @@ def before_deploy(params, context):
     except Exception:
         pass
 
+    # 7. Modèles d'USINE rechargés à chaque déploiement. Le compositeur EMBARQUE les composants
+    #    du modèle choisi (`template`, `default_template`) : sans ce rechargement, un correctif
+    #    d'un modèle d'usine n'atteignait jamais un mur existant, même redéployé — constaté avec
+    #    le passage des umd en `text_source: tile` (0.116.5, multiview en recette, 2026-10-28).
+    #    Les modèles de la BIBLIOTHÈQUE (id numérique) restent tels qu'embarqués : c'est le choix
+    #    de l'utilisateur, il les a peut-être retouchés.
+    try:
+        from app.pip_library import resolve_pip_template
+
+        def _usine(ref):
+            return resolve_pip_template(ref) if str(ref or "").startswith("builtin:") else None
+
+        _d = _usine(params.get("default_template_ref"))
+        if _d:
+            params["default_template"] = _d
+        _fx = []
+        for _e in params.get("flux_config") or []:
+            _t = _usine(_e.get("template_ref")) if isinstance(_e, dict) else None
+            _fx.append(dict(_e, template=_t) if _t else _e)
+        if params.get("flux_config") is not None:
+            params["flux_config"] = _fx
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("multiview: factory PiP templates not refreshed",
+                                            exc_info=True)
+
     return params
 
 
