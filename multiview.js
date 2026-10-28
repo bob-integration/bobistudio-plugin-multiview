@@ -3223,11 +3223,18 @@ function _tzFill(id, val) {
 // Catalogue servi par /api/text-variables : défini UNE SEULE FOIS côté orchestrateur et partagé
 // avec l'éditeur de modèles de PiP. Ici on ne propose que le groupe « Système » : les variables
 // de source décrivent la source d'une FENÊTRE, et un overlay de mur n'en a pas.
-let _mvVarCat = null, _mvVarLoading = null;
+// `?vmid=` : le catalogue y ajoute les conteneurs du PROJET de ce mur (par hostname). Il dépend
+// donc du mur : on le recharge quand on change de mur.
+let _mvVarCat = null, _mvVarLoading = null, _mvVarFor = null;
 function _mvLoadVars() {
+    if (_mvVarFor !== editorVmid) {
+        _mvVarCat = _mvVarLoading = null; _mvVarFor = editorVmid;
+        const s = document.getElementById('ov_vars');
+        if (s) delete s.dataset.filled;
+    }
     if (_mvVarCat) return Promise.resolve(_mvVarCat);
     if (_mvVarLoading) return _mvVarLoading;
-    _mvVarLoading = fetch('/api/text-variables')
+    _mvVarLoading = fetch('/api/text-variables' + (editorVmid != null ? '?vmid=' + editorVmid : ''))
         .then(r => (r.ok ? r.json() : { system: [] }))
         .then(j => { _mvVarCat = j; return _mvVarCat; })
         .catch(() => ({ system: [] }));
@@ -3237,7 +3244,9 @@ function _mvLoadVars() {
 // frappe utilisateur (onOverlayTextInput + onOverlayChange), sinon la saisie serait perdue.
 function _mvFillVarSelect() {
     const sel = document.getElementById('ov_vars');
-    if (!sel || sel.dataset.filled === '1') return;
+    if (!sel) return;
+    if (_mvVarFor !== editorVmid) delete sel.dataset.filled;
+    if (sel.dataset.filled === '1') return;
     _mvLoadVars().then(cat => {
         sel.innerHTML = '';
         sel.appendChild(new Option(T('plugin.multiview.insert_var_pick') || 'Insérer une variable…', ''));
@@ -3256,8 +3265,10 @@ function _mvFillVarSelect() {
         grp(T('plugin.multiview.vars_grp_node') || 'Nœud', cat.noeud);
         grp(T('plugin.multiview.vars_grp_rdma') || 'RDMA', cat.rdma);
         grp(T('plugin.multiview.vars_grp_orch') || 'Orchestrateur', cat.orchestrateur);
-        // États d'AUTRES conteneurs, par emplacement (clip d'un player, son décompte…).
-        grp(T('plugin.multiview.vars_grp_states') || 'États des conteneurs', cat.states);
+        // États d'AUTRES conteneurs : ceux du PROJET de ce mur par leur nom d'abord (la
+        // restauration d'un projet garde les noms), puis les emplacements.
+        grp(T('plugin.multiview.vars_grp_project') || 'Ce projet', cat.project_states);
+        grp(T('plugin.multiview.vars_grp_states') || 'Emplacements', cat.states);
         sel.dataset.filled = '1';
         sel.onchange = () => {
             const v = sel.value; sel.value = '';
