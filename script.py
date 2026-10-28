@@ -4919,8 +4919,7 @@ def _apply_tsl(index, control, text):
         # Consommateurs du TEXTE TSL de la fenêtre : label legacy 'protocol' OU composant umd
         # d'un modèle de PiP sourcé TSL (sinon le re-bake du chrome raterait le changement).
         wants_tsl_text = _is_protocol_label(cfg) or any(
-            isinstance(c, dict) and c.get("type") == "umd"
-            and (c.get("text_source") or "name") == "tsl"
+            isinstance(c, dict) and c.get("type") == "umd" and _umd_wants_tsl(c, cfg)
             for c in (_tpl_comps(cfg) or ()))
         if wants_tsl_text and tsl_text.get(i) != text:
             tsl_text[i] = text; changed = True
@@ -5887,9 +5886,25 @@ def _expand_vars(txt, cfg=None):
         return m.group(0)
     return _VAR_RE.sub(_sub, txt)
 
-def _tpl_text_value(i, cfg, comp):
-    """Texte d'un composant umd : nom résolu de la source (défaut), texte TSL ou texte fixe."""
+def _umd_text_source(comp, cfg):
+    """Source EFFECTIVE du texte d'un umd. `tile` (défaut des modèles d'usine, 0.116.5) suit le
+    « Nom affiché » de la tuile : Protocole → texte poussé (tsl), sinon le nom résolu (`name`, qui
+    porte déjà le nom de la source ou le chemin MXL). Avant, les modèles d'usine écrivaient `name`
+    en dur : une tuile réglée sur Protocole affichait le repère d'éditeur « (TSL #?) » à l'antenne
+    (constaté sur le multiview en recette, le 2026-10-28)."""
     src = comp.get("text_source") or "name"
+    if src == "tile":
+        return "tsl" if cfg.get("label_source") == "protocol" else "name"
+    return src
+
+def _umd_wants_tsl(comp, cfg):
+    """Même règle que `app/tally.py:umd_shows_pushed_text` : les deux chemins doivent s'accorder."""
+    return _umd_text_source(comp, cfg) == "tsl"
+
+def _tpl_text_value(i, cfg, comp):
+    """Texte d'un composant umd : nom résolu de la source (défaut), texte TSL, texte fixe, ou
+    `tile` = ce que le « Nom affiché » de la tuile demande."""
+    src = _umd_text_source(comp, cfg)
     if src == "tsl":
         return tsl_text.get(i, "") or ""
     if src == "fixed":

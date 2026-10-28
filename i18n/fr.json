@@ -200,6 +200,8 @@
   "plugin.multiview.lock_take": "Prendre la main",
   "plugin.multiview.ls_hostname": "Nom de la source",
   "plugin.multiview.ls_mxl_path": "Chemin MXL",
+  "plugin.multiview.ls_hint_imposed": "Le modèle de cette tuile impose son propre texte : ce réglage n'a pas d'effet. Choisissez « Nom affiché de la tuile » dans le modèle pour qu'il le suive.",
+  "plugin.multiview.ls_hint_no_umd": "Ce modèle n'affiche aucun nom : ce réglage n'a pas d'effet.",
   "plugin.multiview.ls_protocol": "Protocole (TSL 5.0)",
   "plugin.multiview.max_inputs": "Max entrées",
   "plugin.multiview.mb_audio_none_option": "— aucune —",

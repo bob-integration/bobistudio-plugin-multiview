@@ -1096,6 +1096,33 @@ function mwTemplateAspect(f) {
 // HÉRITAGE : modèle EFFECTIF d'une fenêtre = son modèle explicite, sinon le modèle PAR DÉFAUT
 // du mur. null = modèle « Classique » GÉNÉRÉ côté moteur depuis les flags par-fenêtre
 // (_classic_comps, script.py) — l'aperçu bandeau/tally/VU de drawCanvas en est le miroir.
+// « Nom affiché » réellement suivi ? Un umd de modèle en `tile` (défaut des modèles d'usine depuis
+// 0.116.5) le suit ; `name` / `tsl` / `fixed` l'IMPOSENT, et un modèle sans umd n'affiche aucun
+// nom. Le réglage restait modifiable sans effet : on le dit à côté, au lieu de laisser croire.
+function _labelSourceOverride(f) {
+    const tpl = mwEffectiveTemplate(f);
+    if (!tpl) return '';
+    const umds = (tpl.components || []).filter(c => c && c.type === 'umd');
+    if (!umds.length) return 'none';
+    return umds.some(c => (c.text_source || 'name') !== 'tile') ? 'imposed' : '';
+}
+function _labelSourceHint(f) {
+    const el = document.getElementById('ed_label_source_hint');
+    if (!el) return;
+    const why = _labelSourceOverride(f);
+    el.textContent = why === 'none' ? T('plugin.multiview.ls_hint_no_umd')
+                   : why === 'imposed' ? T('plugin.multiview.ls_hint_imposed') : '';
+    el.style.display = why ? '' : 'none';
+}
+
+// Nom ENREGISTRÉ d'une tuile. En « Protocole », computeDisplayName() rend le repère d'éditeur
+// « (TSL #n) » : il ne doit pas finir à l'antenne (un umd en `name` l'affichait tel quel, multiview
+// en recette, 2026-10-28). On enregistre donc le nom de la source ; le texte poussé le remplace.
+function _persistedName(f) {
+    return computeDisplayName((f.label_source || 'hostname') === 'protocol'
+        ? Object.assign({}, f, {label_source: 'hostname'}) : f);
+}
+
 function mwEffectiveTemplate(f) {
     if (f.template && f.template.components && f.template.components.length) return f.template;
     const d = editorParams && editorParams.default_template;
@@ -1564,6 +1591,7 @@ function refreshEntryPanel() {
         if (el) el.style.display = hasTpl ? 'none' : '';
     });
     document.getElementById('ed_label_source').value = f.label_source || 'hostname';
+    _labelSourceHint(f);
     document.getElementById('ed_show_label').checked = !!f.show_label;
     document.getElementById('ed_label_proportional').checked = !!f.label_proportional;
     document.getElementById('ed_tsl_index').value    = f.tsl_index || 0;
@@ -1694,6 +1722,7 @@ function onEntryChange() {
         }
     }
     f.label_source = document.getElementById('ed_label_source').value || 'hostname';
+    _labelSourceHint(f);
     // SOURCE VIDÉO : le hot-apply /plugin/window ne transporte pas `path` et le proxy ne le
     // persiste pas (liste blanche `_MV_WINDOW_PERSIST`, app/routes/plugin_registry.py) — changer
     // la source depuis ce panneau ne touchait donc NI le conteneur NI la base : la nouvelle source
@@ -3664,7 +3693,7 @@ async function deployerEditor() {
         anc_path: f.anc_path,
         hidden: !!f.hidden,
         label_source: f.label_source || 'hostname',
-        name: computeDisplayName(f),
+        name: _persistedName(f),
         in_w: f.in_w,
         in_h: f.in_h,
         x: f.x, y: f.y,

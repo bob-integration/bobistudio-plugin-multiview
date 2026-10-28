@@ -200,6 +200,8 @@
   "plugin.multiview.lock_take": "Take over",
   "plugin.multiview.ls_hostname": "Source name",
   "plugin.multiview.ls_mxl_path": "MXL path",
+  "plugin.multiview.ls_hint_imposed": "This tile's template sets its own text: this setting has no effect. Choose “Tile's displayed name” in the template to make it follow.",
+  "plugin.multiview.ls_hint_no_umd": "This template shows no name: this setting has no effect.",
   "plugin.multiview.ls_protocol": "Protocol (TSL 5.0)",
   "plugin.multiview.max_inputs": "Max inputs",
   "plugin.multiview.mb_audio_none_option": "— none —",
