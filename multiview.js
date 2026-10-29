@@ -4649,10 +4649,17 @@ function mwEdToolsState() {
     ['mw_ed_cut', 'mw_ed_copy', 'mw_ed_dup', 'mw_ed_del'].forEach(id => set(id, has));
 }
 // Le canvas est visible = l'éditeur est à l'écran (et pas derrière la fenêtre « Moteur… »).
+// ★ La fenêtre Moteur se masque par `style.display = 'none'`, PAS par l'attribut `hidden` : tester
+// `eng.hidden` (toujours faux) la croyait ouverte en permanence, et AUCUN raccourci ne passait
+// (0.116.12, signalé le 2026-10-29). On lit le style CALCULÉ — et pas offsetParent, nul pour un
+// élément en position fixe même affiché.
+function _mwShown(el) {
+    return !!el && window.getComputedStyle(el).display !== 'none' && !el.hidden;
+}
 function mwEdActive() {
     const c = document.getElementById('ed_canvas');
-    const eng = document.getElementById('mw-engine-modal');
-    return !!(editorParams && c && c.offsetParent !== null && !(eng && !eng.hidden) &&
+    return !!(editorParams && c && c.offsetParent !== null &&
+              !_mwShown(document.getElementById('mw-engine-modal')) &&
               !document.getElementById('bek-help'));
 }
 if (window.BobiEditKit && !window._mwEdBound) {
