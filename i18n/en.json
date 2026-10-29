@@ -276,6 +276,8 @@
   "plugin.multiview.pip_template_none": "— classic dressing —",
   "plugin.multiview.pip_template_reload": "↻ Reload",
   "plugin.multiview.pip_template_reload_title": "Re-reads the template from the library (Settings → PiP) and re-pushes it live to the wall — useful after editing the template while this wall stays open.",
+  "plugin.multiview.pip_template_edit": "✎ Edit",
+  "plugin.multiview.pip_template_edit_title": "Opens the PiP template editor (Settings → PiP) on the selected template, in a new tab. After editing and saving it, “Reload” applies it to the wall.",
   "plugin.multiview.pip_template_title": "Replaces the window dressing (name/tally/meters/ANC) with a template composed in Settings → PiP. \"classic dressing\" = the historical settings below.",
   "plugin.multiview.placement": "Placement",
   "plugin.multiview.position": "Position",

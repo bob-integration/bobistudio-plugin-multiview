@@ -1718,6 +1718,15 @@ function refreshEntryPanel() {
 // Rafraîchit le MUR ENTIER : le modèle par défaut (héritage) ET chaque fenêtre qui porte un
 // modèle propre. Ne dépend d'AUCUNE sélection — appelable depuis « Sortie & habillage » (bouton
 // sous ed_default_template) comme depuis le panneau d'une fenêtre (bouton sous ed_pip_template).
+// « ✎ Éditer » à côté d'un sélecteur de modèle : l'éditeur de PiP dans un NOUVEL onglet (le mur
+// reste ouvert ; « Recharger » applique ensuite le modèle modifié), ouvert sur le modèle choisi —
+// `/settings#pip/<id>`. Sans modèle choisi (habillage classique, héritage) : la bibliothèque.
+function mwOpenPipEditor(selId) {
+    const sel = document.getElementById(selId);
+    const ref = (sel && sel.value) || '';
+    window.open('/settings#pip' + (ref ? '/' + encodeURIComponent(ref) : ''), '_blank', 'noopener');
+}
+
 async function reloadPipTemplate() {
     if (!editorParams) return;
     try {
