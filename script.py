@@ -1854,20 +1854,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(400); self.end_headers()
                 self.wfile.write(str(e).encode())
 
-        elif self.path == "/states":
-            # Valeurs des %state:…% de ce mur (app/wall_states.py). Remplacement INTÉGRAL : une
-            # variable retirée de la config ne garde pas sa dernière valeur à l'écran.
-            try:
-                vals = data.get("values")
-                if not isinstance(vals, dict):
-                    raise ValueError("values: dict attendu")
-                _STATE_VARS.clear()
-                _STATE_VARS.update({{str(k): v for k, v in vals.items()}})
-                self._send_json({{"status": "ok", "n": len(_STATE_VARS)}})
-            except Exception as e:
-                self.send_response(400); self.end_headers()
-                self.wfile.write(str(e).encode())
-
         elif self.path == "/tally_bulk":
             try:
                 updates = data.get("updates") or []
@@ -7310,6 +7296,21 @@ class MvControlHandler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         try: return json.loads(self.rfile.read(n).decode()) if n else {{}}
         except Exception: return {{}}
+    def _do_states(self):
+        """Valeurs des %state:…% de ce mur, poussées par l'orchestrateur (app/wall_states.py).
+        Remplacement INTÉGRAL : une variable retirée de la config ne garde pas sa dernière valeur.
+        ★ Sur le port de CONTRÔLE (8082), comme /telemetry. De 0.116.8 à 0.116.12 la route était
+        sur 8080 (métriques) alors que l'orchestrateur postait sur 8082 : 404 à chaque poussée,
+        tous les %state% à « — » (relevé Z8, 2026-10-29)."""
+        b = self._json()
+        vals = b.get("values") if isinstance(b, dict) else None
+        if not isinstance(vals, dict):
+            self.send_response(400); self.end_headers(); return
+        _STATE_VARS.clear()
+        _STATE_VARS.update({{str(k): v for k, v in vals.items()}})
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.end_headers(); self.wfile.write(json.dumps({{"status": "ok", "n": len(_STATE_VARS)}}).encode())
+
     def _do_telemetry(self):
         """Télémétrie du NŒUD et du CONTRÔLEUR, poussée par l'orchestrateur. Remplace le cache en
         bloc : une poussée partielle vaut mieux qu'un panachage de valeurs d'âges différents."""
@@ -7345,6 +7346,8 @@ class MvControlHandler(BaseHTTPRequestHandler):
             return self._do_log_level()
         if self.path == "/telemetry":
             return self._do_telemetry()
+        if self.path == "/states":
+            return self._do_states()
         if self.path != "/input":
             self.send_response(404); self.end_headers(); return
         b = self._json()
