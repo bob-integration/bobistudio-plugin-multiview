@@ -6802,6 +6802,12 @@ def _chrome_bake_pass():
                     _ia2[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = 255 - _pa2.astype(_ACC)
                     _up[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = _pu.astype(_ACC) * _pa2
                     _vp[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = _pv.astype(_ACC) * _pa2
+                # ★ REPUBLIER un tuple NEUF : le compositeur ne reprend l'opérande que sur un
+                # changement d'IDENTITÉ (`_chrome_pub is not _chrome_seen`). Sur CPU il lit ces
+                # tableaux en direct et voyait le rapiéçage ; sur CARTE il en garde une copie
+                # (`_to_xp`) qui ne bougeait plus — habillage figé alors que le rapiéçage tournait
+                # (Z8 #225, 2026-10-29 : incr_n montait à chaque coupe, l'image restait la même).
+                _chrome_pub = (_chrome_pub[0],)
                 _chrome_dirty = False; _did = True
                 _ms = (time.time_ns() - _t0) / 1e6
                 _bake_voie["incr_n"] += 1; _bake_voie["incr_ms"] += _ms
