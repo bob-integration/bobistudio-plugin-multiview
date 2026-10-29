@@ -1881,6 +1881,7 @@ class Handler(BaseHTTPRequestHandler):
                         tsl_text[idx] = str(text)
                         changed = True; _cells_touchees.add(idx)
                         _texte_change = True
+                        _invalider_masques_tally()   # glyphes du libellé teinté à refaire
                 # ═══ COLONNES DE LIBELLÉ, poussées en direct ══════════════════
                 #
                 # ★ ELLES ÉTAIENT CUITES AU DÉPLOIEMENT. Le conteneur ne peut pas lire
@@ -4927,6 +4928,7 @@ def _apply_tsl(index, control, text):
             for c in (_tpl_comps(cfg) or ()))
         if wants_tsl_text and tsl_text.get(i) != text:
             tsl_text[i] = text; changed = True
+            _invalider_masques_tally()   # glyphes du libellé teinté à refaire
         if changed:
             _marquer_cellule(i)                    # idem : la boucle sait QUELLE fenêtre change
     # ★ PAS de `tally_dirty.set()` global ici : `_marquer_cellule` a déjà fait le nécessaire, et
@@ -6023,11 +6025,48 @@ def _masque_tally(i, comp, rect):
         out.append((rx, ry, np.array(im2)[..., 3], "outline"))
     return out
 
+_glyph_canvas = [None]       # toile RGBA plein cadre RÉUTILISÉE pour les masques de libellé
+
+
+def _masque_libelle(i, cfg, comp):
+    """Couverture des GLYPHES du libellé d'un UMD `tally_text` : le texte est dessiné exactement
+    comme au bake (_draw_text_overlay, même pseudo-overlay, fond retiré) sur une toile plein cadre
+    — les coordonnées absolues gardent le même bornage que le bake — puis on lit l'alpha de son
+    rectangle. Le bake dessine le texte dans sa couleur NORMALE ; la carte y pose la couleur tally.
+    Dépend du TEXTE : refait quand le libellé change (cf. _invalider_masques_tally)."""
+    rect = _comp_rect(cfg, comp)
+    rx, ry, rw, rh = rect
+    if rw <= 0 or rh <= 0:
+        return None
+    txt = _tpl_text_value(i, cfg, comp)
+    if not txt:
+        return None
+    ov = _tpl_pseudo_ov(i, comp, rect, bg_default="#000000", bg_op_default=70)
+    ov["bg_color"] = ""
+    if _glyph_canvas[0] is None:
+        _glyph_canvas[0] = Image.new("RGBA", (OUT_WIDTH, OUT_HEIGHT), (0, 0, 0, 0))
+    toile = _glyph_canvas[0]
+    toile.paste((0, 0, 0, 0), (rx, ry, rx + rw, ry + rh))
+    _draw_text_overlay(ImageDraw.Draw(toile), ov, txt, color_override="#ffffff")
+    m = np.array(toile.crop((rx, ry, rx + rw, ry + rh)))[..., 3].copy()
+    return (rx, ry, m) if m.any() else None
+
+
+def _invalider_masques_tally():
+    """Le LIBELLÉ d'une fenêtre a changé : les masques de glyphes sont à refaire (la géométrie,
+    elle, n'a pas bougé). Reconstruits paresseusement par _appliquer_tally."""
+    global _tally_masques
+    _tally_masques = None
+
+
 def _masques_teintes(i, cfg):
     """Couvertures des éléments TEINTÉS par le tally hors du composant `tally` : la bordure vidéo
-    en mode `tally`, et le fond d'UMD en `tally_bg`. Même principe — la forme ne dépend pas de
-    l'état, seule la couleur en dépend. La couleur du TEXTE (`tally_text`) n'est pas traitée ici :
-    sa forme, ce sont les glyphes, qui dépendent du LIBELLÉ (non énumérable) — elle reste bakée."""
+    en mode `tally`, les équerres `viewfinder` et le soulignement `flat`, le fond d'UMD en
+    `tally_bg`, et les glyphes du libellé d'un UMD `tally_text`. Même principe — la forme ne dépend
+    pas de l'état, seule la couleur en dépend.
+    ★ Équerres, soulignement et libellé étaient BAKÉS, donc figés sur carte à la couleur du dernier
+    re-bake complet (Z8 #225, 2026-10-29). Le libellé est le seul dont la forme dépend du TEXTE :
+    son masque est refait au changement de libellé."""
     out = []
     OPAQUE = (255, 255, 255, 255)
     try:
@@ -6048,11 +6087,21 @@ def _masques_teintes(i, cfg):
                 _render_border_colored(ImageDraw.Draw(im), 0, 0, vw, vh, OPAQUE,
                                        min(bw, vw // 2, vh // 2))
                 out.append((vx, vy, np.array(im)[..., 3], "border_tally", i, comp))
-            elif k == "umd" and _as_bool(comp.get("tally_bg"), False):
-                rx, ry, rw, rh = _comp_rect(cfg, comp)
-                if rw <= 0 or rh <= 0:
-                    continue
-                out.append((rx, ry, np.full((rh, rw), 255, dtype=np.uint8), "bar_tally", i, comp))
+            elif k == "video" and comp.get("border") in _BORDER_BAKED_TALLY:
+                role = "vf" if comp.get("border") == "viewfinder" else "flat"
+                for (x0, y0, x1, y1) in _border_tally_rects(cfg, comp):
+                    if x1 >= x0 and y1 >= y0:
+                        out.append((x0, y0, np.full((y1 - y0 + 1, x1 - x0 + 1), 255, dtype=np.uint8),
+                                    role, i, comp))
+            elif k == "umd":
+                if _as_bool(comp.get("tally_bg"), False):
+                    rx, ry, rw, rh = _comp_rect(cfg, comp)
+                    if rw > 0 and rh > 0:
+                        out.append((rx, ry, np.full((rh, rw), 255, dtype=np.uint8), "bar_tally", i, comp))
+                if _as_bool(comp.get("tally_text"), False):
+                    gm = _masque_libelle(i, cfg, comp)
+                    if gm is not None:
+                        out.append((gm[0], gm[1], gm[2], "text_tally", i, comp))
     except Exception:
         return []
     return out
@@ -6158,6 +6207,15 @@ def _tally_couleur(role, st):
     ne change pas, seul le chemin qui l'applique."""
     if role == "border_tally":
         rgba = _TALLY_BORDER_RGBA.get(st) or _FRAME_NEUTRAL
+    elif role == "vf":
+        rgba = _TALLY_BORDER_RGBA.get(st) if st != "off" else _VF_NEUTRAL
+    elif role == "flat":
+        rgba = _TALLY_BORDER_RGBA.get(st) if st != "off" else _FLAT_NEUTRAL
+    elif role == "text_tally":
+        # Au repos : rien à poser (le bake a dessiné le texte dans sa couleur normale).
+        if st not in _TPL_TALLY_TEXT_HEX:      # « off » n'y figure pas
+            return 0, 0, 0, 0
+        rgba = _hex_rgb(_TPL_TALLY_TEXT_HEX[st], (255, 255, 255)) + (255,)
     elif role == "bar_tally":
         rgba = _BAR_TINTS.get(st, _BAR_TINTS["off"])
     elif role == "fill":
@@ -6229,6 +6287,57 @@ def _appliquer_tally(cy, cu, cv, ylo=0, yhi=None):
         _tally_miss["why"] = repr(_e)
         return None
 
+_BORDER_BAKED_TALLY = ("viewfinder", "flat")   # cadres teintés par le tally hors mode `tally`
+_VF_NEUTRAL = (225, 225, 232, 255)             # équerres de viseur au repos
+
+
+def _border_tally_rects(cfg, comp):
+    """Rectangles [x0, y0, x1, y1] (inclusifs, absolus) des équerres `viewfinder` ou du
+    soulignement `flat` d'une cellule. UNE seule géométrie pour le dessin baké (sans carte) et
+    pour le masque peint par la carte : si les deux divergeaient, la carte peindrait à côté."""
+    mode = comp.get("border") or "none"
+    g = _video_rect(cfg)
+    vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]
+    if vw < 2 or vh < 2:
+        return []
+    try:
+        bw = max(1, min(24, int(comp.get("border_w") or 3)))
+    except (TypeError, ValueError):
+        bw = 3
+    if mode == "flat":
+        t = max(2, bw)
+        return [[vx, vy + vh - t, vx + vw - 1, vy + vh - 1]]
+    if mode != "viewfinder":
+        return []
+    out = []
+    bt = max(2, bw)
+    arm = max(8, int(round(min(vw, vh) * 0.14)))
+    # ★ Les équerres se posent À L'EXTÉRIEUR de l'image : elles CADRENT le PiP au lieu de
+    # recouvrir des pixels de la source (une équerre posée sur l'image masque justement le
+    # coin qu'on veut vérifier). On les décale de `bt` vers l'extérieur — avec ce décalage
+    # les deux bras tombent entièrement dans la marge letterbox/pillarbox laissée par le fit
+    # `contain`, jamais sur l'image.
+    # Repli : s'il n'y a pas la place DANS LA CELLULE (image qui la remplit exactement), on
+    # redessine à l'intérieur comme avant. Recouvrir un peu d'image reste préférable à
+    # déborder sur la fenêtre voisine — c'est la règle du cadre (cf. docstring).
+    # Décision PAR AXE : une image letterboxée a de la marge en haut/bas mais pas sur les
+    # côtés, une pillarboxée l'inverse. Trancher en tout-ou-rien ferait retomber tout le
+    # cadre à l'intérieur alors qu'un axe avait la place.
+    _cx0, _cy0 = g["x"], g["y"]
+    _cx1, _cy1 = g["x"] + g["w"] - 1, g["y"] + g["h"] - 1
+    _ox = bt if (vx - bt >= _cx0 and vx + vw - 1 + bt <= _cx1) else 0
+    _oy = bt if (vy - bt >= _cy0 and vy + vh - 1 + bt <= _cy1) else 0
+    x0, y0 = vx - _ox, vy - _oy
+    x1, y1 = vx + vw - 1 + _ox, vy + vh - 1 + _oy
+    for cx, cy, sx, sy in ((x0, y0, 1, 1), (x1, y0, -1, 1),
+                           (x0, y1, 1, -1), (x1, y1, -1, -1)):
+        ex, ey = cx + sx * arm, cy + sy * (bt - 1)
+        out.append([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)])
+        ex, ey = cx + sx * (bt - 1), cy + sy * arm
+        out.append([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)])
+    return out
+
+
 def _tpl_draw_video_border(d, img, i, cfg, comp):
     """CADRE du composant vidéo — l'habillage de cadre historique (ex-frame_style global de
     mur) migré dans le MODÈLE (0.33.0). Dessiné sur le rectangle IMAGE réel (_video_rect :
@@ -6274,39 +6383,17 @@ def _tpl_draw_video_border(d, img, i, cfg, comp):
         dd.rectangle([t, t, vw - 1 - t, vh - 1 - t], fill=(0, 0, 0, 0))
         dd.rectangle([t - 1, t - 1, vw - t, vh - t], outline=(98, 98, 108, 255))
         img.alpha_composite(tile, (vx, vy))
-    elif mode == "viewfinder":
-        # Équerres de viseur aux 4 coins (blanches au repos, couleur tally sinon).
-        col = tally_col or (225, 225, 232, 255)
-        bt = max(2, bw)
-        arm = max(8, int(round(min(vw, vh) * 0.14)))
-        # ★ Les équerres se posent À L'EXTÉRIEUR de l'image : elles CADRENT le PiP au lieu de
-        # recouvrir des pixels de la source (une équerre posée sur l'image masque justement le
-        # coin qu'on veut vérifier). On les décale de `bt` vers l'extérieur — avec ce décalage
-        # les deux bras tombent entièrement dans la marge letterbox/pillarbox laissée par le fit
-        # `contain`, jamais sur l'image.
-        # Repli : s'il n'y a pas la place DANS LA CELLULE (image qui la remplit exactement), on
-        # redessine à l'intérieur comme avant. Recouvrir un peu d'image reste préférable à
-        # déborder sur la fenêtre voisine — c'est la règle du cadre (cf. docstring).
-        # Décision PAR AXE : une image letterboxée a de la marge en haut/bas mais pas sur les
-        # côtés, une pillarboxée l'inverse. Trancher en tout-ou-rien ferait retomber tout le
-        # cadre à l'intérieur alors qu'un axe avait la place.
-        _cx0, _cy0 = g["x"], g["y"]
-        _cx1, _cy1 = g["x"] + g["w"] - 1, g["y"] + g["h"] - 1
-        _ox = bt if (vx - bt >= _cx0 and vx + vw - 1 + bt <= _cx1) else 0
-        _oy = bt if (vy - bt >= _cy0 and vy + vh - 1 + bt <= _cy1) else 0
-        x0, y0 = vx - _ox, vy - _oy
-        x1, y1 = vx + vw - 1 + _ox, vy + vh - 1 + _oy
-        for cx, cy, sx, sy in ((x0, y0, 1, 1), (x1, y0, -1, 1),
-                               (x0, y1, 1, -1), (x1, y1, -1, -1)):
-            ex, ey = cx + sx * arm, cy + sy * (bt - 1)
-            d.rectangle([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)], fill=col)
-            ex, ey = cx + sx * (bt - 1), cy + sy * arm
-            d.rectangle([min(cx, ex), min(cy, ey), max(cx, ex), max(cy, ey)], fill=col)
-    elif mode == "flat":
-        # Soulignement bas pleine largeur de l'image (neutre au repos, teinté tally).
-        t = max(2, bw)
-        d.rectangle([vx, vy + vh - t, vx + vw - 1, vy + vh - 1],
-                    fill=tally_col or _FLAT_NEUTRAL)
+    elif mode in _BORDER_BAKED_TALLY:
+        # Équerres de viseur (blanches au repos) / soulignement (neutre au repos), teintés tally.
+        # ★ Sur CARTE, ni l'un ni l'autre n'est baké : leur zone reste transparente dans le chrome
+        # et `_appliquer_tally` les peint par trame à travers un masque (cf. _masques_teintes) —
+        # même mécanisme que le cadre `tally`. Les baker figeait leur couleur au dernier re-bake
+        # complet (Z8 #225, 2026-10-29). La géométrie vient d'UNE fonction, partagée avec le masque.
+        if _tally_k is not None and GPU:
+            return
+        rest = _VF_NEUTRAL if mode == "viewfinder" else _FLAT_NEUTRAL
+        for r in _border_tally_rects(cfg, comp):
+            d.rectangle(r, fill=tally_col or rest)
 
 def _tpl_render_dynamic(d, img, i, cfg, comps):
     """Composants BAKÉS d'un modèle (umd / tally / text / format) — re-rendus sur tally_dirty
@@ -6345,7 +6432,9 @@ def _tpl_render_dynamic(d, img, i, cfg, comps):
                         d.rectangle([rect[0], rect[1], rect[0] + rect[2] - 1, rect[1] + rect[3] - 1],
                                     fill=_BAR_TINTS.get(dom, _BAR_TINTS["off"]))
                     ov["bg_color"] = ""
-                if _as_bool(comp.get("tally_text"), False) and dom != "off":
+                # Sur CARTE, le texte reste dans sa couleur normale : la couleur tally est posée par
+                # trame à travers le masque des glyphes (cf. _masque_libelle).
+                if _as_bool(comp.get("tally_text"), False) and dom != "off" and (_tally_k is None or not GPU):
                     col_over = _TPL_TALLY_TEXT_HEX.get(dom)
                 _draw_text_overlay(d, ov, txt, color_override=col_over)
             elif k == "format":
