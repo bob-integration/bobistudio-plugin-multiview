@@ -698,12 +698,10 @@ def _update_peaks(state, n_channels, now):
         # instant — typiquement un producteur amont REDÉMARRÉ : restart du moteur 2110_io qui détruit
         # puis recrée tous ses flux). Sans retenter ICI, l'état reste figé ar=None À JAMAIS (le state
         # est un dict non-None → render_meters ne le recrée pas via _open_audio_state) → ABSENCE
-        # permanente. On tente donc de ROUVRIR (avec garbage_collect pour se rattacher à la génération
+        # permanente. On tente donc de ROUVRIR (sur une Instance DÉDIÉE pour se rattacher à la génération
         # vivante). Échec (flux toujours absent) → absence, on retentera au tour suivant.
-        try: _gc_mxl()
-        except Exception: pass
         try:
-            ar = bobimxl.AudioReader(inst, state["name"]); state["ar"] = ar
+            ar = _lecteur_frais(bobimxl.AudioReader, state["name"]); state["ar"] = ar
             state["last_head"] = None; state["last_head_ts"] = now
         except Exception:
             state["ar"] = None
@@ -737,14 +735,12 @@ def _update_peaks(state, n_channels, now):
         # Figé > seuil : tenter de se rattacher à la génération courante du flux. Le producteur a
         # pu DÉTRUIRE+RECRÉER le flux sous le même nom (toggle générateur, (dé)abonnement 2110-30) ;
         # notre instance MXL longue durée garde une référence à l'ancienne génération MORTE → un
-        # simple ré-open s'y rattacherait encore (head figé). garbage_collect() purge les flows à
-        # writer mort (comme le fait le PRODUCTEUR avant de recréer) → le ré-open voit la vivante.
+        # simple ré-open s'y rattacherait encore (head figé). Une Instance DÉDIÉE (_lecteur_frais)
+        # résout le flux sur disque → le ré-open voit la vivante, sans garbage_collect global.
         try: ar.close()
         except Exception: pass
-        try: _gc_mxl()
-        except Exception: pass
         try:
-            ar = bobimxl.AudioReader(inst, state["name"]); state["ar"] = ar
+            ar = _lecteur_frais(bobimxl.AudioReader, state["name"]); state["ar"] = ar
             head = int(ar.head_index())
         except Exception:
             state["ar"] = None; head = -1
@@ -755,14 +751,12 @@ def _update_peaks(state, n_channels, now):
     try:
         r = ar.read_latest(A_SAMPLES_PER_CHUNK)   # (≤48, channels) float32 normalisé [-1,1]
     except Exception:
-        # flux invalidé (producteur recréé) → garbage_collect (purge l'ancienne génération) + rouvrir
+        # flux invalidé (producteur recréé) → rouvrir sur une Instance DÉDIÉE (_lecteur_frais)
         # sur la vivante. last_head=None pour ré-amorcer le suivi de fraîcheur au tour suivant.
         try: ar.close()
         except Exception: pass
-        try: _gc_mxl()
-        except Exception: pass
         try:
-            state["ar"] = bobimxl.AudioReader(inst, state["name"]); state["last_head"] = None
+            state["ar"] = _lecteur_frais(bobimxl.AudioReader, state["name"]); state["last_head"] = None
         except Exception:
             state["ar"] = None
         return None, None, "absence"
@@ -1637,6 +1631,15 @@ def _refresh_lat_metrics():
     # annoncé au contenu réellement affiché (timecode incrusté) : index vieux ⇒ le défaut est dans
     # la SÉLECTION du grain ; index frais + image vieille ⇒ il est entre la lecture et le DESSIN.
     metrics["fi_par_tuile"] = dict(_fi_par_tuile_latest)
+    # ÉTAT PAR TUILE (2026-10-29) : signal / nosignal / freeze, âge de la dernière image neuve et
+    # source câblée. Une tuile noire devient LISIBLE de l'extérieur, et l'orchestrateur alerte
+    # dessus (_noter_tuiles_sans_image) au lieu de laisser un mur à moitié noir sans rien dire.
+    _tn = time.monotonic()
+    metrics["tuiles"] = {{str(_i): {{"etat": (_tile_status.get(_i) or "ok"),
+                                    "age_image_s": round(_tn - _t, 1),
+                                    "src": ((FLUX_CONFIG[_i].get("path") or "") if _i < len(FLUX_CONFIG)
+                                            else "").removeprefix("/dev/shm/")}}
+                         for _i, _t in list(_image_vue.items())}}
     # shm proxy réellement lus (orphan-detect) : boucle de mix (fenêtres) ∪ échantillonneur des
     # frises VIDÉO (une frise dont la source n'alimente AUCUNE fenêtre lit quand même un proxy —
     # sans ça l'orchestrateur le croirait ORPHELIN et le supprimerait sous nos pieds).
@@ -1954,6 +1957,22 @@ threading.Thread(
     daemon=True).start()
 
 # ─── Helpers ─────────────────────────────────────────────────
+
+def _lecteur_frais(cls, name):
+    """Lecteur MXL (`bobimxl.Reader` / `AudioReader`) ouvert sur une Instance DÉDIÉE, libérée à
+    son `close()`. C'est la réouverture sans `garbage_collect()` : une Instance neuve n'a aucun
+    cache, elle résout le flux sur disque — donc sur la génération VIVANTE d'un flux recréé sous
+    le même nom (cf. _drop_input, bobimxl `_StaleGuard.reopen`)."""
+    own = bobimxl.Instance()
+    try:
+        r = cls(own, name)
+    except Exception:
+        try: own.close()
+        except Exception: pass
+        raise
+    r._own_inst = own
+    return r
+
 
 def open_source(cfg, own_instance=False):
     """Ouvre une source comme flux MXL (Reader). Le NOM = chemin sans le préfixe /dev/shm/.
@@ -3831,8 +3850,6 @@ def _vh_close(st):
     if src is not None:
         _close_source(src)
     st["src"] = None; st["path"] = ""
-    try: _gc_mxl()
-    except Exception: pass
 
 def _vh_pick_path(name):
     """Source la MOINS CHÈRE pour une vignette : le PLUS PETIT proxy pyramide disponible, POINT.
@@ -3911,7 +3928,7 @@ def _vh_sample(name, win, now, step):
         want = _vh_pick_path(name)
         if st["src"] is None or st["path"] != want:
             _vh_close(st)
-            st["src"] = open_source({{"path": want}})
+            st["src"] = open_source({{"path": want}}, own_instance=True)   # cf. _lecteur_frais
             st["path"] = want if st["src"] is not None else ""
             if st["src"] is not None:
                 st["tw"], st["th"], st["aspect"] = _vh_thumb_dims(st["src"])
@@ -4070,11 +4087,7 @@ def _ah_sample(name, now):
             st = _ah_new(); st["name"] = name; _ah[name] = st
     if st["ar"] is None:
         try:
-            _gc_mxl()
-        except Exception:
-            pass
-        try:
-            st["ar"] = bobimxl.AudioReader(inst, name)
+            st["ar"] = _lecteur_frais(bobimxl.AudioReader, name)
             st["last_head"] = None
         except Exception:
             st["ar"] = None
@@ -5279,7 +5292,7 @@ def _open_anc_state(anc_path):
         return None
     try:
         name = anc_path.removeprefix("/dev/shm/")
-        rd = bobimxl.Reader(inst, name)         # flux ANC data MXL (lève si absent)
+        rd = _lecteur_frais(bobimxl.Reader, name)   # flux ANC data MXL (lève si absent) ; Instance dédiée : rouvert après péremption sans GC
         # Codage annoncé par le producteur — lu UNE fois à l'ouverture (le flowDef est immuable).
         return {{"reader": rd, "path": anc_path, "flow_def": inst.flow_def(name),
                  "gidx": None, "packets": []}}
@@ -5296,7 +5309,7 @@ def _anc_packets(idx):
     de la source) laisse le reader collé à l'ancienne génération MORTE — get_latest y rejoue le
     dernier grain à l'infini (timecode FIGÉ) ou rend None, sans exception. Comme pour l'audio
     (head figé) et la vidéo (REOPEN_STALE_S) : index figé/illisible > _ANC_STALE_S → close +
-    garbage_collect + réouverture sur la génération vivante."""
+    réouverture sur une Instance dédiée (génération vivante, sans garbage_collect)."""
     path = _anc_path_for(idx)
     rec = anc_states.get(idx)
     # (ré)ouvre si l'entrée a changé de source, ou tant que le flux ANC n'est pas encore là.
@@ -5314,8 +5327,6 @@ def _anc_packets(idx):
         # Péremption : lâcher le reader + purger l'ancienne génération → réouverture au
         # prochain appel (rec["state"] None). Timer ré-armé = retentes bornées à 1/_ANC_STALE_S.
         try: st["reader"].close()
-        except Exception: pass
-        try: _gc_mxl()
         except Exception: pass
         rec["state"] = None
         return []
@@ -5438,6 +5449,11 @@ def _anc_report():
 #           d'état signal lèvent tally_dirty depuis la boucle, cf. _tile_status) ;
 #   min_w : largeur de cellule (px) sous laquelle le composant est MASQUÉ (repli petites tuiles).
 _tile_status = {{}}       # i → "" | "nosignal" | "freeze" (état signal par tuile, boucle de mix)
+# i → time.monotonic() de la dernière IMAGE NEUVE de la tuile (index de grain qui a avancé), ou de
+# son apparition à l'écran. Publié en `tuiles[i].age_image_s` (:8080) et surveillé par
+# l'orchestrateur : une tuile noire n'était visible NULLE PART dans l'état publié (recette
+# custom-f534d8c471, Z8 #213, 28/10 : Cam2/Cam3 noires sans aucune tentative ni alerte).
+_image_vue = {{}}
 _tpl_status_prev = {{}}   # dernier état publié → détection de transition (re-bake conditions)
 _TPL_SIGNAL_CONDS = ("no_signal", "freeze", "signal_ok")
 
@@ -7097,11 +7113,11 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
     _due = _reouvrir_apres.get(i)
     if _due is not None and time.monotonic() < _due:
         return None
-    # ESCALADE : au 2ᵉ décrochage consécutif de la MÊME entrée, on ouvre sur une Instance dédiée
-    # — cache vierge, donc résolution du flux SUR DISQUE (banc : seul chemin qui récupère quand le
-    # GC est bloqué par une référence résiduelle de notre propre Instance).
+    # RECONNEXION : dès le 1er décrochage de cette entrée, on rouvre sur une Instance DÉDIÉE —
+    # cache vierge, résolution du flux SUR DISQUE, donc sur la génération vivante (cf. _drop_input :
+    # c'est ce qui remplace le garbage_collect global). Première ouverture : Instance partagée.
     src = open_source({{"path": wanted, "in_w": cfg_iw, "in_h": cfg_ih}},
-                      own_instance=(_stale_drops.get(i, 0) >= 2))
+                      own_instance=(_stale_drops.get(i, 0) >= 1))
     if src is not None:
         src["path"] = wanted
         with state_lock:
@@ -7124,12 +7140,11 @@ def ensure_input(i, want_path=None, want_w=None, want_h=None):
 # Règle : un mapping n'est libéré que DEPUIS LE THREAD DE COMPOSITION, en début de trame, seul
 # instant où l'on sait qu'aucune vue n'est vivante. Les autres threads mettent en file.
 # ⚠ On ne diffère PAS les appels VENANT du thread de composition : `ensure_input` ferme puis
-# ROUVRE dans la foulée, et son `garbage_collect()` est justement ce qui la rattache à la
-# génération vivante — le différer casserait la reconnexion.
+# ROUVRE dans la foulée (sur une Instance dédiée depuis le 2026-10-29) — le différer casserait la
+# reconnexion.
 _thread_compo = None                  # ident du thread de composition (posé avant la boucle)
 _a_liberer = []                       # sources en attente de fermeture
 _a_liberer_lock = threading.Lock()
-_gc_demande = False                   # un garbage_collect a été demandé par un autre thread
 
 
 def _sur_thread_compo():
@@ -7159,31 +7174,15 @@ def _close_source(src):
         _a_liberer.append(src)
 
 
-def _gc_mxl():
-    """`inst.garbage_collect()` — global au ring MXL, donc encore plus dangereux qu'une
-    fermeture : il purge des GÉNÉRATIONS entières. Même règle que `_close_source`."""
-    global _gc_demande
-    if _sur_thread_compo():
-        try: inst.garbage_collect()
-        except Exception: pass
-        return
-    with _a_liberer_lock:
-        _gc_demande = True
-
-
 def _liberer_differe():
     """Purge la file — À APPELER EN DÉBUT DE TRAME, avant toute construction de vue."""
-    global _gc_demande
     with _a_liberer_lock:
         lot = _a_liberer[:]
         del _a_liberer[:]
-        gc = _gc_demande
-        _gc_demande = False
     for src in lot:
         _fermer_source_maintenant(src)
-    if lot or gc:
-        try: inst.garbage_collect()
-        except Exception: pass
+    if lot:
+        # (Plus de garbage_collect ici : global au domaine, cf. _drop_input.)
         if len(lot) > 8:
             log("multiview: %d source(s) libérée(s) en différé" % len(lot), "debug")
 
@@ -7195,20 +7194,12 @@ def _drop_input(i, rd, raison=""):
     with state_lock:
         _cur = sources[i] if i < len(sources) else None
     _close_source(_cur if isinstance(_cur, dict) else {{"reader": rd}})
-    # GC OBLIGATOIRE entre close et réouverture (même parade que le moteur, tx_reopen_if_stale) :
-    # le flux périmé reste résolvable PAR NOM tant qu'il n'est pas collecté — sans GC, la
-    # réouverture retombe sur L'ORPHELIN qu'on vient de lâcher (mesuré : boucle drop/reopen à
-    # ½ cadence sur un shard dont le proxy amont avait été recréé).
-    # ⚠ GC SEULEMENT SUR LES PREMIÈRES TENTATIVES. `garbage_collect()` est GLOBAL au domaine MXL :
-    # il purge des générations entières, y compris celles d'AUTRES process. Mesuré le 2026-08-19 à
-    # En exploitation : pendant une reconnexion emballée, quatre flux VIVANTS du moteur 2110 (`_1`, `_5`,
-    # `_9`, `_13`) ont été collectés et le moteur a dû les recréer — tous leurs autres lecteurs
-    # sont alors restés accrochés à la génération morte, à 0 fps, sans le savoir. Le GC est utile
-    # pour lâcher une génération périmée AU MOMENT de la reconnexion ; le rejouer à cadence trame
-    # n'apporte rien et casse les voisins.
-    if _stale_drops.get(i, 0) < _REOUV_IMMEDIAT:
-        try: _gc_mxl()
-        except Exception: pass
+    # ★ PLUS DE `garbage_collect()` ICI (2026-10-29). Il servait à faire oublier l'orphelin pour que
+    # la réouverture PAR NOM tombe sur la génération vivante — mais il est GLOBAL au domaine MXL :
+    # il a supprimé des flux VIVANTS d'autres processus (quatre flux du moteur 2110 le 2026-08-19,
+    # tous leurs lecteurs à 0 fps). La réouverture se fait désormais d'emblée sur une Instance
+    # DÉDIÉE (cf. ensure_input) : cache vierge, résolution sur disque, même résultat sans toucher au
+    # domaine — c'est aussi la règle de bobimxl (`_StaleGuard.reopen`).
     with state_lock:
         if i < len(sources): sources[i] = None
     # TRACE OBLIGATOIRE (niveau « warning » : passe même en log_level=info, et ce n'est PAS une
@@ -7228,7 +7219,7 @@ def _drop_input(i, rd, raison=""):
         % (i, _cur.get("path", "?") if isinstance(_cur, dict) else "?",
            (" : " + raison) if raison else "", _n,
            ", prochaine dans %.1fs" % _att if _att else "",
-           " → Instance DÉDIÉE" if _n >= 2 else ""),
+           " → Instance DÉDIÉE"),
         "warning" if (_n <= 3 or _n % 100 == 0) else "debug")
     _in_track.pop(i, None)
     _stale_since.pop(i, None)
@@ -8685,7 +8676,9 @@ while True:
     for i, cfg in enumerate(_fc):
         if cfg.get("hidden"):
             _tile_status.pop(i, None)
+            _image_vue.pop(i, None)
             continue   # entrée de la banque non affichée : source câblée conservée, pas de rendu
+        _image_vue.setdefault(i, now_m)
         # Modèle de PiP SANS composant vidéo : rien à lire ni à poser (cellule d'habillage pur,
         # composants rendus par le chrome/les tuiles per-frame).
         if _tpl_comps(cfg) is not None and _tpl_video_comp(cfg) is None:
@@ -8758,6 +8751,7 @@ while True:
                             and _hi == _in_track.get(i, {{}}).get("fi")):
                         _drop_input(i, rd, "tête figée %d, %d trames de retard sur la grille"
                                     % (_hi, _fi_out - _hi))
+                        _tile_status[i] = "nosignal"   # oublié ici : `when: no_signal` restait muet
                         canvas_y[vy:vy+vh, video_x:video_x+video_w] = 0
                         if SHOW_NO_SIGNAL:
                             _statuses.append((i, "nosignal", "", None))
@@ -8861,6 +8855,7 @@ while True:
                 _in_track[i] = tr
             elif fi != tr["fi"]:
                 tr["fi"] = fi; tr["t"] = now_m
+                _image_vue[i] = now_m
                 _frame_neuve = True     # au moins une entrée a AVANCÉ → cette composition relaie
                                         # de la matière neuve (cf. `fps_content`)
             _st = "freeze" if (FREEZE_DETECT_S > 0 and now_m - tr["t"] > FREEZE_DETECT_S) else ""
