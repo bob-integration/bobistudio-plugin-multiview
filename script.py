@@ -1380,7 +1380,6 @@ _cells_dirty = set()
 _cells_lock = threading.Lock()
 
 _TPL_TALLY_CONDS = ("tally_red", "tally_green", "tally_any", "tally_off")
-_BORDER_BAKED_TALLY = ("viewfinder", "flat")   # cadres teintés par le tally SANS masque carte
 _cell_tally_cond = {{}}      # i → la fenêtre a-t-elle un composant dont la VISIBILITÉ suit le tally ?
 
 def _cellule_suit_tally(i):
@@ -1393,18 +1392,7 @@ def _cellule_suit_tally(i):
         hit = False
         try:
             if i < len(FLUX_CONFIG):
-                # ★ Ce que le masque ne peint PAS, et qui doit donc encore re-baker la cellule :
-                #   • une PRÉSENCE qui suit le tally (`when`) ;
-                #   • la couleur du TEXTE d'un UMD (`tally_text`) — sa forme, ce sont les glyphes ;
-                #   • un cadre vidéo teinté hors masque : équerres `viewfinder`, soulignement `flat`
-                #     (seul le mode `tally` a son masque, cf. _masques_teintes).
-                # Les trois derniers manquaient : libellé et équerres gardaient la couleur du dernier
-                # re-bake complet — tally figé à l'écran, paquet pourtant accepté, et le re-bake
-                # incrémental refusé faute de cellule (relevé Z8 #225, 2026-10-29).
-                hit = any(isinstance(c, dict) and (
-                              (c.get("when") or "always") in _TPL_TALLY_CONDS
-                              or (c.get("type") == "umd" and _as_bool(c.get("tally_text"), False))
-                              or (c.get("type") == "video" and c.get("border") in _BORDER_BAKED_TALLY))
+                hit = any(isinstance(c, dict) and (c.get("when") or "always") in _TPL_TALLY_CONDS
                           for c in (_tpl_comps(FLUX_CONFIG[i]) or ()))
         except Exception:
             hit = True          # doute → on re-bake, jamais d'habillage figé en silence
@@ -6802,12 +6790,6 @@ def _chrome_bake_pass():
                     _ia2[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = 255 - _pa2.astype(_ACC)
                     _up[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = _pu.astype(_ACC) * _pa2
                     _vp[_cy0:_cy0 + _chh, _cx0:_cx0 + _cww] = _pv.astype(_ACC) * _pa2
-                # ★ REPUBLIER un tuple NEUF : le compositeur ne reprend l'opérande que sur un
-                # changement d'IDENTITÉ (`_chrome_pub is not _chrome_seen`). Sur CPU il lit ces
-                # tableaux en direct et voyait le rapiéçage ; sur CARTE il en garde une copie
-                # (`_to_xp`) qui ne bougeait plus — habillage figé alors que le rapiéçage tournait
-                # (Z8 #225, 2026-10-29 : incr_n montait à chaque coupe, l'image restait la même).
-                _chrome_pub = (_chrome_pub[0],)
                 _chrome_dirty = False; _did = True
                 _ms = (time.time_ns() - _t0) / 1e6
                 _bake_voie["incr_n"] += 1; _bake_voie["incr_ms"] += _ms
