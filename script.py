@@ -522,9 +522,13 @@ GPU_SLICE = GPU and SLICE_ON      # chemin tranche VRAM actif (exige GPU + flag 
 # get_slice (attentes amont) et commit MXL restent au grain SLICE_LINES : l'amont/aval ne voit
 # AUCUNE différence de protocole, seule la granularité des opérations GPU grossit (H2D groupé par
 # lot, kernels par lot, D2H par lot RECOUVERT — cf. _compose_bands). k=1 = squelette 0.26.0.
-GPU_BATCH_BANDS = 4
+# ⚠ Repli = défaut du MANIFESTE (15, GO-MEGA-540). Il valait 4 jusqu'au 2026-10-29 alors que le
+# manifeste disait 15 depuis le 09/08 : la clé étant cachée, elle n'est jamais persistée, donc
+# TOUS les murs tournaient à 4 (Z8, Quadro RTX 4000 : 1,3 trame perdue/s à 4, 0 à 15).
+# Garde : tests/verif_defauts_manifeste_script.py.
+GPU_BATCH_BANDS = 15
 try:
-    GPU_BATCH_BANDS = max(1, int(CONFIG.get("gpu_batch_bands", 4) or 1))
+    GPU_BATCH_BANDS = max(1, int(CONFIG.get("gpu_batch_bands", 15) or 1))
 except Exception:
     pass
 # D2H du lot DIRECTEMENT dans le grain (défaut) plutôt que vers un tampon épinglé suivi d'une
