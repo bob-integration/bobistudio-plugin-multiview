@@ -2926,7 +2926,10 @@ def _video_rect(cfg):
         _m = _bt + 1
         _mx = min(_m, max(0, rw // 4)); _my = min(_m, max(0, rh // 4))
         rx += _mx; ry += _my; rw = max(2, rw - 2 * _mx); rh = max(2, rh - 2 * _my)
-    if (vr.get("fit") or "fill") == "contain":
+    # Défaut « contain » (2026-10-29) : jamais d'image déformée. « fill » l'étirait dès que la
+    # tuile n'avait plus le format du modèle (Z8 #225). ⚠ Le ratio est celui des PIXELS de la
+    # source (in_w/in_h) : une SD anamorphosée (720×576 en 16:9) s'afficherait en 1,25.
+    if (vr.get("fit") or "contain") == "contain":
         # Homothétique au ratio SOURCE (in_w/in_h résolus par l'orchestrateur), centré.
         sw = int(cfg.get("in_w") or 0); sh = int(cfg.get("in_h") or 0)
         if sw > 1 and sh > 1:
@@ -5501,7 +5504,7 @@ def _classic_comps(cfg):
         cfg["_classic_gen"] = (key, comps)
         return comps
     comps = [{{"id": "video", "type": "video", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0,
-              "fit": "fill", "border": "none"}}]
+              "fit": "contain", "border": "none"}}]
     if show_label:
         comps.append({{"id": "umd", "type": "umd", "x": 0.0, "y": 1.0 - bh, "w": 1.0, "h": bh,
                       "text_source": ("tsl" if cfg.get("label_source") == "protocol" else "name"),
