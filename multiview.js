@@ -4623,8 +4623,8 @@ function mwEdCmd(action, sc) {
     case 'selectAll':
         mwSelectAll(); dessiner();
         return;
-    case 'nudge': {   // 2 px (les dimensions et positions de fenêtre restent paires), Maj = 20 px
-        const m = sc && mwNudge(sc.dx * 2, sc.dy * 2);
+    case 'nudge': {   // 1 px, Maj = 10 px : même pas que l'éditeur de modèles de PiP et le split
+        const m = sc && mwNudge(sc.dx, sc.dy);
         if (!m) return;
         drawCanvas(); syncGeomFields();
         _persistMembres(m);

@@ -171,7 +171,7 @@
   "plugin.multiview.ed_delete": "Delete the selection (a window is hidden, its cable kept)",
   "plugin.multiview.ed_help": "Keyboard shortcuts",
   "plugin.multiview.ed_select_all": "Select all",
-  "plugin.multiview.ed_nudge": "Move the selection by 2 px (Shift: 20 px)",
+  "plugin.multiview.ed_nudge": "Move the selection by 1 px (Shift: 10 px)",
   "plugin.multiview.ed_save": "Deploy now",
   "plugin.multiview.ed_deselect": "Deselect",
   "plugin.multiview.ed_keys_title": "Layout editor shortcuts",
