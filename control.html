@@ -115,6 +115,19 @@
                     </button>
                 </div>
             </div>
+            <div class="ctl-toolgroup">
+                <span class="ctl-toolgroup-label" aria-hidden="true" data-i18n="plugin.multiview.group_edit">Édition</span>
+                <div class="ctl-toolrow" id="mw_row_edit" role="group" aria-label="Édition" data-i18n-aria="plugin.multiview.group_edit">
+                    <button type="button" class="ctl-tool" id="mw_ed_undo" onclick="mwEdCmd('undo')" disabled aria-label="Annuler" title="Annuler" data-i18n-aria="plugin.multiview.ed_undo" data-i18n-title="plugin.multiview.ed_undo" data-ico="undo"></button>
+                    <button type="button" class="ctl-tool" id="mw_ed_redo" onclick="mwEdCmd('redo')" disabled aria-label="Rétablir" title="Rétablir" data-i18n-aria="plugin.multiview.ed_redo" data-i18n-title="plugin.multiview.ed_redo" data-ico="redo"></button>
+                    <button type="button" class="ctl-tool" id="mw_ed_cut" onclick="mwEdCmd('cut')" disabled aria-label="Couper" title="Couper" data-i18n-aria="plugin.multiview.ed_cut" data-i18n-title="plugin.multiview.ed_cut" data-ico="cut"></button>
+                    <button type="button" class="ctl-tool" id="mw_ed_copy" onclick="mwEdCmd('copy')" disabled aria-label="Copier la sélection" title="Copier la sélection" data-i18n-aria="plugin.multiview.ed_copy" data-i18n-title="plugin.multiview.ed_copy" data-ico="copy_settings"></button>
+                    <button type="button" class="ctl-tool" id="mw_ed_paste" onclick="mwEdCmd('paste')" aria-label="Coller" title="Coller" data-i18n-aria="plugin.multiview.ed_paste" data-i18n-title="plugin.multiview.ed_paste" data-ico="paste_settings"></button>
+                    <button type="button" class="ctl-tool" id="mw_ed_dup" onclick="mwEdCmd('duplicate')" disabled aria-label="Dupliquer" title="Dupliquer" data-i18n-aria="plugin.multiview.ed_duplicate" data-i18n-title="plugin.multiview.ed_duplicate" data-ico="duplicate"></button>
+                    <button type="button" class="ctl-tool" id="mw_ed_del" onclick="mwEdCmd('delete')" disabled aria-label="Supprimer la sélection" title="Supprimer la sélection" data-i18n-aria="plugin.multiview.ed_delete" data-i18n-title="plugin.multiview.ed_delete" data-ico="reset_box"></button>
+                    <button type="button" class="ctl-tool" id="mw_ed_help" onclick="mwEdCmd('help')" aria-label="Raccourcis clavier" title="Raccourcis clavier" data-i18n-aria="plugin.multiview.ed_help" data-i18n-title="plugin.multiview.ed_help" data-ico="keyboard"></button>
+                </div>
+            </div>
             <label class="mw-snap" for="ed_snap"><input type="checkbox" class="ios-toggle" id="ed_snap" onchange="snapEnabled=this.checked"> <span data-i18n="plugin.multiview.snap">Snap magnétique</span></label>
             <label class="mw-snap" for="ed_regions" id="ed_regions_wrap" hidden title="Traits pointillés sur le canvas : frontières des régions de calcul. Déplacer une fenêtre à l'intérieur de sa région est immédiat ; lui faire franchir une frontière reconstruit une région (quelques secondes)." data-i18n-title="plugin.multiview.fabric_regions_hint"><input type="checkbox" class="ios-toggle" id="ed_regions" checked onchange="mwToggleRegions(this)"> <span data-i18n="plugin.multiview.show_regions">Régions de calcul</span></label>
         </div>

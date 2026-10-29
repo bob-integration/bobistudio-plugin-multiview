@@ -19,6 +19,9 @@ function mwApplyI18n(root) {
     r.querySelectorAll('[data-i18n-title]').forEach(n => { n.title = T(n.dataset.i18nTitle, n.title); });
     r.querySelectorAll('[data-i18n-aria]').forEach(n => { n.setAttribute('aria-label', T(n.dataset.i18nAria, n.getAttribute('aria-label'))); });
     r.querySelectorAll('[data-i18n-ph]').forEach(n => { n.placeholder = T(n.dataset.i18nPh, n.placeholder); });
+    // Pictos du catalogue partagé (MXLControls.ICONS) posés sur les outils `data-ico`.
+    const I = (window.MXLControls && window.MXLControls.ICONS) || {};
+    r.querySelectorAll('[data-ico]').forEach(n => { if (!n.innerHTML.trim() && I[n.dataset.ico]) n.innerHTML = I[n.dataset.ico]; });
 }
 
 // ─── État global ──────────────────────────────────────────────
@@ -762,6 +765,7 @@ async function chargerMw(vmid) {
     });
     padBank();   // banque à indices stables : toujours max_inputs entrées
     _selClear();
+    mwHistReset();   // un mur chargé = un historique neuf
     renderEditor(c.hostname);
 }
 
@@ -2603,6 +2607,7 @@ function updateToolbar() {
     if (copy) copy.disabled = nWin === 0;
     const paste = document.getElementById('ed_paste_btn');
     if (paste) paste.disabled = !reglagesClipboard || nWin === 0;
+    mwEdToolsState();
     const why = (n > 0 && nWin === 0) ? T('plugin.multiview.tools_windows_only') : '';
     const row = document.getElementById('mw_row_settings');
     if (row) row.title = why;
@@ -2618,6 +2623,7 @@ function entryRowKey(ev, i) {
 function hotApplyWindow(idx) {
     if (editorVmid === null || !editorParams) return;
     if (mwLectureSeule()) return;   // lecture seule : aucun envoi, même déclenché autrement que par l'UI
+    mwHistCommit();   // annuler/rétablir : instantané APRÈS le geste (cf. « Édition au clavier »)
     mwFabricBurst();
     const f = editorParams.flux_config[idx];
     if (!f) return;
@@ -2663,6 +2669,7 @@ function hotApplyWindow(idx) {
 }
 
 function hotApplyFull() {
+    if (editorParams && !mwLectureSeule()) mwHistCommit();   // annuler/rétablir (« Édition au clavier »)
     // Passe par le endpoint deploy pour que _multiview_hot_apply résolve in_w/in_h via _shm_dims.
     deployerEditor();
 }
@@ -2670,6 +2677,7 @@ function hotApplyFull() {
 function hotApplyStyle() {
     if (editorVmid === null || !editorParams) return;
     if (mwLectureSeule()) return;
+    mwHistCommit();   // annuler/rétablir (« Édition au clavier »)
     fetch(`/api/containers/${editorVmid}/plugin/style`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -4448,3 +4456,209 @@ function exporterLayout(lid) {
 
 // Le montage est piloté par le shell générique Traitements (tpLoadInstances → tpMount →
 // MXLPlugins.multiview.mount(el, vmid)). Pas d'init autonome ici.
+
+// ─── ÉDITION AU CLAVIER (2026-10-29) ─────────────────────────────────────────────────────────────
+// Annuler/rétablir, copier/couper/coller, dupliquer, supprimer, tout sélectionner, flèches — même
+// comportement que les éditeurs de macros, par le noyau partagé static/js/edit_kit.js.
+//
+// ★ L'historique s'accroche à la PERSISTANCE, pas à chaque fonction qui modifie : tout geste finit
+// par hotApplyFull / hotApplyWindow / hotApplyStyle (c'est ce qui l'envoie au mur). On y empile un
+// instantané de l'état APRÈS le geste ; un instantané identique n'est pas empilé, donc les
+// hotApplyWindow en boucle d'un même geste n'en font qu'un.
+//
+// ★ Une FENÊTRE n'a pas d'identité propre : c'est un emplacement de la banque (indice = clé de
+// câblage côté mur). Coller une fenêtre réaffiche donc un emplacement LIBRE et y recopie les
+// réglages — jamais la source (path / audio_path / anc_path) : la source d'une fenêtre se câble,
+// elle ne se duplique pas (même règle que « Copier les réglages »).
+const MW_UNDO_KEYS = ['flux_config', 'overlays', 'meter_blocks', 'video_history_blocks', 'audio_history_blocks'];
+const MW_WIN_NOCOPY = ['path', 'audio_path', 'anc_path', 'hidden'];
+const MW_PASTE_OFFSET = 20;
+let mwHist = null, mwHistFor = null;
+
+function _mwState() {
+    const s = {};
+    MW_UNDO_KEYS.forEach(k => { s[k] = (editorParams && editorParams[k]) || []; });
+    return s;
+}
+function mwHistReset() {
+    if (!window.BobiEditKit || !editorParams) { mwHist = null; return; }
+    mwHist = BobiEditKit.history(50);   // 50 : un overlay image porte son image en base64
+    mwHistFor = editorParams;
+    mwHist.reset(_mwState());
+}
+function mwHistCommit() {
+    if (!editorParams || !window.BobiEditKit) return;
+    if (mwHistFor !== editorParams) mwHistReset();   // autre mur chargé entre-temps
+    if (mwHist) mwHist.commit(_mwState());
+    mwEdToolsState();
+}
+// Appelé en tête de hotApplyFull / hotApplyWindow / hotApplyStyle (les seuls envois au mur).
+
+const _mwClone = o => JSON.parse(JSON.stringify(o));
+const _mwNewId = p => p + Date.now().toString(36) + Math.floor(Math.random() * 100000);
+const _MW_ID_PREFIX = {ov: 'ov', blk: 'mb', vh: 'hb', ah: 'hb'};
+
+// Morceau copié : les objets de la sélection, par famille (fenêtres sans leur source).
+function mwFragment() {
+    const frag = {win: [], ov: [], blk: [], vh: [], ah: []};
+    _selRefs().forEach(r => {
+        const o = _mwClone(_refObj(r));
+        if (r.k === 'win') MW_WIN_NOCOPY.forEach(k => delete o[k]);
+        frag[r.k].push(o);
+    });
+    return frag;
+}
+// Pose un morceau sur le mur, décalé de `off` px, borné au mur ; sélectionne ce qui a été posé.
+// Renvoie le nombre de fenêtres qui n'ont pas trouvé d'emplacement libre.
+function mwPasteFragment(frag, off) {
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    const place = o => {
+        o.w = Math.min(o.w || 2, ow); o.h = Math.min(o.h || 2, oh);
+        o.x = Math.max(0, Math.min(ow - o.w, Math.round((o.x || 0) + off) & ~1));
+        o.y = Math.max(0, Math.min(oh - o.h, Math.round((o.y || 0) + off) & ~1));
+    };
+    const sel = [];
+    let refused = 0;
+    padBank();
+    (frag.win || []).forEach(src => {
+        const idx = editorParams.flux_config.findIndex(f => f.hidden);
+        if (idx < 0) { refused++; return; }
+        const f = editorParams.flux_config[idx];
+        Object.keys(src).forEach(k => { if (!MW_WIN_NOCOPY.includes(k)) f[k] = _mwClone(src[k]); });
+        f.hidden = false;
+        place(f);
+        sel.push({k: 'win', i: idx});
+    });
+    ['ov', 'blk', 'vh', 'ah'].forEach(k => {
+        (frag[k] || []).forEach(src => {
+            const o = Object.assign(_mwClone(src), {id: _mwNewId(_MW_ID_PREFIX[k])});
+            place(o);
+            const list = k === 'ov' ? (editorParams.overlays = editorParams.overlays || [])
+                : k === 'blk' ? (editorParams.meter_blocks = editorParams.meter_blocks || [])
+                : histList(k === 'ah' ? 'audio' : 'video');
+            list.push(o);
+            sel.push({k, i: list.length - 1});
+        });
+    });
+    if (sel.length) { mwSel = sel; _selSync(); }
+    return refused;
+}
+// Supprime TOUTE la sélection, familles mêlées : une fenêtre est masquée (câble conservé, comme le
+// bouton Supprimer), les autres objets retirés de leur liste — indices décroissants, sinon le
+// premier retrait décale les suivants.
+function mwDeleteSelection() {
+    const refs = _selRefs();
+    if (!refs.length) return false;
+    refs.filter(r => r.k === 'win').forEach(r => { editorParams.flux_config[r.i].hidden = true; });
+    refs.filter(r => r.k !== 'win').sort((a, b) => b.i - a.i).forEach(r => _SEL_LIST[r.k]().splice(r.i, 1));
+    _selClear();
+    return true;
+}
+function mwSelectAll() {
+    const sel = [];
+    Object.keys(_SEL_LIST).forEach(k => _SEL_LIST[k]().forEach((o, i) => { if (o && !o.hidden) sel.push({k, i}); }));
+    mwSel = sel; _selSync();
+}
+function mwNudge(dx, dy) {
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    const membres = _selMembres();
+    if (!membres.length) return null;
+    membres.forEach(m => {
+        m.o.x = Math.max(0, Math.min(ow - (m.o.w || 0), (m.o.x || 0) + dx));
+        m.o.y = Math.max(0, Math.min(oh - (m.o.h || 0), (m.o.y || 0) + dy));
+    });
+    return membres;
+}
+
+const MW_KEYS = () => [
+    ['mod+z', T('plugin.multiview.ed_undo')], ['mod+shift+z / mod+y', T('plugin.multiview.ed_redo')],
+    ['mod+c', T('plugin.multiview.ed_copy')], ['mod+x', T('plugin.multiview.ed_cut')],
+    ['mod+v', T('plugin.multiview.ed_paste')], ['mod+d', T('plugin.multiview.ed_duplicate')],
+    ['mod+a', T('plugin.multiview.ed_select_all')], [T('plugin.multiview.ed_key_del'), T('plugin.multiview.ed_delete')],
+    ['← → ↑ ↓', T('plugin.multiview.ed_nudge')], ['mod+s', T('plugin.multiview.ed_save')],
+    [T('plugin.multiview.ed_key_esc'), T('plugin.multiview.ed_deselect')], ['?', T('plugin.multiview.ed_help')]];
+
+function mwEdCmd(action, sc) {
+    if (!editorParams) return;
+    const K = window.BobiEditKit;
+    const ro = mwLectureSeule();
+    const writes = ['undo', 'redo', 'cut', 'paste', 'duplicate', 'delete', 'nudge', 'save'];
+    if (ro && writes.includes(action)) { mwFlash(T('plugin.multiview.ed_read_only')); return; }
+    switch (action) {
+    case 'undo': case 'redo': {
+        if (mwHistFor !== editorParams) mwHistReset();
+        const st = mwHist && (action === 'undo' ? mwHist.undo() : mwHist.redo());
+        if (st === undefined) return;
+        MW_UNDO_KEYS.forEach(k => { editorParams[k] = st[k]; });
+        _selClear();
+        dessiner();
+        hotApplyFull();   // l'instantané rendu est déjà le courant : il n'est pas ré-empilé
+        return;
+    }
+    case 'copy': case 'cut': {
+        if (!_selCount() || !K) return;
+        K.clipboard.put('mv-elements', mwFragment());
+        if (action === 'cut') { mwDeleteSelection(); dessiner(); hotApplyFull(); }
+        else mwFlash(T('plugin.multiview.ed_copied'));
+        return;
+    }
+    case 'paste': {
+        const c = K && K.clipboard.get();
+        if (!c || c.kind !== 'mv-elements') { mwFlash(T('plugin.multiview.ed_paste_foreign')); return; }
+        const refused = mwPasteFragment(_mwClone(c.data), MW_PASTE_OFFSET);
+        if (refused) mwFlash(T('plugin.multiview.flash_bank_full').replace('{n}', editorParams.max_inputs));
+        dessiner(); hotApplyFull();
+        return;
+    }
+    case 'duplicate': {
+        if (!_selCount()) return;
+        const refused = mwPasteFragment(mwFragment(), MW_PASTE_OFFSET);
+        if (refused) mwFlash(T('plugin.multiview.flash_bank_full').replace('{n}', editorParams.max_inputs));
+        dessiner(); hotApplyFull();
+        return;
+    }
+    case 'delete':
+        if (mwDeleteSelection()) { dessiner(); hotApplyFull(); }
+        return;
+    case 'selectAll':
+        mwSelectAll(); dessiner();
+        return;
+    case 'nudge': {   // 2 px (les dimensions et positions de fenêtre restent paires), Maj = 20 px
+        const m = sc && mwNudge(sc.dx * 2, sc.dy * 2);
+        if (!m) return;
+        drawCanvas(); syncGeomFields();
+        _persistMembres(m);
+        return;
+    }
+    case 'save':
+        deployerEditor();
+        return;
+    case 'escape':
+        _selClear(); dessiner();
+        return;
+    case 'help':
+        if (K) K.showHelp(T('plugin.multiview.ed_keys_title'), MW_KEYS(), T('plugin.multiview.close'));
+        return;
+    }
+}
+function mwEdToolsState() {
+    const set = (id, on) => { const b = document.getElementById(id); if (b) b.disabled = !on; };
+    const has = _selCount() > 0;
+    set('mw_ed_undo', mwHist && mwHistFor === editorParams && mwHist.canUndo());
+    set('mw_ed_redo', mwHist && mwHistFor === editorParams && mwHist.canRedo());
+    ['mw_ed_cut', 'mw_ed_copy', 'mw_ed_dup', 'mw_ed_del'].forEach(id => set(id, has));
+}
+// Le canvas est visible = l'éditeur est à l'écran (et pas derrière la fenêtre « Moteur… »).
+function mwEdActive() {
+    const c = document.getElementById('ed_canvas');
+    const eng = document.getElementById('mw-engine-modal');
+    return !!(editorParams && c && c.offsetParent !== null && !(eng && !eng.hidden) &&
+              !document.getElementById('bek-help'));
+}
+if (window.BobiEditKit && !window._mwEdBound) {
+    window._mwEdBound = true;   // le script du plugin peut être rechargé : un seul écouteur
+    const on = {};
+    ['undo', 'redo', 'copy', 'cut', 'paste', 'duplicate', 'delete', 'selectAll', 'nudge', 'save',
+     'escape', 'help'].forEach(a => { on[a] = sc => mwEdCmd(a, sc); });
+    BobiEditKit.bind({active: mwEdActive, on});
+}
