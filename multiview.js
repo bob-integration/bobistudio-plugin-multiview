@@ -3267,8 +3267,12 @@ function _mvFillVarSelect() {
         grp(T('plugin.multiview.vars_grp_orch') || 'Orchestrateur', cat.orchestrateur);
         // États d'AUTRES conteneurs : ceux du PROJET de ce mur par leur nom d'abord (la
         // restauration d'un projet garde les noms), puis les emplacements.
-        grp(T('plugin.multiview.vars_grp_project') || 'Ce projet', cat.project_states);
-        grp(T('plugin.multiview.vars_grp_states') || 'Emplacements', cat.states);
+        // Un groupe PAR CONTENEUR, rangés par type (static/js/var_menu.js) : à plat, les états
+        // d'un projet faisaient plusieurs dizaines d'entrées en vrac.
+        const byCt = (titre, liste) => (window.BobiVarMenu ? BobiVarMenu.appendGroups(sel, titre, liste)
+                                                            : grp(titre, liste));
+        byCt(T('plugin.multiview.vars_grp_project') || 'Ce projet', cat.project_states);
+        byCt(T('plugin.multiview.vars_grp_states') || 'Emplacements', cat.states);
         sel.dataset.filled = '1';
         sel.onchange = () => {
             const v = sel.value; sel.value = '';
