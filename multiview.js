@@ -3690,74 +3690,16 @@ function computeSnap(skip, x, y, w, h) {
 // `minPx` = plancher de dimension : 64 px pour une fenêtre vidéo (défaut historique), plus bas
 // pour un objet posé — une pastille, un petit logo sont légitimes.
 function computeSnapResize(skip, x, y, w, h, ratio, minPx) {
-    // Snap uniquement le coin bas-droit (resize est ancré haut-gauche)
-    const out_w = editorParams.out_width;
-    const out_h = editorParams.out_height;
-    const xTargets = [out_w, out_w / 2];
-    const yTargets = [out_h, out_h / 2];
-    _snapRects(skip).forEach(o => {
-        xTargets.push(o.x, o.x + o.w);
-        yTargets.push(o.y, o.y + o.h);
-    });
-    const guides = [];
-    // ratio > 0 : objet à FORMAT CONTRAINT (fenêtre vidéo). Le coin bas-droit suit la souris,
-    // donc les DEUX bords bougent — mais un rectangle à ratio fixe ne peut satisfaire qu'UNE
-    // cible à la fois. On retient la plus PROCHE DU COIN (bord droit vs cibles verticales,
-    // bord bas vs cibles horizontales, distance en pixels canvas), puis on recalcule l'autre
-    // dimension au ratio : les deux axes bougent, un seul est aimanté.
-    // ⚠ Avant 0.111.0, les deux axes étaient aimantés INDÉPENDAMMENT : la hauteur déduite du
-    // ratio était écrasée par `snapH = t - y` sans toucher à la largeur → l'aimant DÉFORMAIT
-    // la fenêtre. Constaté en production (mur multiview-Vincent : PiP 6..9 à 1,79/1,77/1,82
-    // au lieu de 1,778), et propagé ensuite par « Remplir » qui conserve fidèlement le ratio
-    // courant d'une fenêtre déjà déformée.
-    if (ratio > 0) {
-        const MN = minPx || 64;
-        let best = null; // {d, w, h, axis}
-        xTargets.forEach(t => {
-            const d = Math.abs((x + w) - t);
-            if (d > SNAP_PX) return;
-            const nw = t - x, nh = Math.round(nw / ratio);
-            // Une cible dont la dimension DÉDUITE sortirait du cadre (ou passerait sous le
-            // plancher) n'est pas atteignable à ratio constant : on ne la propose pas.
-            if (nw < MN || nh < MN || y + nh > out_h) return;
-            if (!best || d < best.d) best = {d, w: nw, h: nh, axis: 'v'};
-        });
-        yTargets.forEach(t => {
-            const d = Math.abs((y + h) - t);
-            if (d > SNAP_PX) return;
-            const nh = t - y, nw = Math.round(nh * ratio);
-            if (nw < MN || nh < MN || x + nw > out_w) return;
-            if (!best || d < best.d) best = {d, w: nw, h: nh, axis: 'h'};
-        });
-        if (!best) return {w: Math.max(MN, w), h: Math.max(MN, h), guides};
-        guides.push(best.axis === 'v' ? {type: 'v', pos: x + best.w}
-                                      : {type: 'h', pos: y + best.h});
-        // L'autre bord peut tomber PILE sur une cible (grille régulière) : on trace aussi son
-        // repère, pour ne pas laisser croire que seul un côté est aligné.
-        if (best.axis === 'v') {
-            if (yTargets.some(t => Math.abs((y + best.h) - t) <= 1)) guides.push({type: 'h', pos: y + best.h});
-        } else if (xTargets.some(t => Math.abs((x + best.w) - t) <= 1)) {
-            guides.push({type: 'v', pos: x + best.w});
-        }
-        return {w: best.w, h: best.h, guides};
-    }
-    // ratio ≤ 0 : objet à format LIBRE (overlay, bloc VU) — chaque axe s'aimante seul, il n'y a
-    // aucune contrainte à respecter entre les deux. Sans ce cas, `snapW / 0` valait l'infini et
-    // le redimensionnement d'un overlay explosait.
-    let bestDx = SNAP_PX + 1, snapW = w;
-    xTargets.forEach(t => {
-        const d = Math.abs((x + w) - t);
-        if (d <= SNAP_PX && d < bestDx) { bestDx = d; snapW = t - x; }
-    });
-    if (bestDx <= SNAP_PX) guides.push({type: 'v', pos: x + snapW});
-    let snapH = h, bestDy = SNAP_PX + 1;
-    yTargets.forEach(t => {
-        const d = Math.abs((y + snapH) - t);
-        if (d <= SNAP_PX && d < bestDy) { bestDy = d; snapH = t - y; }
-    });
-    if (bestDy <= SNAP_PX) guides.push({type: 'h', pos: y + snapH});
-    // Plancher 16 px : un overlay peut légitimement être petit (pastille tally, chiffre d'horloge).
-    return {w: Math.max(16, snapW), h: Math.max(16, snapH), guides};
+    // Base commune (BobiEditor.layout.aimanterRedim), règle « selon le format » : ratio > 0 =
+    // format verrouillé (facteur contraint, cible inatteignable écartée, second repère) ; sinon
+    // chaque axe s'aimante seul, plancher 16 px (une pastille, un petit logo sont légitimes).
+    // ⚠ Changé au branchement (30/10) : l'ancien code mesurait la distance verticale depuis le bord
+    // DÉJÀ aimanté (`y + snapH`), si bien que la cible retenue dépendait de l'ordre de la liste et
+    // n'était pas toujours la plus proche du bord tiré (2 cas sur 6 000). La base prend la plus proche.
+    const r = LAY().aimanterRedim(_snapRects(skip), [], x, y, w, h, SNAP_PX,
+        {cadre: {w: editorParams.out_width, h: editorParams.out_height}, ratio: ratio,
+         min: ratio > 0 ? (minPx || 64) : 16, arrondi: Math.round, repere: 1});
+    return {w: r.w, h: r.h, guides: r.guides.map(g => ({type: g.axe, pos: g.pos}))};
 }
 
 // ─── Déployer la composition ─────────────────────────────────
@@ -3995,64 +3937,24 @@ function remplir(axis) {
     const out_w = editorParams.out_width, out_h = editorParams.out_height;
     const membres = _selMembres();
     if (!membres.length) return;
-    // UN SEUL objet à format LIBRE (texte, horloge, image, bloc VU, frise) : « remplir » ne peut
-    // pas vouloir dire tuiler — il est seul — et il n'a aucun ratio à préserver. Il prend donc
-    // toute la largeur (ou toute la hauteur) du cadre, l'autre dimension inchangée : le geste du
-    // bandeau. Une FENÊTRE seule, elle, garde son format (c'est de la vidéo) et suit le tuilage
-    // ci-dessous, qui la pose plein cadre à ratio constant.
-    if (membres.length === 1 && membres[0].r.k !== 'win') {
-        const o = membres[0].o;
-        if (axis === 'h') { o.x = 0; o.w = out_w & ~1; }
-        else              { o.y = 0; o.h = out_h & ~1; }
-        dessiner();
-        syncGeomFields();
-        _persistMembres(membres);
-        return;
-    }
-    const n = membres.length;
-    const evDim = v => Math.max(2, Math.round(v) & ~1);   // dimension paire ≥ 2
-    const evPos = v => Math.max(0, Math.round(v) & ~1);   // position paire ≥ 0
-    // Ratio d'un membre : pour une FENÊTRE, l'aspect du modèle de PiP (format libre) prioritaire,
-    // sinon le ratio voulu, sinon la source, sinon la géométrie. Pour les autres familles, leur
-    // forme courante — c'est la seule notion de proportion qu'elles aient.
-    const ratioOf = m => {
-        const o = m.o;
-        if (m.r.k === 'win') {
-            return mwTemplateAspect(o)
-                || ((o.ratio && o.ratio > 0) ? o.ratio
-                : (o.in_w && o.in_h) ? o.in_w / o.in_h
-                : (o.h ? o.w / o.h : 16 / 9));
-        }
-        return (o.h > 0) ? o.w / o.h : 16 / 9;
+    // Base commune (BobiEditor.layout.remplir). Format d'un membre : pour une FENÊTRE, l'aspect du
+    // modèle de PiP prioritaire, sinon le ratio voulu, sinon la source (toujours verrouillé : c'est
+    // de la vidéo) ; les autres familles sont LIBRES (0) — seules, elles prennent tout l'axe.
+    const format = k => {
+        const m = membres[k], o = m.o;
+        if (m.r.k !== 'win') return 0;
+        return mwTemplateAspect(o) || ((o.ratio && o.ratio > 0) ? o.ratio
+             : (o.in_w && o.in_h) ? o.in_w / o.in_h : (o.h ? o.w / o.h : 16 / 9));
     };
-    const items = membres.slice();
-    if (axis === 'h') {
-        items.sort((a, b) => a.o.x - b.o.x);
-        const colW = Math.max(2, Math.floor(out_w / n) & ~1);
-        items.forEach((m, k) => {
-            const f = m.o, r = ratioOf(m);
-            f.x = k * colW;
-            let w = (k === n - 1) ? (out_w - k * colW) : colW;
-            let h = w / r;
-            if (h > out_h) { h = out_h; w = h * r; }      // ne pas déborder en hauteur
-            f.w = evDim(w); f.h = evDim(h);
-            if (f.x + f.w > out_w) f.x = out_w - f.w;
-            f.y = evPos((out_h - f.h) / 2);               // centré verticalement
-        });
-    } else {
-        items.sort((a, b) => a.o.y - b.o.y);
-        const rowH = Math.max(2, Math.floor(out_h / n) & ~1);
-        items.forEach((m, k) => {
-            const f = m.o, r = ratioOf(m);
-            f.y = k * rowH;
-            let h = (k === n - 1) ? (out_h - k * rowH) : rowH;
-            let w = h * r;
-            if (w > out_w) { w = out_w; h = w / r; }       // ne pas déborder en largeur
-            f.w = evDim(w); f.h = evDim(h);
-            if (f.y + f.h > out_h) f.y = out_h - f.h;
-            f.x = evPos((out_w - f.w) / 2);               // centré horizontalement
-        });
-    }
+    const out = LAY().remplir(membres.map(m => m.o), membres.map((m, k) => k), axis, {
+        cadre: {w: out_w, h: out_h}, format,
+        pas: (L, n) => Math.max(2, Math.floor(L / n) & ~1),
+        dim: v => Math.max(2, Math.round(v) & ~1),       // dimension paire ≥ 2
+        pos: v => Math.max(0, Math.round(v) & ~1),       // position paire ≥ 0
+        plein: L => L & ~1,
+    });
+    if (!out) return;
+    membres.forEach((m, k) => { Object.assign(m.o, {x: out[k].x, y: out[k].y, w: out[k].w, h: out[k].h}); });
     dessiner();
     syncGeomFields();
     _persistMembres(membres);
