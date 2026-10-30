@@ -32,20 +32,13 @@ let audioSources = [];   // sorties audio individuelles de la flotte (cf. loadAu
 let editorVmid    = null;
 let editorParams  = null;   // {flux_config, shm_out, out_width, out_height, max_inputs, default_template…}
 let selectedIdxs  = [];     // multi-select : le dernier est le primary (référence pour align/match-size)
-let dragMode      = null;   // 'move' | 'resize'
-let dragStart     = null;
-let dragOrigRect  = null;
-let dragGroupOrig = [];     // [{j, x, y}] positions d'origine de TOUTES les fenêtres sélectionnées
-                            // (déplacement de groupe : même delta appliqué à chacune)
-let dragGeomOrig  = null;   // {idx: {x,y,w,h}} géométrie au DÉBUT du geste — sert au relâchement à
-                            // ne hot-appliquer que les fenêtres réellement modifiées (cf.
-                            // canvasMouseUp). null = aucun geste en cours sur une fenêtre.
+let dragMode      = null;   // 'surface' pendant un geste de la surface commune, sinon null
 let snapEnabled   = true;
 let snapGuides    = [];     // [{type:'v'|'h', pos:number}] dessinées pendant le drag
 
 // Overlays (texte/horloge/image) : objets visuels séparés de flux_config (non câblés).
 let selectedOverlay = -1;   // index dans editorParams.overlays, ou -1
-let dragOverlay     = false; // true pendant un drag/resize d'overlay (réutilise dragMode/dragStart)
+let dragOverlay     = false; // true pendant un geste dont la référence est un overlay (champs à resynchroniser)
 const _ovThumbCache = {};   // clé "slug|path" → Image (vignette média pour l'aperçu canvas)
 
 // Blocs VU-mètres de MUR (meter_blocks) : posés en coordonnées ABSOLUES du canvas (comme les
@@ -53,7 +46,7 @@ const _ovThumbCache = {};   // clé "slug|path" → Image (vignette média pour 
 // contrairement aux overlays. Édités en PIXELS canvas (comme les overlays) ; converti en
 // fractions 0..1 du mur SEULEMENT à la sérialisation (deployerEditor), cf. spec meter_blocks.
 let selectedBlock = -1;     // index dans editorParams.meter_blocks, ou -1
-let dragBlock      = false; // true pendant un drag/resize de bloc (réutilise dragMode/dragStart)
+let dragBlock      = false; // true pendant un geste dont la référence est un bloc VU
 
 // Blocs d'HISTORIQUE de MUR (frise vidéo / frise audio) : mêmes conventions que les blocs
 // VU-mètres (pixels canvas à l'édition → fractions 0..1 du mur à la sérialisation, source
@@ -77,7 +70,7 @@ const HIST_LIST = {video: 'video_history_blocks', audio: 'audio_history_blocks'}
 // poignée de redimensionnement, drag, dessin, hot-apply) continue donc de fonctionner sans être
 // réécrit — il lit simplement « l'objet courant » là où il le lisait déjà.
 //   k : 'win' (fenêtre vidéo) | 'ov' (overlay) | 'blk' (bloc VU) | 'vh' / 'ah' (frises)
-// Ce sont les MÊMES clés que `_snapRects` : un aimant et une sélection parlent enfin la même langue.
+// Ce sont les MÊMES familles que la surface d'édition (MW_FAM) : un aimant et une sélection parlent la même langue.
 let mwSel = [];
 
 const _SEL_LIST = {
@@ -138,90 +131,94 @@ function _selDrop(k, i) {
                  .map(r => (r.k === k && r.i > i) ? {k, i: r.i - 1} : r);
     _selSync();
 }
-// ─── Déplacement de GROUPE, toutes familles ──────────────────────────────────
-// `dragGroupOrig` mémorise l'origine de CHAQUE membre au début du geste : [{r, x, y}]. Le delta
-// est calculé sur l'objet réellement tiré (aimant compris), borné pour qu'aucun membre ne sorte
-// du cadre, puis appliqué à tous depuis leur origine — jamais en cumulant, sinon le groupe dérive.
-function _beginGroupDrag() {
-    dragGroupOrig = _selRefs().map(r => {
-        const o = _refObj(r);
-        return {r, x: o.x, y: o.y};
-    });
+// ─── ÉDITION : la SURFACE commune des éditeurs (BobiEditor.surface, static/js/editor.js) ────────
+// Sélection, glisser seul ou en groupe, poignée seule ou de groupe, aimant, flèches, outils,
+// annuler/rétablir, copier/coller : écrits UNE fois pour tous les éditeurs de disposition
+// (chantier « un seul moteur d'édition », étape 3, arbitrages de Cyril du 2026-10-30 ; le
+// composer EN DERNIER). Ce fichier ne garde que ce qui est propre au mur :
+//   · ses CINQ familles d'objets (fenêtres, overlays, blocs VU, frises vidéo/audio), présentées à
+//     la surface comme UNE liste plate — l'ordre des familles est fixe, un indice plat ↔ {k, i} ;
+//   · leurs contraintes : fenêtre au FORMAT de son modèle de PiP (plancher 64 px), image
+//     « contain » au format de l'image, bloc VU 24 px, frise 48 × 24 px ;
+//   · le pixel : positions au pixel, dimensions PAIRES, bords d'un groupe au pixel pair (chroma) ;
+//   · la persistance : fenêtres seules → POST /window ciblés (pas de re-planification du tissu
+//     d'un mur shardé), sinon un déploiement couvre tout ;
+//   · ce qu'un objet copié emporte (une fenêtre sans sa source) et où il se colle (banque).
+const MW_FAM = ['win', 'ov', 'blk', 'vh', 'ah'];
+function _mwRefs() {
+    const out = [];
+    MW_FAM.forEach(k => _SEL_LIST[k]().forEach((o, i) => out.push({k, i})));
+    return out;
 }
-function _applyGroupMove(nx, ny) {
-    // Delta borné par la base commune (BobiEditor.layout.deplacerGroupe) : aucun membre hors du
-    // cadre ; groupe plus large que le cadre → axe figé.
-    const d = LAY().deplacerGroupe(dragGroupOrig.filter(g => _refObj(g.r)).map(g => {
-        const o = _refObj(g.r);
-        return {x: g.x, y: g.y, w: o.w, h: o.h};
-    }), nx - dragOrigRect.x, ny - dragOrigRect.y,
-        {cadre: {w: editorParams.out_width, h: editorParams.out_height}});
-    dragGroupOrig.forEach(g => {
-        const o = _refObj(g.r);
-        if (!o) return;
-        o.x = Math.round(g.x + d.dx);
-        o.y = Math.round(g.y + d.dy);
-    });
+function _mwFlatOf(r) {
+    let n = 0;
+    for (const k of MW_FAM) {
+        if (k === r.k) return n + r.i;
+        n += _SEL_LIST[k]().length;
+    }
+    return -1;
 }
-// Géométrie : base commune des éditeurs (BobiEditor.layout, static/js/editor.js), branchée le
-// 2026-10-30 (chantier « un seul moteur d'édition », le composer EN DERNIER). Reste local :
-// l'aimant du redimensionnement (computeSnapResize), dont la sémantique diffère d'un éditeur à
-// l'autre — c'est une décision à prendre, pas un branchement (cf. TODO.md).
-const LAY = () => window.BobiEditor.layout;
-
-// ─── Redimensionnement de GROUPE (fenêtres) ──────────────────────────────────
-// Demandé par le testeur (recette Z8, 30/10) : plusieurs PiP sélectionnées se redimensionnent
-// ensemble à la poignée de la référence. MISE À L'ÉCHELLE de la sélection depuis son coin
-// haut-gauche, d'un même facteur pour tous : chaque tuile garde son format (celui du modèle,
-// cf. la poignée seule) et des tuiles collées le restent — les bords sont arrondis au pair
-// UNE fois, donc deux tuiles qui partagent un bord le partagent encore. Le facteur suit le coin
-// bas-droit de la référence sous le curseur, borné pour qu'aucun membre ne sorte du cadre.
-// Une seule fenêtre sélectionnée → null : la poignée garde son comportement d'avant.
-let dragResizeGroup = null;
-function _beginGroupResize(primary) {
-    const membres = selectedIdxs.filter(i => {
-        const f = editorParams.flux_config[i];
-        return f && !f.hidden;
-    });
-    if (membres.length < 2 || !membres.includes(primary)) return null;
-    return membres.map(i => {
-        const f = editorParams.flux_config[i];
-        return { i, x: f.x, y: f.y, w: f.w, h: f.h };
-    });
+function _mwContrainte(r, o) {
+    if (r.k === 'win') return {format: mwTemplateAspect(o) || (o.h > 0 ? o.w / o.h : 0), min: 64};
+    if (r.k === 'ov')  return {format: _ovBoiteContrainte(o) || 0, min: 16};
+    if (r.k === 'blk') return {min: 24};
+    return {minW: 48, minH: 24};   // frises
 }
-function _applyGroupResize(grp, primary, nw) {
-    // Calcul : la base commune (BobiEditor.layout.redimensionnerGroupe), en pixels pairs.
-    const fc = editorParams.flux_config;
-    const orig = {};
-    grp.forEach(g => { orig[g.i] = g; });
-    const rects = fc.map((f, i) => orig[i] || {x: f.x, y: f.y, w: f.w, h: f.h});
-    const out = LAY().redimensionnerGroupe(rects, grp.map(g => g.i), primary, nw,
-        {cadre: {w: editorParams.out_width, h: editorParams.out_height}, arrondi: v => Math.round(v / 2) * 2, min: 32});
-    if (!out) return;
-    grp.forEach(g => {
-        const f = fc[g.i], o = out[g.i];
-        f.x = o.x; f.y = o.y; f.w = Math.max(2, o.w); f.h = Math.max(2, o.h);
+let _surf = null;
+function surf() {
+    if (_surf || !window.BobiEditor) return _surf;
+    _surf = window.BobiEditor.surface({
+        objets: () => _mwRefs().map(r => {
+            const o = _refObj(r);
+            if (!o || o.hidden || !(o.w > 0) || !(o.h > 0)) return null;
+            return Object.assign({x: o.x, y: o.y, w: o.w, h: o.h}, _mwContrainte(r, o));
+        }),
+        cadre: () => ({x: 0, y: 0, w: editorParams.out_width, h: editorParams.out_height}),
+        ecrire: (n, r) => {
+            const o = _refObj(_mwRefs()[n]);
+            if (!o) return;
+            o.x = r.x; o.y = r.y;
+            o.w = r.w - (r.w % 2); o.h = r.h - (r.h % 2);   // dimensions paires
+        },
+        rendu: () => {
+            snapGuides = (_surf ? _surf.guides : []).map(g => ({type: g.axe, pos: g.pos}));
+            drawCanvas(); syncGeomFields();
+        },
+        // Persistance d'un geste ou d'un outil : fenêtres seules → POST /window ciblés ; dès qu'un
+        // objet d'une autre famille est touché, le déploiement (hot-apply) couvre tout.
+        valider: idx => {
+            const refs = _mwRefs(), touches = idx.map(n => refs[n]).filter(Boolean);
+            if (touches.some(r => r.k !== 'win')) hotApplyFull();
+            else touches.forEach(r => hotApplyWindow(r.i));
+        },
+    }, {
+        tol: () => SNAP_PX, aimant: () => snapEnabled, min: 16, pas: {fleche: 1, maj: 10},
+        arrondi: Math.round, arrondiGroupe: v => Math.round(v / 2) * 2,
     });
+    return _surf;
 }
-
-// Le geste a-t-il RÉELLEMENT modifié la géométrie ? Un simple clic de SÉLECTION emprunte le même
-// chemin qu'un déplacement (mousedown → mouseup) : sans cette question, il déclencherait un
-// déploiement — et, sur un mur shardé, une re-planification du tissu donc une coupure de sortie,
-// pour un clic qui n'a rien changé. La garde existait pour les fenêtres (`dragGeomOrig`) ; elle
-// manquait aux overlays, blocs et frises, dont chaque clic postait un deploy complet.
-function _gestureChanged() {
-    if (dragGroupOrig.some(g => {
-        const o = _refObj(g.r);
-        return o && (o.x !== g.x || o.y !== g.y);
-    })) return true;
-    const o = _refObj(_selPrimary());
-    return !!(o && dragOrigRect && (o.w !== dragOrigRect.w || o.h !== dragOrigRect.h));
+// mwSel (références {k, i}, référence = DERNIÈRE) reste la sélection que lisent les panneaux,
+// le dessin et les autres outils : on la passe à la surface avant, on la relit après.
+function _surfIn() {
+    const S = surf(), refs = _selRefs();
+    S.sel = refs.map(_mwFlatOf);
+    S.primaire = refs.length ? _mwFlatOf(refs[refs.length - 1]) : null;
+    return S;
 }
-
-// Cibles d'aimant à EXCLURE pendant un geste : tous les membres du groupe (un objet ne doit pas
-// s'aimanter sur ses propres compagnons, qui se déplacent avec lui).
-function _dragSkip(k, i) {
-    return dragGroupOrig.length ? dragGroupOrig.map(g => ({kind: g.r.k, i: g.r.i})) : [{kind: k, i}];
+function _surfOut() {
+    const S = surf(), refs = _mwRefs(), p = S.primaire;
+    const ordre = (p == null || !S.sel.includes(p)) ? S.sel.slice() : S.sel.filter(n => n !== p).concat([p]);
+    mwSel = ordre.map(n => refs[n]).filter(Boolean);
+    const pr = mwSel[mwSel.length - 1];
+    if (pr && (pr.k === 'vh' || pr.k === 'ah')) selectedHistKind = pr.k === 'ah' ? 'audio' : 'video';
+    _selSync();
+}
+function _outil(nom, arg, msgMin) {
+    if (!editorParams || !_selCount()) return;
+    const r = _surfIn().outil(nom, arg);
+    _surfOut();
+    if (r === null && msgMin) mwFlash(msgMin);
+    dessiner();
 }
 
 // Fenêtre PRIMAIRE au sens strict : -1 si la référence courante n'est pas une fenêtre. Sert à
@@ -1406,54 +1403,7 @@ function hitHist(pos) {
     return null;
 }
 
-function beginHistDrag(hit, pos, additive) {
-    selectedHistKind = hit.kind;   // la liste visée doit être posée AVANT la sélection
-    _selGrab(hit.kind === 'audio' ? 'ah' : 'vh', hit.i, additive);
-    dragHist = true;
-    dragMode = hit.mode;
-    dragStart = pos;
-    dragOrigRect = {...histList(hit.kind)[hit.i]};
-    _beginGroupDrag();
-    _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
-    dessiner();
-}
 
-function histMouseMove(e) {
-    if (!dragMode || selectedHist < 0) return;
-    const pos = getCanvasPos(e);
-    const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
-    const b = histList(selectedHistKind)[selectedHist];
-    if (!b) return;
-    const ow = editorParams.out_width, oh = editorParams.out_height;
-    // AIMANT : les frises l'ignoraient purement et simplement — aucun appel à computeSnap/
-    // computeSnapResize ici, alors que les overlays et les blocs VU passent par les deux. Elles
-    // étaient donc les seuls objets du mur impossibles à aligner au geste. `_snapRects` les
-    // connaissait déjà (familles 'vh'/'ah'), y compris comme CIBLES : le reste du mur s'alignait
-    // sur elles, mais elles ne s'alignaient sur rien.
-    const skip = { kind: selectedHistKind === 'audio' ? 'ah' : 'vh', i: selectedHist };
-    if (dragMode === 'move') {
-        let nx = Math.max(0, Math.min(ow - b.w, Math.round(dragOrigRect.x + dx)));
-        let ny = Math.max(0, Math.min(oh - b.h, Math.round(dragOrigRect.y + dy)));
-        if (snapEnabled) {
-            const sn = computeSnap(_dragSkip(skip.kind, selectedHist), nx, ny, b.w, b.h);
-            nx = sn.x; ny = sn.y; snapGuides = sn.guides;
-        } else snapGuides = [];
-        _applyGroupMove(nx, ny);
-    } else if (dragMode === 'resize') {
-        let nw = Math.max(48, Math.min(ow - b.x, Math.round(dragOrigRect.w + dx)));
-        let nh = Math.max(24, Math.min(oh - b.y, Math.round(dragOrigRect.h + dy)));
-        if (snapEnabled) {
-            // Frise à format LIBRE (aucun ratio imposé, comme un overlay) → ratio = 0 : les deux
-            // axes s'aimantent indépendamment (cf. computeSnapResize).
-            const sn = computeSnapResize(skip, b.x, b.y, nw, nh, 0);
-            nw = Math.max(48, sn.w); nh = Math.max(24, sn.h); snapGuides = sn.guides;
-        } else snapGuides = [];
-        b.w = nw % 2 === 0 ? nw : nw - 1;
-        b.h = nh % 2 === 0 ? nh : nh - 1;
-    }
-    drawCanvas();
-    syncGeomFields();
-}
 
 // Aperçu SCHÉMATIQUE sur le canvas de l'éditeur (pas de flux live ici) : cases de vignettes +
 // ruban pour la frise vidéo, enveloppe mock + colonne rouge pour la frise audio.
@@ -2334,47 +2284,39 @@ function canvasMouseDown(e) {
         try { e.target.setPointerCapture(e.pointerId); } catch(_) {}
     }
     e.preventDefault();
-    dragGeomOrig = null;   // réarmé ci-dessous par les seules branches « fenêtre vidéo »
     const pos = getCanvasPos(e);
-    // 1. Overlays de premier plan (au-dessus de la vidéo)
-    let hit = hitOverlay(pos, 'foreground');
-    if (hit) return beginOverlayDrag(hit, pos, e.shiftKey);
-    // 2. Blocs de mur (VU-mètres, frises d'historique) — au-dessus des fenêtres, toujours manipulables
-    const hhit = hitHist(pos);
-    if (hhit) return beginHistDrag(hhit, pos, e.shiftKey);
-    const bhit = hitBlock(pos);
-    if (bhit) return beginBlockDrag(bhit, pos, e.shiftKey);
-    // 3. Fenêtres vidéo
-    const primary = _winPrimary();   // poignée de redimensionnement : sur LA référence, et elle seule
-    for (let i = editorParams.flux_config.length - 1; i >= 0; i--) {
-        const f = editorParams.flux_config[i];
-        if (f.hidden) continue;   // entrées masquées : pas dans le canvas
-        if (i === primary &&
-            pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
-            dragMode = 'resize'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...f};
-            dragGeomOrig = _geomSnapshot();
-            dragResizeGroup = _beginGroupResize(i);
-            _setCanvasCursor('nwse-resize');
-            return;
+    // Toucher : MÊME ORDRE que le dessin — overlays de premier plan, frises, blocs VU, fenêtres
+    // (poignée sur LA référence), images de fond. Le geste lui-même est celui de la surface.
+    let ref = null, poignee = false;
+    const ov = hitOverlay(pos, 'foreground');
+    const hh = !ov && hitHist(pos);
+    const bh = !ov && !hh && hitBlock(pos);
+    if (ov) { ref = {k: 'ov', i: ov.i}; poignee = ov.mode === 'resize'; }
+    else if (hh) { selectedHistKind = hh.kind; ref = {k: hh.kind === 'audio' ? 'ah' : 'vh', i: hh.i}; poignee = hh.mode === 'resize'; }
+    else if (bh) { ref = {k: 'blk', i: bh.i}; poignee = bh.mode === 'resize'; }
+    else {
+        const primary = _winPrimary();
+        for (let i = editorParams.flux_config.length - 1; i >= 0; i--) {
+            const f = editorParams.flux_config[i];
+            if (f.hidden) continue;   // entrées masquées : pas dans le canvas
+            if (i === primary && pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
+                ref = {k: 'win', i}; poignee = true; break;
+            }
+            if (pos.x >= f.x && pos.x <= f.x + f.w && pos.y >= f.y && pos.y <= f.y + f.h) { ref = {k: 'win', i}; break; }
         }
-        if (pos.x >= f.x && pos.x <= f.x + f.w &&
-            pos.y >= f.y && pos.y <= f.y + f.h) {
-            // Saisir une fenêtre DÉJÀ sélectionnée (sans Maj) garde le groupe et la promeut en
-            // référence ; Maj bascule son appartenance ; sinon clic = sélection simple.
-            _selGrab('win', i, e.shiftKey);
-            dragMode = 'move'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...f};
-            _beginGroupDrag();
-            dragGeomOrig = _geomSnapshot();
-            _setCanvasCursor('move');
-            dessiner();
-            return;
-        }
+        if (!ref) { const bg = hitOverlay(pos, 'background'); if (bg) { ref = {k: 'ov', i: bg.i}; poignee = bg.mode === 'resize'; } }
     }
-    // 4. Images de fond (sous la vidéo)
-    hit = hitOverlay(pos, 'background');
-    if (hit) return beginOverlayDrag(hit, pos, e.shiftKey);
-    if (!e.shiftKey) _selClear();   // clic dans le vide = tout désélectionner (Maj = ne rien changer)
-    dragMode = null;
+    const S = _surfIn();
+    const t = ref ? {i: _mwFlatOf(ref), poignee} : null;
+    // Poignée d'un objet sélectionné qui n'est pas la référence globale : il le devient.
+    if (t && t.poignee && S.primaire !== t.i && S.sel.includes(t.i)) S.primaire = t.i;
+    const geste = S.appui(pos, t, e);
+    _surfOut();
+    if (geste) {
+        dragMode = 'surface';
+        dragOverlay = ref.k === 'ov'; dragBlock = ref.k === 'blk'; dragHist = ref.k === 'vh' || ref.k === 'ah';
+        _setCanvasCursor(poignee ? 'nwse-resize' : 'move');
+    } else dragMode = null;
     dessiner();
 }
 
@@ -2394,16 +2336,6 @@ function hitBlock(pos) {
     return null;
 }
 
-function beginBlockDrag(hit, pos, additive) {
-    _selGrab('blk', hit.i, additive);
-    dragBlock = true;
-    dragMode = hit.mode;
-    dragStart = pos;
-    dragOrigRect = {...editorParams.meter_blocks[hit.i]};
-    _beginGroupDrag();
-    _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
-    dessiner();
-}
 
 function hitOverlay(pos, layer) {
     // MÊME ORDRE que le dessin (cf. drawOverlayLayer : les overlays dynamiques passent au-dessus),
@@ -2426,16 +2358,6 @@ function hitOverlay(pos, layer) {
     return null;
 }
 
-function beginOverlayDrag(hit, pos, additive) {
-    _selGrab('ov', hit.i, additive);
-    dragOverlay = true;
-    dragMode = hit.mode;
-    dragStart = pos;
-    dragOrigRect = {...editorParams.overlays[hit.i]};
-    _beginGroupDrag();
-    _setCanvasCursor(hit.mode === 'resize' ? 'nwse-resize' : 'move');
-    dessiner();
-}
 
 // Sélection d'une FENÊTRE : passe par l'API inter-familles (cf. `mwSel`). Maj+clic ajoute/retire
 // sans toucher aux objets d'autres familles déjà sélectionnés — c'est là tout l'intérêt.
@@ -2475,166 +2397,22 @@ function _setCanvasCursor(c) {
 function canvasMouseMove(e) {
     // Hors drag : retour visuel au survol (déplacement vs redimensionnement) pour lever l'ambiguïté.
     if (!dragMode) { _setCanvasCursor(_cursorForPos(getCanvasPos(e))); return; }
-    if (dragOverlay) return overlayMouseMove(e);
-    if (dragBlock) return blockMouseMove(e);
-    if (dragHist) return histMouseMove(e);
-    const primary = primaryIdx();
-    if (primary < 0) return;
-    const pos = getCanvasPos(e);
-    const dx = pos.x - dragStart.x;
-    const dy = pos.y - dragStart.y;
-    const f = editorParams.flux_config[primary];
-    const out_w = editorParams.out_width;
-    const out_h = editorParams.out_height;
-
-    if (dragMode === 'move') {
-        // Delta visé d'après l'objet TIRÉ (avec aimant), puis appliqué À TOUT LE GROUPE — lequel
-        // peut désormais mêler fenêtres, textes, horloges, VU et frises.
-        let nx = Math.max(0, Math.min(out_w - f.w, Math.round(dragOrigRect.x + dx)));
-        let ny = Math.max(0, Math.min(out_h - f.h, Math.round(dragOrigRect.y + dy)));
-        if (snapEnabled) {
-            const snapped = computeSnap(_dragSkip('win', primary), nx, ny, f.w, f.h);
-            nx = snapped.x; ny = snapped.y; snapGuides = snapped.guides;
-        } else snapGuides = [];
-        _applyGroupMove(nx, ny);
-    } else if (dragMode === 'resize') {
-        // Format du MODÈLE effectif (explicite ou hérité du mur) d'abord : garder la forme
-        // courante d'une tuile déjà hors format la laissait hors format, et la vidéo y gardait
-        // sa bande à la sortie.
-        const ratio = mwTemplateAspect(f) || dragOrigRect.w / dragOrigRect.h;
-        let { w: nw, h: nh } = LAY().redimensionnerAuFormat(f, Math.round(dragOrigRect.w + dx), ratio,
-            {cadre: {w: out_w, h: out_h}, arrondi: Math.round, min: 64});
-        // Groupe : pas d'aimant — il accrocherait la référence aux autres membres de la sélection.
-        if (snapEnabled && !dragResizeGroup) {
-            const snapped = computeSnapResize({ kind: 'win', i: primary }, f.x, f.y, nw, nh, ratio);
-            nw = snapped.w; nh = snapped.h; snapGuides = snapped.guides;
-        } else snapGuides = [];
-        if (dragResizeGroup) _applyGroupResize(dragResizeGroup, primary, nw);
-        else {
-            f.w = nw % 2 === 0 ? nw : nw - 1;
-            f.h = nh % 2 === 0 ? nh : nh - 1;
-        }
-    }
-    drawCanvas();
-    syncGeomFields();
+    surf().glisse(getCanvasPos(e), e);
 }
 
-function overlayMouseMove(e) {
-    if (!dragMode || selectedOverlay < 0) return;
-    const pos = getCanvasPos(e);
-    const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
-    const o = editorParams.overlays[selectedOverlay];
-    const out_w = editorParams.out_width, out_h = editorParams.out_height;
-    const skip = { kind: 'ov', i: selectedOverlay };
-    if (dragMode === 'move') {
-        let nx = Math.max(0, Math.min(out_w - o.w, Math.round(dragOrigRect.x + dx)));
-        let ny = Math.max(0, Math.min(out_h - o.h, Math.round(dragOrigRect.y + dy)));
-        if (snapEnabled) {
-            const sn = computeSnap(_dragSkip('ov', selectedOverlay), nx, ny, o.w, o.h);
-            nx = sn.x; ny = sn.y; snapGuides = sn.guides;
-        } else snapGuides = [];
-        _applyGroupMove(nx, ny);
-    } else if (dragMode === 'resize') {
-        // Image en « contain » : la boîte EST l'image, son format est donc contraint — plus de
-        // marges vides entre le cadre et l'image. Les autres overlays (et les images en « cover »
-        // ou « étirer ») restent libres : leur boîte a un sens propre.
-        const rImg = _ovBoiteContrainte(o);
-        let nw = Math.max(16, Math.min(out_w - o.x, Math.round(dragOrigRect.w + dx)));
-        let nh = rImg > 0 ? Math.max(16, Math.round(nw / rImg))
-                          : Math.max(16, Math.min(out_h - o.y, Math.round(dragOrigRect.h + dy)));
-        if (rImg > 0 && o.y + nh > out_h) {          // débordement → on réduit à format constant
-            nh = Math.max(16, out_h - o.y);
-            nw = Math.max(16, Math.round(nh * rImg));
-        }
-        if (snapEnabled) {
-            const sn = computeSnapResize(_dragSkip('ov', selectedOverlay), o.x, o.y, nw, nh, rImg, 16);
-            nw = sn.w; nh = sn.h; snapGuides = sn.guides;
-        } else snapGuides = [];
-        o.w = nw % 2 === 0 ? nw : nw - 1;
-        o.h = nh % 2 === 0 ? nh : nh - 1;
-    }
-    drawCanvas();
-    syncGeomFields();
-}
 
-function blockMouseMove(e) {
-    if (!dragMode || selectedBlock < 0) return;
-    const pos = getCanvasPos(e);
-    const dx = pos.x - dragStart.x, dy = pos.y - dragStart.y;
-    const b = editorParams.meter_blocks[selectedBlock];
-    const out_w = editorParams.out_width, out_h = editorParams.out_height;
-    const skip = { kind: 'blk', i: selectedBlock };
-    if (dragMode === 'move') {
-        let nx = Math.max(0, Math.min(out_w - b.w, Math.round(dragOrigRect.x + dx)));
-        let ny = Math.max(0, Math.min(out_h - b.h, Math.round(dragOrigRect.y + dy)));
-        if (snapEnabled) {
-            const sn = computeSnap(_dragSkip('blk', selectedBlock), nx, ny, b.w, b.h);
-            nx = sn.x; ny = sn.y; snapGuides = sn.guides;
-        } else snapGuides = [];
-        _applyGroupMove(nx, ny);
-    } else if (dragMode === 'resize') {
-        let nw = Math.max(24, Math.min(out_w - b.x, Math.round(dragOrigRect.w + dx)));
-        let nh = Math.max(24, Math.min(out_h - b.y, Math.round(dragOrigRect.h + dy)));
-        if (snapEnabled) {
-            const sn = computeSnapResize(skip, b.x, b.y, nw, nh, 0);
-            nw = Math.max(24, sn.w); nh = Math.max(24, sn.h); snapGuides = sn.guides;
-        } else snapGuides = [];
-        b.w = nw % 2 === 0 ? nw : nw - 1;
-        b.h = nh % 2 === 0 ? nh : nh - 1;
-    }
-    drawCanvas();
-    syncGeomFields();
-}
 
 function canvasMouseUp() {
     _setCanvasCursor('default');   // le prochain survol réévaluera (move/resize/défaut)
-    // Repères d'aimant remis à zéro dans TOUS les cas : seule la branche « fenêtre » le faisait,
-    // si bien que le premier rendu du geste SUIVANT (dessiner() du mousedown, dragMode déjà posé)
-    // retraçait les repères du geste précédent le temps d'une image.
-    snapGuides = [];
-    const bouge = _gestureChanged();
-    if (dragOverlay || dragBlock || dragHist) {
-        dragOverlay = dragBlock = dragHist = false; dragMode = null; dragGeomOrig = null;
-        dessiner();
-        // Overlays / blocs / frises : un seul canal de persistance (deploy → hot-apply
-        // /overlays + /reconfigure, sans coupure). Il couvre aussi les FENÊTRES éventuellement
-        // déplacées dans le même groupe — inutile d'y ajouter des POST /window par fenêtre.
-        if (bouge) hotApplyFull();
-        return;
-    }
-    dragMode = null; dragResizeGroup = null; dessiner();
-    // Groupe MIXTE tiré par une fenêtre : les objets d'autres familles ont bougé eux aussi, et
-    // eux ne savent pas se hot-appliquer fenêtre par fenêtre → un seul déploiement couvre tout.
-    if (bouge && mwSel.some(r => r.k !== 'win')) {
-        dragGeomOrig = null;
-        hotApplyFull();
-        return;
-    }
-    // Ne hot-appliquer que les fenêtres dont la géométrie a RÉELLEMENT bougé pendant le geste.
-    // Un clic de SÉLECTION passe aussi par ici (mousedown sur une fenêtre → mouseup sans
-    // déplacement) : il ne doit rien poster. Sur un mur SHARDÉ, chaque POST /plugin/window
-    // déclenche une re-planification du tissu du nœud — donc, pour une sélection, une coupure de
-    // la sortie sans qu'aucun paramètre n'ait changé.
-    const orig = dragGeomOrig;
-    dragGeomOrig = null;
-    if (!orig) return;
-    selectedIdxs.forEach(idx => {
-        const f = editorParams.flux_config[idx], o = orig[idx];
-        if (!f) return;
-        if (o && f.x === o.x && f.y === o.y && f.w === o.w && f.h === o.h) return;
-        hotApplyWindow(idx);
-    });
+    if (dragMode !== 'surface') return;
+    dragMode = null; dragOverlay = dragBlock = dragHist = false;
+    // La surface ne valide (persistance + historique) que ce qui a RÉELLEMENT bougé : un simple
+    // clic de sélection ne poste rien — sur un mur shardé, un POST /window re-planifie le tissu.
+    surf().relache();
+    snapGuides = [];   // le premier rendu du geste suivant ne retrace pas les repères de celui-ci
+    dessiner();
 }
 
-// Géométrie des fenêtres sélectionnées à l'instant T, indexée par idx (cf. dragGeomOrig).
-function _geomSnapshot() {
-    const snap = {};
-    selectedIdxs.forEach(j => {
-        const f = editorParams && editorParams.flux_config[j];
-        if (f) snap[j] = { x: f.x, y: f.y, w: f.w, h: f.h };
-    });
-    return snap;
-}
 
 // Pendant un drag : ne resynchronise que les champs géométrie (pas de rebuild DOM).
 function syncGeomFields() {
@@ -3651,56 +3429,9 @@ function importOverlayImage(input) {
     });
 }
 
-// ─── Snap ──────────────────────────────────────────────────────
-
-// Rectangles de TOUS les objets posés sur le mur, pour le snap. Le composeur ne considérait que
-// `flux_config` : une horloge, un champ texte, une image ou un bloc VU n'était donc NI une cible de
-// snap, NI snappé lui-même (overlayMouseMove/blockMouseMove n'appelaient pas le snap du tout). On
-// alignait à l'œil tout ce qui n'était pas une fenêtre vidéo.
-// `skip` = {kind, i} de l'objet en cours de déplacement, à exclure de ses propres cibles.
-function _snapRects(skip) {
-    const out = [];
-    // `skip` = une exclusion {kind,i} ou une LISTE (déplacement de groupe : chaque membre bouge,
-    // aucun ne doit servir de cible aux autres).
-    const skips = !skip ? [] : (Array.isArray(skip) ? skip : [skip]);
-    const add = (kind, list) => (list || []).forEach((o, i) => {
-        if (!o || o.hidden) return;
-        if (skips.some(sk => sk && sk.kind === kind && sk.i === i)) return;
-        if (!(o.w > 0) || !(o.h > 0)) return;
-        out.push(o);
-    });
-    add('win', editorParams.flux_config);
-    add('ov',  editorParams.overlays);
-    add('blk', editorParams.meter_blocks);
-    add('vh',  editorParams.video_history_blocks);
-    add('ah',  editorParams.audio_history_blocks);
-    return out;
-}
-
-function computeSnap(skip, x, y, w, h) {
-    // Base commune (BobiEditor.layout.aimanter) en px du mur : cibles = bords et centre du mur +
-    // bords et centres des objets posés (_snapRects, déjà privés de `skip`). Le repère tracé est
-    // la cible RÉELLEMENT atteinte (avant : la plus proche des bords aimantés, ce qui pouvait
-    // désigner une autre cible confondue — même position aimantée, repère seul en cause).
-    const r = LAY().aimanter(_snapRects(skip), [], x, y, w, h, SNAP_PX,
-        {cadre: {w: editorParams.out_width, h: editorParams.out_height}, arrondi: Math.round});
-    return {x: r.x, y: r.y, guides: r.guides.map(g => ({type: g.axe, pos: g.pos}))};
-}
 
 // `minPx` = plancher de dimension : 64 px pour une fenêtre vidéo (défaut historique), plus bas
 // pour un objet posé — une pastille, un petit logo sont légitimes.
-function computeSnapResize(skip, x, y, w, h, ratio, minPx) {
-    // Base commune (BobiEditor.layout.aimanterRedim), règle « selon le format » : ratio > 0 =
-    // format verrouillé (facteur contraint, cible inatteignable écartée, second repère) ; sinon
-    // chaque axe s'aimante seul, plancher 16 px (une pastille, un petit logo sont légitimes).
-    // ⚠ Changé au branchement (30/10) : l'ancien code mesurait la distance verticale depuis le bord
-    // DÉJÀ aimanté (`y + snapH`), si bien que la cible retenue dépendait de l'ordre de la liste et
-    // n'était pas toujours la plus proche du bord tiré (2 cas sur 6 000). La base prend la plus proche.
-    const r = LAY().aimanterRedim(_snapRects(skip), [], x, y, w, h, SNAP_PX,
-        {cadre: {w: editorParams.out_width, h: editorParams.out_height}, ratio: ratio,
-         min: ratio > 0 ? (minPx || 64) : 16, arrondi: Math.round, repere: 1});
-    return {w: r.w, h: r.h, guides: r.guides.map(g => ({type: g.axe, pos: g.pos}))};
-}
 
 // ─── Déployer la composition ─────────────────────────────────
 
@@ -3846,85 +3577,12 @@ async function deployerEditor() {
 
 // ─── Outils d'alignement ─────────────────────────────────────
 
-// Membres de la sélection, RÉFÉRENCE EN DERNIER, avec l'objet géométrique de chacun.
-function _selMembres() {
-    return _selRefs().map(r => ({r, o: _refObj(r)})).filter(m => m.o);
-}
-// Persistance après un outil de disposition : une seule règle. Dès qu'un objet d'une autre
-// famille est touché, le déploiement (hot-apply /reconfigure + /overlays) couvre TOUT, fenêtres
-// comprises ; s'il n'y a que des fenêtres, on garde les POST /window ciblés — moins coûteux, et
-// surtout sans re-planification de tissu sur un mur shardé.
-function _persistMembres(membres) {
-    if (membres.some(m => m.r.k !== 'win')) { hotApplyFull(); return; }
-    membres.forEach(m => hotApplyWindow(m.r.i));
-}
+function aligner(mode) { _outil('aligner', mode); }
+function matchSize(mode) { _outil('egaliser', mode, T('plugin.multiview.flash_select2')); }
 
-function aligner(mode) {
-    if (!editorParams) return;
-    const membres = _selMembres();
-    if (!membres.length) return;
-    const ow = editorParams.out_width, oh = editorParams.out_height;
-    // Référence : l'objet PRIMAIRE (dernier sélectionné) dès qu'il y a au moins deux membres,
-    // sinon le mur. Calcul : la base commune ; arrondi des centrages et bornage au mur : ici.
-    const n = membres.length;
-    const out = LAY().aligner(membres.map(m => m.o), membres.map((m, k) => k), n - 1, mode,
-                              {x: 0, y: 0, w: ow, h: oh}, {libre: true});
-    const centre = mode === 'hcenter' || mode === 'vcenter';
-    membres.forEach((m, k) => {
-        if (n >= 2 && k === n - 1) return;   // la référence ne bouge pas
-        const o = m.o;
-        o.x = centre ? Math.round(out[k].x) : out[k].x;
-        o.y = centre ? Math.round(out[k].y) : out[k].y;
-        o.x = Math.max(0, Math.min(ow - o.w, o.x));
-        o.y = Math.max(0, Math.min(oh - o.h, o.y));
-    });
-    dessiner();
-    syncGeomFields();
-    _persistMembres(membres);
-}
-function matchSize(mode) {
-    const membres = editorParams ? _selMembres() : [];
-    if (membres.length < 2) {
-        mwFlash(T('plugin.multiview.flash_select2'));
-        return;
-    }
-    const out_w = editorParams.out_width;
-    const out_h = editorParams.out_height;
-    const n = membres.length;   // référence = dernier sélectionné, toutes familles
-    const out = LAY().egaliser(membres.map(m => m.o), membres.map((m, k) => k), n - 1, mode,
-                               {libre: true, cadre: {w: out_w, h: out_h}});
-    const pair = v => v % 2 === 0 ? v : v - 1;
-    membres.forEach((m, k) => {
-        if (k === n - 1) return;
-        const f = m.o;
-        if (mode === 'w' || mode === 'both') {
-            f.w = pair(out[k].w);
-            if (f.x + f.w > out_w) f.x = out_w - f.w;
-        }
-        if (mode === 'h' || mode === 'both') {
-            f.h = pair(out[k].h);
-            if (f.y + f.h > out_h) f.y = out_h - f.h;
-        }
-    });
-    dessiner();
-    syncGeomFields();
-    _persistMembres(membres);
-}
-
-function distribuer(axis) {
-    const membres = editorParams ? _selMembres() : [];
-    if (membres.length < 3) {
-        mwFlash(T('plugin.multiview.flash_select3'));
-        return;
-    }
-    // Positions à pas constant entre la première et la dernière À L'ÉCRAN (base commune).
-    const out = LAY().distribuer(membres.map(m => m.o), membres.map((m, k) => k), axis, {arrondi: Math.round});
-    const k = axis === 'h' ? 'x' : 'y';
-    membres.forEach((m, i) => { m.o[k] = out[i][k]; });
-    dessiner();
-    syncGeomFields();
-    _persistMembres(membres);
-}
+function distribuer(axis) { _outil('distribuer', axis, T('plugin.multiview.flash_select3')); }
+// Répartir les ESPACES (extrêmes fixes) — dans tous les éditeurs depuis le 30/10.
+function espacer(axis) { _outil('espaces', axis, T('plugin.multiview.flash_select3')); }
 
 // Remplir : les objets sélectionnés (toutes familles) se TUILENT le long d'un axe — largeur en
 // parts égales, ou hauteur — dans leur ordre À L'ÉCRAN. L'AUTRE dimension suit le RATIO de chaque
@@ -3932,33 +3590,8 @@ function distribuer(axis) {
 // déborder, il est réduit pour rester dans l'image.
 // Ex. 4 PiP (un à gauche, un à droite, deux au centre) → 4 colonnes égales, chacune à la bonne
 // hauteur 16:9 et centrée verticalement.
-function remplir(axis) {
-    if (!editorParams) return;
-    const out_w = editorParams.out_width, out_h = editorParams.out_height;
-    const membres = _selMembres();
-    if (!membres.length) return;
-    // Base commune (BobiEditor.layout.remplir). Format d'un membre : pour une FENÊTRE, l'aspect du
-    // modèle de PiP prioritaire, sinon le ratio voulu, sinon la source (toujours verrouillé : c'est
-    // de la vidéo) ; les autres familles sont LIBRES (0) — seules, elles prennent tout l'axe.
-    const format = k => {
-        const m = membres[k], o = m.o;
-        if (m.r.k !== 'win') return 0;
-        return mwTemplateAspect(o) || ((o.ratio && o.ratio > 0) ? o.ratio
-             : (o.in_w && o.in_h) ? o.in_w / o.in_h : (o.h ? o.w / o.h : 16 / 9));
-    };
-    const out = LAY().remplir(membres.map(m => m.o), membres.map((m, k) => k), axis, {
-        cadre: {w: out_w, h: out_h}, format,
-        pas: (L, n) => Math.max(2, Math.floor(L / n) & ~1),
-        dim: v => Math.max(2, Math.round(v) & ~1),       // dimension paire ≥ 2
-        pos: v => Math.max(0, Math.round(v) & ~1),       // position paire ≥ 0
-        plein: L => L & ~1,
-    });
-    if (!out) return;
-    membres.forEach((m, k) => { Object.assign(m.o, {x: out[k].x, y: out[k].y, w: out[k].w, h: out[k].h}); });
-    dessiner();
-    syncGeomFields();
-    _persistMembres(membres);
-}
+// Remplir : la sélection se TUILE le long d'un axe, au format de chacun (base commune).
+function remplir(axis) { _outil('remplir', axis); }
 // ─── Modèles de grille (templates) ───────────────────────────
 // Géométries prédéfinies appliquées aux fenêtres de la banque DANS L'ORDRE des
 // indices (sources/labels/meters/tsl conservés, comme appliquerLayout) ; le
@@ -4382,7 +4015,6 @@ function exporterLayout(lid) {
 const MW_UNDO_KEYS = ['flux_config', 'overlays', 'meter_blocks', 'video_history_blocks', 'audio_history_blocks'];
 const MW_WIN_NOCOPY = ['path', 'audio_path', 'anc_path', 'hidden'];
 const MW_PASTE_OFFSET = 20;
-let mwHist = null, mwHistFor = null;
 
 function _mwState() {
     const s = {};
@@ -4390,15 +4022,17 @@ function _mwState() {
     return s;
 }
 function mwHistReset() {
-    if (!window.BobiEditor || !editorParams) { mwHist = null; return; }
-    mwHist = BobiEditor.history(50);   // 50 : un overlay image porte son image en base64
-    mwHistFor = editorParams;
-    mwHist.reset(_mwState());
+    const S = surf();
+    if (!S || !editorParams) return;
+    _mwClavier();
+    S._pour = editorParams;
+    S.historiqueZero();
 }
 function mwHistCommit() {
-    if (!editorParams || !window.BobiEditor) return;
-    if (mwHistFor !== editorParams) mwHistReset();   // autre mur chargé entre-temps
-    if (mwHist) mwHist.commit(_mwState());
+    const S = surf();
+    if (!editorParams || !S) return;
+    if (S._pour !== editorParams) mwHistReset();   // autre mur chargé entre-temps
+    S.memoriser();
     mwEdToolsState();
 }
 // Appelé en tête de hotApplyFull / hotApplyWindow / hotApplyStyle (les seuls envois au mur).
@@ -4468,16 +4102,6 @@ function mwSelectAll() {
     Object.keys(_SEL_LIST).forEach(k => _SEL_LIST[k]().forEach((o, i) => { if (o && !o.hidden) sel.push({k, i}); }));
     mwSel = sel; _selSync();
 }
-function mwNudge(dx, dy) {
-    const ow = editorParams.out_width, oh = editorParams.out_height;
-    const membres = _selMembres();
-    if (!membres.length) return null;
-    membres.forEach(m => {
-        m.o.x = Math.max(0, Math.min(ow - (m.o.w || 0), (m.o.x || 0) + dx));
-        m.o.y = Math.max(0, Math.min(oh - (m.o.h || 0), (m.o.y || 0) + dy));
-    });
-    return membres;
-}
 
 const MW_KEYS = () => [
     ['mod+z', T('plugin.multiview.ed_undo')], ['mod+shift+z / mod+y', T('plugin.multiview.ed_redo')],
@@ -4487,74 +4111,49 @@ const MW_KEYS = () => [
     ['← → ↑ ↓', T('plugin.multiview.ed_nudge')], ['mod+s', T('plugin.multiview.ed_save')],
     [T('plugin.multiview.ed_key_esc'), T('plugin.multiview.ed_deselect')], ['?', T('plugin.multiview.ed_help')]];
 
+// Boutons de la barre « Édition » et raccourcis : les MÊMES actions, celles de la surface commune.
 function mwEdCmd(action, sc) {
-    if (!editorParams) return;
-    const K = window.BobiEditor;
-    const ro = mwLectureSeule();
-    const writes = ['undo', 'redo', 'cut', 'paste', 'duplicate', 'delete', 'nudge', 'save'];
-    if (ro && writes.includes(action)) { mwFlash(T('plugin.multiview.ed_read_only')); return; }
-    switch (action) {
-    case 'undo': case 'redo': {
-        if (mwHistFor !== editorParams) mwHistReset();
-        const st = mwHist && (action === 'undo' ? mwHist.undo() : mwHist.redo());
-        if (st === undefined) return;
-        MW_UNDO_KEYS.forEach(k => { editorParams[k] = st[k]; });
-        _selClear();
-        dessiner();
-        hotApplyFull();   // l'instantané rendu est déjà le courant : il n'est pas ré-empilé
-        return;
-    }
-    case 'copy': case 'cut': {
-        if (!_selCount() || !K) return;
-        K.clipboard.put('mv-elements', mwFragment());
-        if (action === 'cut') { mwDeleteSelection(); dessiner(); hotApplyFull(); }
-        else mwFlash(T('plugin.multiview.ed_copied'));
-        return;
-    }
-    case 'paste': {
-        const c = K && K.clipboard.get();
-        if (!c || c.kind !== 'mv-elements') { mwFlash(T('plugin.multiview.ed_paste_foreign')); return; }
-        const refused = mwPasteFragment(_mwClone(c.data), MW_PASTE_OFFSET);
-        if (refused) mwFlash(T('plugin.multiview.flash_bank_full').replace('{n}', editorParams.max_inputs));
-        dessiner(); hotApplyFull();
-        return;
-    }
-    case 'duplicate': {
-        if (!_selCount()) return;
-        const refused = mwPasteFragment(mwFragment(), MW_PASTE_OFFSET);
-        if (refused) mwFlash(T('plugin.multiview.flash_bank_full').replace('{n}', editorParams.max_inputs));
-        dessiner(); hotApplyFull();
-        return;
-    }
-    case 'delete':
-        if (mwDeleteSelection()) { dessiner(); hotApplyFull(); }
-        return;
-    case 'selectAll':
-        mwSelectAll(); dessiner();
-        return;
-    case 'nudge': {   // 1 px, Maj = 10 px : même pas que l'éditeur de modèles de PiP et le split
-        const m = sc && mwNudge(sc.dx, sc.dy);
-        if (!m) return;
-        drawCanvas(); syncGeomFields();
-        _persistMembres(m);
-        return;
-    }
-    case 'save':
-        deployerEditor();
-        return;
-    case 'escape':
-        _selClear(); dessiner();
-        return;
-    case 'help':
-        if (K) K.showHelp(T('plugin.multiview.ed_keys_title'), MW_KEYS(), T('plugin.multiview.close'));
-        return;
-    }
+    if (!editorParams || !surf()) return;
+    _mwClavier();
+    _surfIn();
+    surf().agir(action, sc);
+}
+// Ce que le mur fournit au clavier commun (surface.clavier) : son état, ce qu'une copie emporte
+// (une fenêtre sans sa source), où elle se colle (emplacement LIBRE de la banque), la suppression
+// (une fenêtre est masquée, câble conservé), la lecture seule, l'aide et l'enregistrement.
+function _mwClavier() {
+    const S = surf();
+    if (!S || S._mwLie) return;
+    S._mwLie = true;
+    S.clavier({
+        actif: () => { const ok = mwEdActive(); if (ok) _surfIn(); return ok; },
+        kind: 'mv-elements', profondeur: 50,   // 50 : un overlay image porte son image en base64
+        etat: _mwState,
+        restaurer: st => { MW_UNDO_KEYS.forEach(k => { editorParams[k] = st[k]; }); _selClear(); dessiner(); hotApplyFull(); },
+        fragment: () => (_selCount() ? mwFragment() : null),
+        poser: (frag, d) => {
+            const refused = mwPasteFragment(frag, d);
+            if (refused) mwFlash(T('plugin.multiview.flash_bank_full').replace('{n}', editorParams.max_inputs));
+            _surfIn(); dessiner(); hotApplyFull();
+            return true;
+        },
+        decalage: MW_PASTE_OFFSET,
+        supprimer: () => { const ok = mwDeleteSelection(); if (ok) { dessiner(); hotApplyFull(); } return ok; },
+        tout: () => { mwSelectAll(); _surfIn(); },
+        lectureSeule: mwLectureSeule,
+        dire: m => { if (m === 'lecture seule') mwFlash(T('plugin.multiview.ed_read_only'));
+                     else if (m === 'copie') mwFlash(T('plugin.multiview.ed_copied')); },
+        enregistrer: () => deployerEditor(),
+        aide: () => BobiEditor.showHelp(T('plugin.multiview.ed_keys_title'), MW_KEYS(), T('plugin.multiview.close')),
+        apres: () => { _surfOut(); dessiner(); mwEdToolsState(); },
+    });
 }
 function mwEdToolsState() {
     const set = (id, on) => { const b = document.getElementById(id); if (b) b.disabled = !on; };
     const has = _selCount() > 0;
-    set('mw_ed_undo', mwHist && mwHistFor === editorParams && mwHist.canUndo());
-    set('mw_ed_redo', mwHist && mwHistFor === editorParams && mwHist.canRedo());
+    const H = _surf && _surf._pour === editorParams ? _surf.historique : null;
+    set('mw_ed_undo', H && H.canUndo());
+    set('mw_ed_redo', H && H.canRedo());
     ['mw_ed_cut', 'mw_ed_copy', 'mw_ed_dup', 'mw_ed_del'].forEach(id => set(id, has));
 }
 // Le canvas est visible = l'éditeur est à l'écran (et pas derrière la fenêtre « Moteur… »).
@@ -4571,10 +4170,5 @@ function mwEdActive() {
               !_mwShown(document.getElementById('mw-engine-modal')) &&
               !document.getElementById('bek-help'));
 }
-if (window.BobiEditor && !window._mwEdBound) {
-    window._mwEdBound = true;   // le script du plugin peut être rechargé : un seul écouteur
-    const on = {};
-    ['undo', 'redo', 'copy', 'cut', 'paste', 'duplicate', 'delete', 'selectAll', 'nudge', 'save',
-     'escape', 'help'].forEach(a => { on[a] = sc => mwEdCmd(a, sc); });
-    BobiEditor.bind({active: mwEdActive, on});
-}
+// Raccourcis : liés UNE fois (le script du plugin peut être rechargé) par la surface commune.
+if (window.BobiEditor && !window._mwEdBound) { window._mwEdBound = true; _mwClavier(); }
