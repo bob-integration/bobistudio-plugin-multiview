@@ -171,6 +171,48 @@ function _applyGroupMove(nx, ny) {
         o.y = Math.round(g.y + ddy);
     });
 }
+// ─── Redimensionnement de GROUPE (fenêtres) ──────────────────────────────────
+// Demandé par le testeur (recette Z8, 30/10) : plusieurs PiP sélectionnées se redimensionnent
+// ensemble à la poignée de la référence. MISE À L'ÉCHELLE de la sélection depuis son coin
+// haut-gauche, d'un même facteur pour tous : chaque tuile garde son format (celui du modèle,
+// cf. la poignée seule) et des tuiles collées le restent — les bords sont arrondis au pair
+// UNE fois, donc deux tuiles qui partagent un bord le partagent encore. Le facteur suit le coin
+// bas-droit de la référence sous le curseur, borné pour qu'aucun membre ne sorte du cadre.
+// Une seule fenêtre sélectionnée → null : la poignée garde son comportement d'avant.
+let dragResizeGroup = null;
+function _beginGroupResize(primary) {
+    const membres = selectedIdxs.filter(i => {
+        const f = editorParams.flux_config[i];
+        return f && !f.hidden;
+    });
+    if (membres.length < 2 || !membres.includes(primary)) return null;
+    return membres.map(i => {
+        const f = editorParams.flux_config[i];
+        return { i, x: f.x, y: f.y, w: f.w, h: f.h };
+    });
+}
+function _applyGroupResize(grp, primary, nw) {
+    const ow = editorParams.out_width, oh = editorParams.out_height;
+    const ax = Math.min(...grp.map(g => g.x)), ay = Math.min(...grp.map(g => g.y));
+    const ref = grp.find(g => g.i === primary);
+    const portee = ref.x + ref.w - ax;                 // du coin du groupe au bord droit de la référence
+    let s = (ref.x + nw - ax) / portee;
+    grp.forEach(g => {                                  // aucun membre hors du cadre…
+        s = Math.min(s, (ow - ax) / (g.x + g.w - ax), (oh - ay) / (g.y + g.h - ay));
+    });
+    const minDim = Math.min(...grp.map(g => Math.min(g.w, g.h)));
+    s = Math.max(s, 32 / minDim);                       // …ni réduit sous 32 px
+    const pair = v => Math.round(v / 2) * 2;
+    grp.forEach(g => {
+        const f = editorParams.flux_config[g.i];
+        const x0 = pair(ax + (g.x - ax) * s), x1 = pair(ax + (g.x + g.w - ax) * s);
+        const y0 = pair(ay + (g.y - ay) * s), y1 = pair(ay + (g.y + g.h - ay) * s);
+        f.x = x0; f.y = y0;
+        f.w = Math.max(2, Math.min(ow - x0, x1 - x0));
+        f.h = Math.max(2, Math.min(oh - y0, y1 - y0));
+    });
+}
+
 // Le geste a-t-il RÉELLEMENT modifié la géométrie ? Un simple clic de SÉLECTION emprunte le même
 // chemin qu'un déplacement (mousedown → mouseup) : sans cette question, il déclencherait un
 // déploiement — et, sur un mur shardé, une re-planification du tissu donc une coupure de sortie,
@@ -2320,6 +2362,7 @@ function canvasMouseDown(e) {
             pos.x >= f.x + f.w - HANDLE_SIZE && pos.y >= f.y + f.h - HANDLE_SIZE) {
             dragMode = 'resize'; dragOverlay = false; dragBlock = false; dragStart = pos; dragOrigRect = {...f};
             dragGeomOrig = _geomSnapshot();
+            dragResizeGroup = _beginGroupResize(i);
             _setCanvasCursor('nwse-resize');
             return;
         }
@@ -2471,12 +2514,16 @@ function canvasMouseMove(e) {
         let nw = Math.max(64, Math.min(out_w - f.x, Math.round(dragOrigRect.w + dx)));
         let nh = Math.round(nw / ratio);
         if (nh > out_h - f.y) { nh = out_h - f.y; nw = Math.round(nh * ratio); }
-        if (snapEnabled) {
+        // Groupe : pas d'aimant — il accrocherait la référence aux autres membres de la sélection.
+        if (snapEnabled && !dragResizeGroup) {
             const snapped = computeSnapResize({ kind: 'win', i: primary }, f.x, f.y, nw, nh, ratio);
             nw = snapped.w; nh = snapped.h; snapGuides = snapped.guides;
         } else snapGuides = [];
-        f.w = nw % 2 === 0 ? nw : nw - 1;
-        f.h = nh % 2 === 0 ? nh : nh - 1;
+        if (dragResizeGroup) _applyGroupResize(dragResizeGroup, primary, nw);
+        else {
+            f.w = nw % 2 === 0 ? nw : nw - 1;
+            f.h = nh % 2 === 0 ? nh : nh - 1;
+        }
     }
     drawCanvas();
     syncGeomFields();
@@ -2565,7 +2612,7 @@ function canvasMouseUp() {
         if (bouge) hotApplyFull();
         return;
     }
-    dragMode = null; dessiner();
+    dragMode = null; dragResizeGroup = null; dessiner();
     // Groupe MIXTE tiré par une fenêtre : les objets d'autres familles ont bougé eux aussi, et
     // eux ne savent pas se hot-appliquer fenêtre par fenêtre → un seul déploiement couvre tout.
     if (bouge && mwSel.some(r => r.k !== 'win')) {
