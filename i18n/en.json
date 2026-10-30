@@ -399,5 +399,7 @@
   "type.multiview.wire.consumes.2": "ANC {i1}",
   "type.multiview.wire.consumes.3": "Wall VU {i1}",
   "type.multiview.wire.consumes.4": "Video hist. {i1}",
-  "type.multiview.wire.consumes.5": "Audio hist. {i1}"
+  "type.multiview.wire.consumes.5": "Audio hist. {i1}",
+  "plugin.multiview.source_all": "All streams",
+  "plugin.multiview.source_all_title": "By default only the sources wired to this wall (Cables page) are offered. Tick to choose among every stream of the node (wire a new source)."
 }

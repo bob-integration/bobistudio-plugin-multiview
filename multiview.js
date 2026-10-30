@@ -1600,6 +1600,18 @@ function toggleEntryHidden(i, shown) {
 
 // ─── Panneau d'édition d'une entrée ──────────────────────────
 
+// Sources proposées pour une tuile (demande du testeur, recette Z8 30/10) : par défaut SEULEMENT celles
+// CÂBLÉES au mur — les sources de sa banque (page Câbles), c'est-à-dire ce qui arrive vraiment au
+// mur. « Tous les flux » (case experte, à côté) ouvre tout le nœud pour câbler une nouvelle source.
+// Jamais un PROXY de pyramide (`…__s446x250`, `…__p2`) : la tuile lit le flux PLEIN et le mur choisit
+// lui-même le proxy (proxy_usage/proxy_needs) — une source = UNE ligne, le choix reste interne.
+const MW_PROXY_RE = /__(s\d+x\d+|p\d+)$/;
+let mwSourcesTous = false;
+function mwSourcesProposees(sources, fc, tous) {
+    const cables = new Set((fc || []).map(x => x && x.path).filter(Boolean));
+    return (sources || []).filter(s => !MW_PROXY_RE.test(s.shm) && (tous || cables.has('/dev/shm/' + s.shm)));
+}
+
 function refreshEntryPanel() {
     const panel = document.getElementById('ed_entry_panel');
     if (!panel) return;
@@ -1651,7 +1663,9 @@ function refreshEntryPanel() {
     // Re-peuple la dropdown source pour cette entrée
     const pathSel = document.getElementById('ed_path');
     // Une <option> par sortie vidéo individuelle (libellé hostname → label (shm)).
-    const opts = videoSources.map(s => {
+    const tousEl = document.getElementById('ed_path_all');
+    if (tousEl) tousEl.checked = mwSourcesTous;
+    const opts = mwSourcesProposees(videoSources, editorParams.flux_config, mwSourcesTous).map(s => {
         const base = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
                              : `${s.hostname} → ${s.shm}`;
         const txt = window.SourceLabels ? window.SourceLabels.display(s.shm, base) : base;

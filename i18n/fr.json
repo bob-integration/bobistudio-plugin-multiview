@@ -399,5 +399,7 @@
   "type.multiview.wire.consumes.2": "ANC {i1}",
   "type.multiview.wire.consumes.3": "VU mur {i1}",
   "type.multiview.wire.consumes.4": "Hist. vidéo {i1}",
-  "type.multiview.wire.consumes.5": "Hist. audio {i1}"
+  "type.multiview.wire.consumes.5": "Hist. audio {i1}",
+  "plugin.multiview.source_all": "Tous les flux",
+  "plugin.multiview.source_all_title": "Par défaut, seules les sources câblées à ce mur (page Câbles) sont proposées. Cochez pour choisir parmi tous les flux du nœud (câbler une nouvelle source)."
 }
