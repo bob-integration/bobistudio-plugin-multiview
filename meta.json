@@ -2,6 +2,14 @@
   "version": "0.116.31",
   "date": "2026-10-30",
   "changes": {
+    "Éditeur commun, sélecteur de source par ports, verrous au doigt (0.116.23 → 0.116.31)": [
+      "Aperçu d'une tuile au format réel de son modèle de PiP (bande visible avant la sortie) ; poignée tenue au format du modèle, même hérité du mur (0.116.23).",
+      "Plusieurs PiP sélectionnées se redimensionnent ensemble, tuiles collées restant collées (0.116.24).",
+      "Un seul éditeur pour tous les éditeurs de disposition (BobiEditor.surface, base commune, arbitrages de Cyril du 30/10) : sélection Maj OU Ctrl/⌘ (la référence est le dernier cliqué), glisser seul ou en groupe (le groupe s'arrête en entier au bord), poignée selon le format (coin opposé fixe, Alt = autour du centre), poignée d'une sélection = mise à l'échelle depuis le coin du groupe, aimant selon le format, outils Aligner / Même taille / Distribuer / Espacer / Remplir, barre « Édition » et clavier communs (annuler, rétablir, couper, copier, coller, dupliquer, supprimer, flèches, aide). Ajout : « Espacer » ; seuls les objets réellement déplacés sont envoyés au mur (0.116.25 → 0.116.28).",
+      "Sélecteur « Source » d'une tuile : les PORTS du projet (nom du port, l'orchestrateur résout le flux, proxy ou plein) ; sans projet, les sources câblées au mur ; « Tous les flux » pour l'expert ; jamais un proxy de pyramide (0.116.29 → 0.116.30).",
+      "Au doigt : boutons communs « Sélection multiple » (= Maj ; un glisser dans le vide trace le rectangle de sélection) et « Depuis le centre » (= Alt) ; rectangle de sélection dessiné. (0.116.31)",
+      "⚠ ≥ 0.116.25 exige un orchestrateur qui sert static/js/editor.js (BobiEditor)."
+    ],
     "Mesure mémoire datée au manifeste (0.116.31)": [
       "Ressources : la limite mémoire déclarée porte désormais sa MESURE datée (relevé du 2026-10-30, conteneur et configuration nommés) — garde générique tests/verif_resources_mesurees.py. La limite elle-même ne change pas ; rien à redéployer."
     ],
