@@ -13,13 +13,14 @@
     "desc_i18n": "settings.js.skh_desc_multiview"
   },
   "deploy_order": 1,
+  "_resources_mesure": "MÉMOIRE (relevée le 2026-10-30, dell-1 #1248, 10 tuiles, mur logique servi par 4 shards) : 328 Mio pour une limite déclarée de 2048 (16 %). Ses 4 shards du tissu compositeur, même nœud : #1253 (1 tuile) 145-146 Mio, #1254 (4 tuiles) 162-163, #1255 (1 tuile) 145-146, #1256 (4 tuiles) 155-156 ; dl360-1 #1187 (4 tuiles) 193-194 Mio. Tous en 1080p50 8 bits, sans bloc de mesure, sans historique ni surimpression (meter_blocks, overlays vides). Méthode : `memory.current` du cgroup, tel que l'orchestrateur le relève à chaque tour sur l'agent (:8081/stats → champ `mem_used`), lu en lecture seule par GET /api/containers : 21 relevés à 10 s d'écart entre 13:17 et 13:21. La part shmem (bus MXL mappé, ≈ 1/5 sur decklink_io) n'est PAS disponible par cette voie ; la limite effectivement posée au conteneur (memory.max) non plus — le rapport est donc pris sur le chiffre DÉCLARÉ. ⚠ CONFIGURATION LÉGÈRE : ce relevé dit que CETTE configuration tient, pas que 2048 Mio paie une configuration pleine ; la limite n'a été ni baissée ni montée (chantier de documentation, 2026-10-30). À REMESURER sur une configuration pleine, en lisant memory.stat (anon / shmem / pgscan_direct) du cgroup, avant de toucher au chiffre.",
   "resources": {
     "cores": 3,
     "memory": 2048,
     "pin": true,
     "gpu": 1
   },
-  "version": "0.116.30",
+  "version": "0.116.31",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiview : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",

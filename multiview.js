@@ -192,7 +192,7 @@ function surf() {
             else touches.forEach(r => hotApplyWindow(r.i));
         },
     }, {
-        tol: () => SNAP_PX, aimant: () => snapEnabled, min: 16, pas: {fleche: 1, maj: 10},
+        tol: () => SNAP_PX, aimant: () => snapEnabled, min: 16, pas: {fleche: 1, maj: 10}, rectangle: true,
         arrondi: Math.round, arrondiGroupe: v => Math.round(v / 2) * 2,
     });
     return _surf;
@@ -686,6 +686,10 @@ function _tslSetSelects(labelCol, tallyLevel, tallyColors) {
 async function chargerMw(vmid) {
     let c;
     try {
+        // Verrous AU DOIGT (communs) à côté de la barre « Édition » : posés une fois.
+        { const vz = document.getElementById('mw_verrous');
+          if (vz && !vz.dataset.lie && window.BobiEditor && surf()) {
+              vz.innerHTML = BobiEditor.verrousHtml(surf()); BobiEditor.lierVerrous(vz, surf()); vz.dataset.lie = '1'; } }
         await Promise.all([loadAllContainers(), loadVideoSources(), loadAudioSources(), loadInputPorts(vmid),
                            _loadTslLabelNames(), loadPipTemplates(),
                            // Catalogue de polices (+ @font-face de la bibliothèque) : chargé dès
@@ -2276,6 +2280,13 @@ function drawCanvas() {
     drawFabricRegions(ctx, t);
 
     // Lignes guides de snap (pendant le drag)
+    // Rectangle de sélection en cours (surface commune).
+    const _rs = _surf && _surf.rectSel;
+    if (_rs) {
+        ctx.strokeStyle = t.accent; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+        ctx.strokeRect(_rs.x + 0.5, _rs.y + 0.5, _rs.w, _rs.h);
+        ctx.setLineDash([]);
+    }
     if (dragMode && snapGuides.length) {
         ctx.strokeStyle = t.warning;
         ctx.lineWidth   = 1;
@@ -2369,8 +2380,10 @@ function canvasMouseDown(e) {
     _surfOut();
     if (geste) {
         dragMode = 'surface';
-        dragOverlay = ref.k === 'ov'; dragBlock = ref.k === 'blk'; dragHist = ref.k === 'vh' || ref.k === 'ah';
-        _setCanvasCursor(poignee ? 'nwse-resize' : 'move');
+        // `ref` nul : rectangle de sélection (Maj, ou « Sélection multiple » au doigt, dans le vide).
+        dragOverlay = !!ref && ref.k === 'ov'; dragBlock = !!ref && ref.k === 'blk';
+        dragHist = !!ref && (ref.k === 'vh' || ref.k === 'ah');
+        _setCanvasCursor(!ref ? 'crosshair' : poignee ? 'nwse-resize' : 'move');
     } else dragMode = null;
     dessiner();
 }
@@ -2453,6 +2466,7 @@ function canvasMouseMove(e) {
     // Hors drag : retour visuel au survol (déplacement vs redimensionnement) pour lever l'ambiguïté.
     if (!dragMode) { _setCanvasCursor(_cursorForPos(getCanvasPos(e))); return; }
     surf().glisse(getCanvasPos(e), e);
+    if (surf().rectSel) { _surfOut(); dessiner(); }   // rectangle : la sélection se voit en direct
 }
 
 
@@ -2464,6 +2478,7 @@ function canvasMouseUp() {
     // La surface ne valide (persistance + historique) que ce qui a RÉELLEMENT bougé : un simple
     // clic de sélection ne poste rien — sur un mur shardé, un POST /window re-planifie le tissu.
     surf().relache();
+    _surfOut();        // le rectangle a pu changer la sélection
     snapGuides = [];   // le premier rendu du geste suivant ne retrace pas les repères de celui-ci
     dessiner();
 }
