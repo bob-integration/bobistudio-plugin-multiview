@@ -4546,7 +4546,7 @@ function exporterLayout(lid) {
 
 // ─── ÉDITION AU CLAVIER (2026-10-29) ─────────────────────────────────────────────────────────────
 // Annuler/rétablir, copier/couper/coller, dupliquer, supprimer, tout sélectionner, flèches — même
-// comportement que les éditeurs de macros, par le noyau partagé static/js/edit_kit.js.
+// comportement que les éditeurs de macros, par le noyau partagé static/js/editor.js.
 //
 // ★ L'historique s'accroche à la PERSISTANCE, pas à chaque fonction qui modifie : tout geste finit
 // par hotApplyFull / hotApplyWindow / hotApplyStyle (c'est ce qui l'envoie au mur). On y empile un
@@ -4568,13 +4568,13 @@ function _mwState() {
     return s;
 }
 function mwHistReset() {
-    if (!window.BobiEditKit || !editorParams) { mwHist = null; return; }
-    mwHist = BobiEditKit.history(50);   // 50 : un overlay image porte son image en base64
+    if (!window.BobiEditor || !editorParams) { mwHist = null; return; }
+    mwHist = BobiEditor.history(50);   // 50 : un overlay image porte son image en base64
     mwHistFor = editorParams;
     mwHist.reset(_mwState());
 }
 function mwHistCommit() {
-    if (!editorParams || !window.BobiEditKit) return;
+    if (!editorParams || !window.BobiEditor) return;
     if (mwHistFor !== editorParams) mwHistReset();   // autre mur chargé entre-temps
     if (mwHist) mwHist.commit(_mwState());
     mwEdToolsState();
@@ -4667,7 +4667,7 @@ const MW_KEYS = () => [
 
 function mwEdCmd(action, sc) {
     if (!editorParams) return;
-    const K = window.BobiEditKit;
+    const K = window.BobiEditor;
     const ro = mwLectureSeule();
     const writes = ['undo', 'redo', 'cut', 'paste', 'duplicate', 'delete', 'nudge', 'save'];
     if (ro && writes.includes(action)) { mwFlash(T('plugin.multiview.ed_read_only')); return; }
@@ -4749,10 +4749,10 @@ function mwEdActive() {
               !_mwShown(document.getElementById('mw-engine-modal')) &&
               !document.getElementById('bek-help'));
 }
-if (window.BobiEditKit && !window._mwEdBound) {
+if (window.BobiEditor && !window._mwEdBound) {
     window._mwEdBound = true;   // le script du plugin peut être rechargé : un seul écouteur
     const on = {};
     ['undo', 'redo', 'copy', 'cut', 'paste', 'duplicate', 'delete', 'selectAll', 'nudge', 'save',
      'escape', 'help'].forEach(a => { on[a] = sc => mwEdCmd(a, sc); });
-    BobiEditKit.bind({active: mwEdActive, on});
+    BobiEditor.bind({active: mwEdActive, on});
 }
