@@ -149,28 +149,26 @@ function _beginGroupDrag() {
     });
 }
 function _applyGroupMove(nx, ny) {
-    const ow = editorParams.out_width, oh = editorParams.out_height;
-    let ddx = nx - dragOrigRect.x, ddy = ny - dragOrigRect.y;
-    let loX = -Infinity, hiX = Infinity, loY = -Infinity, hiY = Infinity;
+    // Delta borné par la base commune (BobiEditor.layout.deplacerGroupe) : aucun membre hors du
+    // cadre ; groupe plus large que le cadre → axe figé.
+    const d = LAY().deplacerGroupe(dragGroupOrig.filter(g => _refObj(g.r)).map(g => {
+        const o = _refObj(g.r);
+        return {x: g.x, y: g.y, w: o.w, h: o.h};
+    }), nx - dragOrigRect.x, ny - dragOrigRect.y,
+        {cadre: {w: editorParams.out_width, h: editorParams.out_height}});
     dragGroupOrig.forEach(g => {
         const o = _refObj(g.r);
         if (!o) return;
-        loX = Math.max(loX, -g.x); hiX = Math.min(hiX, ow - o.w - g.x);
-        loY = Math.max(loY, -g.y); hiY = Math.min(hiY, oh - o.h - g.y);
-    });
-    // Groupe plus large (ou plus haut) que le cadre : aucune position ne satisfait tout le monde
-    // → on fige l'axe concerné plutôt que d'appliquer une borne inversée.
-    if (loX > hiX) loX = hiX = 0;
-    if (loY > hiY) loY = hiY = 0;
-    ddx = Math.max(loX, Math.min(hiX, ddx));
-    ddy = Math.max(loY, Math.min(hiY, ddy));
-    dragGroupOrig.forEach(g => {
-        const o = _refObj(g.r);
-        if (!o) return;
-        o.x = Math.round(g.x + ddx);
-        o.y = Math.round(g.y + ddy);
+        o.x = Math.round(g.x + d.dx);
+        o.y = Math.round(g.y + d.dy);
     });
 }
+// Géométrie : base commune des éditeurs (BobiEditor.layout, static/js/editor.js), branchée le
+// 2026-10-30 (chantier « un seul moteur d'édition », le composer EN DERNIER). Reste local :
+// l'aimant du redimensionnement (computeSnapResize), dont la sémantique diffère d'un éditeur à
+// l'autre — c'est une décision à prendre, pas un branchement (cf. TODO.md).
+const LAY = () => window.BobiEditor.layout;
+
 // ─── Redimensionnement de GROUPE (fenêtres) ──────────────────────────────────
 // Demandé par le testeur (recette Z8, 30/10) : plusieurs PiP sélectionnées se redimensionnent
 // ensemble à la poignée de la référence. MISE À L'ÉCHELLE de la sélection depuis son coin
@@ -192,24 +190,17 @@ function _beginGroupResize(primary) {
     });
 }
 function _applyGroupResize(grp, primary, nw) {
-    const ow = editorParams.out_width, oh = editorParams.out_height;
-    const ax = Math.min(...grp.map(g => g.x)), ay = Math.min(...grp.map(g => g.y));
-    const ref = grp.find(g => g.i === primary);
-    const portee = ref.x + ref.w - ax;                 // du coin du groupe au bord droit de la référence
-    let s = (ref.x + nw - ax) / portee;
-    grp.forEach(g => {                                  // aucun membre hors du cadre…
-        s = Math.min(s, (ow - ax) / (g.x + g.w - ax), (oh - ay) / (g.y + g.h - ay));
-    });
-    const minDim = Math.min(...grp.map(g => Math.min(g.w, g.h)));
-    s = Math.max(s, 32 / minDim);                       // …ni réduit sous 32 px
-    const pair = v => Math.round(v / 2) * 2;
+    // Calcul : la base commune (BobiEditor.layout.redimensionnerGroupe), en pixels pairs.
+    const fc = editorParams.flux_config;
+    const orig = {};
+    grp.forEach(g => { orig[g.i] = g; });
+    const rects = fc.map((f, i) => orig[i] || {x: f.x, y: f.y, w: f.w, h: f.h});
+    const out = LAY().redimensionnerGroupe(rects, grp.map(g => g.i), primary, nw,
+        {cadre: {w: editorParams.out_width, h: editorParams.out_height}, arrondi: v => Math.round(v / 2) * 2, min: 32});
+    if (!out) return;
     grp.forEach(g => {
-        const f = editorParams.flux_config[g.i];
-        const x0 = pair(ax + (g.x - ax) * s), x1 = pair(ax + (g.x + g.w - ax) * s);
-        const y0 = pair(ay + (g.y - ay) * s), y1 = pair(ay + (g.y + g.h - ay) * s);
-        f.x = x0; f.y = y0;
-        f.w = Math.max(2, Math.min(ow - x0, x1 - x0));
-        f.h = Math.max(2, Math.min(oh - y0, y1 - y0));
+        const f = fc[g.i], o = out[g.i];
+        f.x = o.x; f.y = o.y; f.w = Math.max(2, o.w); f.h = Math.max(2, o.h);
     });
 }
 
@@ -2511,9 +2502,8 @@ function canvasMouseMove(e) {
         // courante d'une tuile déjà hors format la laissait hors format, et la vidéo y gardait
         // sa bande à la sortie.
         const ratio = mwTemplateAspect(f) || dragOrigRect.w / dragOrigRect.h;
-        let nw = Math.max(64, Math.min(out_w - f.x, Math.round(dragOrigRect.w + dx)));
-        let nh = Math.round(nw / ratio);
-        if (nh > out_h - f.y) { nh = out_h - f.y; nw = Math.round(nh * ratio); }
+        let { w: nw, h: nh } = LAY().redimensionnerAuFormat(f, Math.round(dragOrigRect.w + dx), ratio,
+            {cadre: {w: out_w, h: out_h}, arrondi: Math.round, min: 64});
         // Groupe : pas d'aimant — il accrocherait la référence aux autres membres de la sélection.
         if (snapEnabled && !dragResizeGroup) {
             const snapped = computeSnapResize({ kind: 'win', i: primary }, f.x, f.y, nw, nh, ratio);
@@ -3688,62 +3678,13 @@ function _snapRects(skip) {
 }
 
 function computeSnap(skip, x, y, w, h) {
-    const out_w = editorParams.out_width;
-    const out_h = editorParams.out_height;
-    const xTargets = [0, out_w, out_w / 2];     // bords + centre canvas
-    const yTargets = [0, out_h, out_h / 2];
-    _snapRects(skip).forEach(o => {
-        xTargets.push(o.x, o.x + o.w, o.x + o.w / 2);
-        yTargets.push(o.y, o.y + o.h, o.y + o.h / 2);
-    });
-    // Pour X : on essaie left=x, right=x+w, center=x+w/2 contre chaque target
-    let bestDx = SNAP_PX + 1, snapX = x;
-    const guides = [];
-    [{edge: 'l', val: x}, {edge: 'r', val: x + w}, {edge: 'c', val: x + w / 2}]
-        .forEach(({edge, val}) => {
-            xTargets.forEach(t => {
-                const d = Math.abs(val - t);
-                if (d <= SNAP_PX && d < bestDx) {
-                    bestDx = d;
-                    snapX = edge === 'l' ? t : edge === 'r' ? t - w : t - w / 2;
-                }
-            });
-        });
-    if (bestDx <= SNAP_PX) {
-        // Recalcule la position effective de la guide (ligne verticale)
-        const lineX = snapX + (snapX === x ? 0 : 0); // place sur l'edge snappée
-        // On dessine simplement le target le plus proche
-        let closest = xTargets[0], cd = Math.abs(xTargets[0] - snapX);
-        xTargets.forEach(t => {
-            [snapX, snapX + w, snapX + w/2].forEach(v => {
-                const d = Math.abs(t - v);
-                if (d < cd) { cd = d; closest = t; }
-            });
-        });
-        guides.push({type: 'v', pos: closest});
-    }
-    let bestDy = SNAP_PX + 1, snapY = y;
-    [{edge: 't', val: y}, {edge: 'b', val: y + h}, {edge: 'c', val: y + h / 2}]
-        .forEach(({edge, val}) => {
-            yTargets.forEach(t => {
-                const d = Math.abs(val - t);
-                if (d <= SNAP_PX && d < bestDy) {
-                    bestDy = d;
-                    snapY = edge === 't' ? t : edge === 'b' ? t - h : t - h / 2;
-                }
-            });
-        });
-    if (bestDy <= SNAP_PX) {
-        let closest = yTargets[0], cd = Math.abs(yTargets[0] - snapY);
-        yTargets.forEach(t => {
-            [snapY, snapY + h, snapY + h/2].forEach(v => {
-                const d = Math.abs(t - v);
-                if (d < cd) { cd = d; closest = t; }
-            });
-        });
-        guides.push({type: 'h', pos: closest});
-    }
-    return {x: Math.round(snapX), y: Math.round(snapY), guides};
+    // Base commune (BobiEditor.layout.aimanter) en px du mur : cibles = bords et centre du mur +
+    // bords et centres des objets posés (_snapRects, déjà privés de `skip`). Le repère tracé est
+    // la cible RÉELLEMENT atteinte (avant : la plus proche des bords aimantés, ce qui pouvait
+    // désigner une autre cible confondue — même position aimantée, repère seul en cause).
+    const r = LAY().aimanter(_snapRects(skip), [], x, y, w, h, SNAP_PX,
+        {cadre: {w: editorParams.out_width, h: editorParams.out_height}, arrondi: Math.round});
+    return {x: r.x, y: r.y, guides: r.guides.map(g => ({type: g.axe, pos: g.pos}))};
 }
 
 // `minPx` = plancher de dimension : 64 px pour une fenêtre vidéo (défaut historique), plus bas
@@ -3963,25 +3904,6 @@ async function deployerEditor() {
 
 // ─── Outils d'alignement ─────────────────────────────────────
 
-// Applique un alignement à UN rectangle {x,y,w,h} par rapport à `ref`, en le maintenant dans le
-// canvas. Partagé par les fenêtres et par les objets à sélection unique (overlays, blocs VU,
-// frises) — ces derniers n'étaient couverts par AUCUN outil d'alignement : les six boutons ne
-// regardaient que `selectedIdxs`, c'est-à-dire les fenêtres vidéo. Sélectionner une horloge ou un
-// champ texte et cliquer « centrer » ne faisait donc rien du tout, sans le moindre message.
-function _alignRect(o, mode, ref, out_w, out_h) {
-    switch (mode) {
-        case 'left':    o.x = ref.x; break;
-        case 'right':   o.x = ref.x + ref.w - o.w; break;
-        case 'hcenter': o.x = Math.round(ref.x + (ref.w - o.w) / 2); break;
-        case 'top':     o.y = ref.y; break;
-        case 'bottom':  o.y = ref.y + ref.h - o.h; break;
-        case 'vcenter': o.y = Math.round(ref.y + (ref.h - o.h) / 2); break;
-    }
-    o.x = Math.max(0, Math.min(out_w - o.w, o.x));
-    o.y = Math.max(0, Math.min(out_h - o.h, o.y));
-}
-
-
 // Membres de la sélection, RÉFÉRENCE EN DERNIER, avec l'objet géométrique de chacun.
 function _selMembres() {
     return _selRefs().map(r => ({r, o: _refObj(r)})).filter(m => m.o);
@@ -4001,13 +3923,18 @@ function aligner(mode) {
     if (!membres.length) return;
     const ow = editorParams.out_width, oh = editorParams.out_height;
     // Référence : l'objet PRIMAIRE (dernier sélectionné) dès qu'il y a au moins deux membres,
-    // sinon le cadre. Règle inchangée — elle vaut désormais pour un mélange de familles.
-    const prim = membres[membres.length - 1].o;
-    const ref = (membres.length >= 2) ? {x: prim.x, y: prim.y, w: prim.w, h: prim.h}
-                                      : {x: 0, y: 0, w: ow, h: oh};
+    // sinon le mur. Calcul : la base commune ; arrondi des centrages et bornage au mur : ici.
+    const n = membres.length;
+    const out = LAY().aligner(membres.map(m => m.o), membres.map((m, k) => k), n - 1, mode,
+                              {x: 0, y: 0, w: ow, h: oh}, {libre: true});
+    const centre = mode === 'hcenter' || mode === 'vcenter';
     membres.forEach((m, k) => {
-        if (membres.length >= 2 && k === membres.length - 1) return;   // la référence ne bouge pas
-        _alignRect(m.o, mode, ref, ow, oh);
+        if (n >= 2 && k === n - 1) return;   // la référence ne bouge pas
+        const o = m.o;
+        o.x = centre ? Math.round(out[k].x) : out[k].x;
+        o.y = centre ? Math.round(out[k].y) : out[k].y;
+        o.x = Math.max(0, Math.min(ow - o.w, o.x));
+        o.y = Math.max(0, Math.min(oh - o.h, o.y));
     });
     dessiner();
     syncGeomFields();
@@ -4021,16 +3948,19 @@ function matchSize(mode) {
     }
     const out_w = editorParams.out_width;
     const out_h = editorParams.out_height;
-    const ref = membres[membres.length - 1].o;   // référence = dernier sélectionné, toutes familles
+    const n = membres.length;   // référence = dernier sélectionné, toutes familles
+    const out = LAY().egaliser(membres.map(m => m.o), membres.map((m, k) => k), n - 1, mode,
+                               {libre: true, cadre: {w: out_w, h: out_h}});
+    const pair = v => v % 2 === 0 ? v : v - 1;
     membres.forEach((m, k) => {
-        if (k === membres.length - 1) return;
+        if (k === n - 1) return;
         const f = m.o;
         if (mode === 'w' || mode === 'both') {
-            f.w = ref.w % 2 === 0 ? ref.w : ref.w - 1;
+            f.w = pair(out[k].w);
             if (f.x + f.w > out_w) f.x = out_w - f.w;
         }
         if (mode === 'h' || mode === 'both') {
-            f.h = ref.h % 2 === 0 ? ref.h : ref.h - 1;
+            f.h = pair(out[k].h);
             if (f.y + f.h > out_h) f.y = out_h - f.h;
         }
     });
@@ -4045,20 +3975,10 @@ function distribuer(axis) {
         mwFlash(T('plugin.multiview.flash_select3'));
         return;
     }
-    const items = membres.slice();   // trié ci-dessous : l'ordre de sélection n'est pas l'ordre à l'écran
-    if (axis === 'h') {
-        items.sort((a, b) => a.o.x - b.o.x);
-        const x0 = items[0].o.x;
-        const xN = items[items.length - 1].o.x;
-        const step = (xN - x0) / (items.length - 1);
-        items.forEach((it, k) => { it.o.x = Math.round(x0 + step * k); });
-    } else {
-        items.sort((a, b) => a.o.y - b.o.y);
-        const y0 = items[0].o.y;
-        const yN = items[items.length - 1].o.y;
-        const step = (yN - y0) / (items.length - 1);
-        items.forEach((it, k) => { it.o.y = Math.round(y0 + step * k); });
-    }
+    // Positions à pas constant entre la première et la dernière À L'ÉCRAN (base commune).
+    const out = LAY().distribuer(membres.map(m => m.o), membres.map((m, k) => k), axis, {arrondi: Math.round});
+    const k = axis === 'h' ? 'x' : 'y';
+    membres.forEach((m, i) => { m.o[k] = out[i][k]; });
     dessiner();
     syncGeomFields();
     _persistMembres(membres);
