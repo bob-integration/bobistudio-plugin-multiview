@@ -686,7 +686,7 @@ function _tslSetSelects(labelCol, tallyLevel, tallyColors) {
 async function chargerMw(vmid) {
     let c;
     try {
-        await Promise.all([loadAllContainers(), loadVideoSources(), loadAudioSources(),
+        await Promise.all([loadAllContainers(), loadVideoSources(), loadAudioSources(), loadInputPorts(vmid),
                            _loadTslLabelNames(), loadPipTemplates(),
                            // Catalogue de polices (+ @font-face de la bibliothèque) : chargé dès
                            // l'ouverture pour que l'APERÇU canvas rende la vraie police.
@@ -1612,6 +1612,51 @@ function mwSourcesProposees(sources, fc, tous) {
     return (sources || []).filter(s => !MW_PROXY_RE.test(s.shm) && (tous || cables.has('/dev/shm/' + s.shm)));
 }
 
+// PORTS du projet (précision du testeur, 30/10 : « sélectionner les ports d'entrée du projet et non
+// les entrées de la DeckLink ») — option C du 23/10 : la tuile SUIT un port, l'orchestrateur
+// résout le flux physique (proxy ou plein, au choix du mur) et l'entrée porte le NOM du port.
+// Un mur qui n'appartient à aucun projet (pas de ports) garde les sources câblées ; « Tous les
+// flux » reste l'outil de l'expert (flux physiques, jamais de proxy).
+let mwPorts = {ports: [], links: {}};
+async function loadInputPorts(vmid) {
+    try {
+        const r = await fetch('/api/containers/' + vmid + '/input_ports?kind=video');
+        mwPorts = r.ok ? await r.json() : {ports: [], links: {}};
+    } catch (e) { mwPorts = {ports: [], links: {}}; }
+}
+// Options du sélecteur « Source » de la tuile `slot` et la valeur à y montrer. Pure (testée).
+function mwOptionsSource(f, slot, P, sources, fc, tous, t) {
+    const ports = (P && P.ports) || [], link = ((P && P.links) || {})[String(slot)];
+    const opts = [{value: '', text: t('plugin.multiview.no_source_option')}];
+    let value = f.path || '';
+    if (ports.length && !tous) {
+        ports.forEach(p => opts.push({value: p.ref, text: p.name + (p.shm ? '' : ' · ' + t('plugin.multiview.port_unassigned'))}));
+        const suit = link && ports.some(p => p.id === link.port_id) &&
+                     ((link.shm && f.path === '/dev/shm/' + link.shm) || (!link.shm && !f.path));
+        if (suit) value = 'port:' + link.port_id;
+        else if (f.path) opts.splice(1, 0, {value: f.path, text: t('plugin.multiview.source_direct') + ' · ' + f.path.replace('/dev/shm/', '')});
+        return {opts, value};
+    }
+    mwSourcesProposees(sources, fc, tous).forEach(s => {
+        const base = s.label ? `${s.hostname} → ${s.label} (${s.shm})` : `${s.hostname} → ${s.shm}`;
+        opts.push({value: '/dev/shm/' + s.shm, text: window.SourceLabels ? window.SourceLabels.display(s.shm, base) : base});
+    });
+    if (f.path && !opts.some(o => o.value === f.path)) opts.splice(1, 0, {value: f.path, text: f.path});
+    return {opts, value};
+}
+// Câble la tuile `slot` sur un port : le serveur résout, pose le lien, applique au mur.
+async function mwWirePort(slot, ref) {
+    let j = {};
+    try {
+        const r = await fetch('/api/home/wire', {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({to_vmid: editorVmid, shm: ref, kind: 'video', to_slot: slot})});
+        j = await r.json().catch(() => ({}));
+        if (!r.ok || j.ok === false) mwFlash(T('plugin.multiview.port_wire_failed') + (j.error ? ' : ' + j.error : ''));
+    } catch (e) { mwFlash(T('plugin.multiview.port_wire_failed')); }
+    await loadInputPorts(editorVmid);
+    refreshEntryPanel();
+}
+
 function refreshEntryPanel() {
     const panel = document.getElementById('ed_entry_panel');
     if (!panel) return;
@@ -1665,20 +1710,9 @@ function refreshEntryPanel() {
     // Une <option> par sortie vidéo individuelle (libellé hostname → label (shm)).
     const tousEl = document.getElementById('ed_path_all');
     if (tousEl) tousEl.checked = mwSourcesTous;
-    const opts = mwSourcesProposees(videoSources, editorParams.flux_config, mwSourcesTous).map(s => {
-        const base = s.label ? `${s.hostname} → ${s.label} (${s.shm})`
-                             : `${s.hostname} → ${s.shm}`;
-        const txt = window.SourceLabels ? window.SourceLabels.display(s.shm, base) : base;
-        return `<option value="${escapeHtml('/dev/shm/' + s.shm)}">${escapeHtml(txt)}</option>`;
-    });
-    // PiP vide : option explicite « aucune source » en tête (path = '').
-    opts.unshift('<option value="">' + escapeHtml(T('plugin.multiview.no_source_option')) + '</option>');
-    // Inclure le path actuel même si introuvable dans la liste (container détruit p.ex.).
-    if (f.path && !videoSources.some(s => '/dev/shm/' + s.shm === f.path)) {
-        opts.splice(1, 0, `<option value="${escapeHtml(f.path)}">${escapeHtml(f.path)}</option>`);
-    }
-    pathSel.innerHTML = opts.join('');
-    pathSel.value = f.path || '';
+    const so = mwOptionsSource(f, primary, mwPorts, videoSources, editorParams.flux_config, mwSourcesTous, T);
+    pathSel.innerHTML = so.opts.map(o => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.text)}</option>`).join('');
+    pathSel.value = so.value;
 
     // Re-peuple la dropdown SOURCE AUDIO (VU-mètres) : 3 états — auto (dérivé de la vidéo,
     // '' ) / aucune (AUDIO_PATH_NONE, VU-mètres coupés) / flux explicite (page Câbles ou
@@ -1794,7 +1828,13 @@ function onEntryChange() {
     // l'aiguiller vers le déploiement laisserait les VU sur l'ANCIENNE source. Elle est désormais
     // persistée côté proxy (même liste blanche).
     const _pathAvant = f.path || '';
-    f.path         = document.getElementById('ed_path').value;
+    const _choix = document.getElementById('ed_path').value;
+    const _port = mwPorts.ports.find(p => p.ref === _choix);
+    const _lien = mwPorts.links[String(primary)];
+    // Un PORT choisi : la tuile prend le flux qu'il résout (pour que tout envoi suivant porte le bon
+    // chemin) et le SERVEUR câble (lien entrée → port, nom du port, application au mur).
+    const _portChange = !!_port && !(_lien && _lien.port_id === _port.id && f.path === (_port.shm ? '/dev/shm/' + _port.shm : ''));
+    f.path = _port ? (_port.shm ? '/dev/shm/' + _port.shm : '') : _choix;
     { const _as = document.getElementById('ed_audio_path'); if (_as) f.audio_path = _as.value; }
     const _srcChange = (f.path || '') !== _pathAvant;
     f.show_label   = document.getElementById('ed_show_label').checked;
@@ -1821,7 +1861,8 @@ function onEntryChange() {
     dessiner();
     // Changement de source → déploiement (le seul chemin qui l'applique ET la persiste, cf.
     // ci-dessus). Tout le reste tient dans le hot-apply de fenêtre, sans coupure ni redeploy.
-    if (_srcChange) hotApplyFull();
+    if (_portChange) { hotApplyWindow(primary); mwWirePort(primary, _port.ref); }
+    else if (_srcChange) hotApplyFull();
     else hotApplyWindow(primary);
 }
 

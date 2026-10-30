@@ -401,5 +401,8 @@
   "type.multiview.wire.consumes.4": "Video hist. {i1}",
   "type.multiview.wire.consumes.5": "Audio hist. {i1}",
   "plugin.multiview.source_all": "All streams",
-  "plugin.multiview.source_all_title": "By default only the sources wired to this wall (Cables page) are offered. Tick to choose among every stream of the node (wire a new source)."
+  "plugin.multiview.source_all_title": "By default only the sources wired to this wall (Cables page) are offered. Tick to choose among every stream of the node (wire a new source).",
+  "plugin.multiview.port_unassigned": "unassigned",
+  "plugin.multiview.source_direct": "direct stream",
+  "plugin.multiview.port_wire_failed": "Port wiring refused"
 }
