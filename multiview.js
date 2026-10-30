@@ -2017,13 +2017,41 @@ function mwRefreshSidebarPreview() {
 const _TPL_PREVIEW_COLORS = { umd: 'rgba(74,74,82,0.85)', tally: 'rgba(220,40,40,0.8)',
     meters: 'rgba(60,200,60,0.55)', anc: 'rgba(143,106,210,0.6)', clock: 'rgba(210,160,40,0.7)',
     text: 'rgba(200,200,208,0.5)', format: 'rgba(90,138,210,0.65)' };
+// Rectangle de l'IMAGE d'une fenêtre à modèle — miroir de `_video_rect` (script.py) : marge des
+// équerres « viewfinder » réservée, puis `contain` au ratio SOURCE (in_w/in_h), centré. Le moteur
+// étire les composants à la tuile mais jamais l'image : sur une tuile qui n'a pas le format du
+// modèle, la vidéo y laisse une bande. L'aperçu la dessinait pleine zone — tuiles collées dans
+// l'éditeur, bandes noires à la sortie (recette Z8 30/10, modèle d'un mur en recette en 1,63 sur des tuiles
+// 16:9). `r` = zone du composant vidéo en pixels du mur.
+function mwVideoImageRect(f, vid, r) {
+    let { x, y, w, h } = r;
+    if ((vid.border || 'none') === 'viewfinder') {
+        const bw = Math.max(1, Math.min(24, parseInt(vid.border_w) || 3));
+        const m = Math.max(2, bw) + 1;
+        const mx = Math.min(m, Math.max(0, Math.floor(w / 4)));
+        const my = Math.min(m, Math.max(0, Math.floor(h / 4)));
+        x += mx; y += my; w = Math.max(2, w - 2 * mx); h = Math.max(2, h - 2 * my);
+    }
+    const sw = parseInt(f.in_w) || 0, sh = parseInt(f.in_h) || 0;
+    if ((vid.fit || 'contain') === 'contain' && sw > 1 && sh > 1) {
+        const sc = Math.min(w / sw, h / sh);
+        const nw = Math.max(2, Math.floor(sw * sc)), nh = Math.max(2, Math.floor(sh * sc));
+        x += Math.floor((w - nw) / 2); y += Math.floor((h - nh) / 2);
+        w = nw; h = nh;
+    }
+    return { x, y, w, h };
+}
+
 function drawTemplatePreview(ctx, f, tpl, sel, isPrimary, t) {
     const comps = tpl.components;
     const px = c => ({ x: f.x + (c.x || 0) * f.w, y: f.y + (c.y || 0) * f.h,
                        w: Math.max(2, (c.w || 0) * f.w), h: Math.max(2, (c.h || 0) * f.h) });
     const vid = comps.find(c => c.type === 'video');
     if (vid) {
-        const r = px(vid);
+        const zone = px(vid);
+        const r = mwVideoImageRect(f, vid, zone);
+        ctx.fillStyle = '#000000';               // la bande que la sortie montrera, s'il y en a une
+        ctx.fillRect(zone.x, zone.y, zone.w, zone.h);
         ctx.globalAlpha = sel ? 0.8 : 0.4;
         ctx.fillStyle = f.color;
         ctx.fillRect(r.x, r.y, r.w, r.h);
@@ -2436,7 +2464,10 @@ function canvasMouseMove(e) {
         } else snapGuides = [];
         _applyGroupMove(nx, ny);
     } else if (dragMode === 'resize') {
-        const ratio = dragOrigRect.w / dragOrigRect.h;
+        // Format du MODÈLE effectif (explicite ou hérité du mur) d'abord : garder la forme
+        // courante d'une tuile déjà hors format la laissait hors format, et la vidéo y gardait
+        // sa bande à la sortie.
+        const ratio = mwTemplateAspect(f) || dragOrigRect.w / dragOrigRect.h;
         let nw = Math.max(64, Math.min(out_w - f.x, Math.round(dragOrigRect.w + dx)));
         let nh = Math.round(nw / ratio);
         if (nh > out_h - f.y) { nh = out_h - f.y; nw = Math.round(nh * ratio); }
