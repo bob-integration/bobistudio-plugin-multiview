@@ -18,9 +18,10 @@
     "cores": 3,
     "memory": 2048,
     "pin": true,
-    "gpu": 1
+    "gpu": 1,
+    "cpu_weight": "normal"
   },
-  "version": "0.116.31",
+  "version": "0.116.32",
   "settings_panel": false,
   "adapts_input": true,
   "description": "Multiview : N entrées vidéo disposées librement (position/taille/label/tally) → 1 sortie composite. Layout via le composer ; sources câblées à chaud.",

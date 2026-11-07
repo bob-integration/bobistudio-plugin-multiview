@@ -1,7 +1,11 @@
 {
-  "version": "0.116.31",
-  "date": "2026-10-30",
+  "version": "0.116.32",
+  "date": "2026-11-07",
   "changes": {
+    "Niveau CPU Normal par défaut (0.116.32)": [
+      "Décision du 07/11 : la place suit le niveau — Antenne = cœurs dédiés, les autres niveaux = pool partagé. Un mur de contrôle ne part pas à l'antenne : le multiview est Normal par défaut (`resources.cpu_weight: normal`), donc sur le pool partagé. Les 3 cœurs du manifeste restent ceux qu'il reçoit quand on le passe en Antenne, conteneur par conteneur (Projets → Ressources), ce qui se fait à chaud.",
+      "Un multiview déjà réglé en Antenne garde ses cœurs. Les autres les rendent à leur prochain redéploiement. Aucun changement du script."
+    ],
     "Éditeur commun, sélecteur de source par ports, verrous au doigt (0.116.23 → 0.116.31)": [
       "Aperçu d'une tuile au format réel de son modèle de PiP (bande visible avant la sortie) ; poignée tenue au format du modèle, même hérité du mur (0.116.23).",
       "Plusieurs PiP sélectionnées se redimensionnent ensemble, tuiles collées restant collées (0.116.24).",
