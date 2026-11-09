@@ -612,7 +612,8 @@ _BAR_TINTS = {{
 # ─── Peak meters (audio) ─────────────────────────────────────
 A_SAMPLE_RATE       = 48000
 A_CHANNELS_MAX      = 8
-A_SAMPLES_PER_CHUNK = A_SAMPLE_RATE // 1000        # 48
+# Audio packet size on the bus: core setting (Réglages → MXL). An older orchestrator has no helper: 1 ms.
+A_SAMPLES_PER_CHUNK = bobimxl.audio_grain(CONFIG, A_SAMPLE_RATE) if hasattr(bobimxl, "audio_grain") else 48
 # (ex-shm_audio_ring/A_RING_SIZE/A_BIT_DEPTH/A_CHUNK_SIZE/A_HEADER_SIZE/A_TOTAL_SIZE :
 # dimensionnaient un ancien shm maison audio ; lecture des niveaux passe par bobimxl (MXL).
 # Retiré 2026-08-09, constante morte.)
@@ -749,7 +750,7 @@ def _update_peaks(state, n_channels, now):
             return _mn()
         # sinon : rattaché à une génération vivante → frais, on lit ci-dessous
     try:
-        r = ar.read_latest(A_SAMPLES_PER_CHUNK)   # (≤48, channels) float32 normalisé [-1,1]
+        r = ar.read_latest(A_SAMPLES_PER_CHUNK)   # (≤ one packet, channels) float32 normalisé [-1,1]
     except Exception:
         # flux invalidé (producteur recréé) → rouvrir sur une Instance DÉDIÉE (_lecteur_frais)
         # sur la vivante. last_head=None pour ré-amorcer le suivi de fraîcheur au tour suivant.
@@ -4131,7 +4132,7 @@ def _ah_sample(name, now):
             blk = None
     if blk is None:
         try:
-            blk = ar.read_latest(A_SAMPLES_PER_CHUNK)   # repli : la seule dernière milliseconde
+            blk = ar.read_latest(A_SAMPLES_PER_CHUNK)   # fallback: only the latest packet
         except Exception:
             blk = None
     st["last_t"] = now
